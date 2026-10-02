@@ -1,5 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { BoardData, Bootstrap, CommandResult } from '../src/shared/types.js';
+
+async function choose(page: Page, scope: Page | Locator, label: string, value: string) {
+  await scope.getByRole('combobox', { name: label, exact: true }).click();
+  await page.locator('.picker-popover').last().locator(`[role=option][data-value="${value}"]`).click();
+}
 
 test('board opens a card and preserves keyboard navigation', async ({ page, request }) => {
   const boot = await (await request.get('/api/bootstrap')).json() as Bootstrap;
@@ -19,6 +24,7 @@ test('creation fills branch from the actual issue ID and survives refresh', asyn
   await page.goto('/');
   await expect(page.getByTestId('board')).toBeVisible();
   await page.getByTestId('new-issue').click();
+  await expect(page.getByTestId('issue-title')).toBeFocused();
   await page.getByTestId('issue-title').fill('Browser verified branch');
   const saved = page.waitForResponse(response => response.url().endsWith('/api/commands') && response.request().method() === 'POST');
   await page.getByTestId('issue-submit').click();
@@ -41,6 +47,8 @@ test('dragging a card invokes the real status command, not a local visual reorde
     input: { subject: 'Drag verified task', statusId: todo.id },
   } })).json() as CommandResult;
   await page.goto('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Пошук', exact: true }).fill('Drag verified task');
   const card = page.getByTestId(`issue-card-${created.issue!.id}`);
   const target = page.getByTestId(`lane-status:${review.id}`);
   await expect(card).toBeVisible();
@@ -92,6 +100,7 @@ test('opening a notification selects its project, focuses its comment and archiv
   expect(notification).toBeTruthy();
   await page.goto('/');
   await expect(page.getByTestId('board')).toBeVisible();
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', /^data:image\/svg\+xml/);
   await page.locator('.nav-item').filter({ hasText: 'Вхідні' }).click();
   await page.locator('.notification-row').filter({ hasText: `#${notification.issueId}` }).locator('.notification-open').click();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
@@ -100,15 +109,16 @@ test('opening a notification selects its project, focuses its comment and archiv
   expect(await (await request.get('/api/notifications')).json()).toHaveLength(notifications.length - 1);
   await page.keyboard.press('Escape');
   await expect(page.locator('.project-selector')).toContainText('Example Project');
+  await page.getByRole('button', { name: 'Позначити все прочитаним', exact: true }).click();
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/favicon.svg');
 });
 
 test('appearance controls save through the UI and system theme responds to the browser', async ({ page, request }) => {
   await page.goto('/');
   await expect(page.getByTestId('board')).toBeVisible();
   await page.locator('.nav-item').filter({ hasText: 'Налаштування' }).click();
-  await page.getByTestId('theme-select').selectOption('system');
-  await page.getByTestId('palette-select').selectOption('amber');
-  await page.getByRole('button', { name: 'Зберегти налаштування', exact: true }).click();
+  await page.getByTestId('theme-system').click();
+  await page.getByTestId('palette-amber').click();
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.locator('html')).toHaveAttribute('data-palette', 'amber');
@@ -145,11 +155,9 @@ test('editing status reflects the actual QA and developer assignment after compo
   await page.goto('/');
   await page.getByTestId(`issue-card-${issue.issue!.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
-  await dialog.getByRole('combobox', { name: 'Статус', exact: true }).selectOption(String(boot.statuses.find(status => status.key === 'qa')!.id));
-  await dialog.getByRole('button', { name: 'Зберегти зміни', exact: true }).first().click();
-  await expect(dialog.getByRole('combobox', { name: 'Виконавець', exact: true })).toHaveValue('3');
-  await expect(dialog.getByRole('button', { name: 'Зберегти зміни', exact: true }).first()).toBeDisabled();
-  await dialog.getByRole('combobox', { name: 'Статус', exact: true }).selectOption(String(boot.statuses.find(status => status.key === 'todo')!.id));
-  await dialog.getByRole('button', { name: 'Зберегти зміни', exact: true }).first().click();
-  await expect(dialog.getByRole('combobox', { name: 'Виконавець', exact: true })).toHaveValue('2');
+  await choose(page, dialog, 'Статус', String(boot.statuses.find(status => status.key === 'qa')!.id));
+  await expect(dialog.locator('.assignee-avatar-option[data-person-id="3"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('.text-save-row')).not.toBeVisible();
+  await choose(page, dialog, 'Статус', String(boot.statuses.find(status => status.key === 'todo')!.id));
+  await expect(dialog.locator('.assignee-avatar-option[data-person-id="2"]')).toHaveAttribute('aria-pressed', 'true');
 });

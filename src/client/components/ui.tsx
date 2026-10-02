@@ -6,9 +6,13 @@ import type { Person } from '../../shared/types';
 let modalCount = 0;
 
 export function Avatar({ person, size = 'md', muted = false }: { person?: Person; size?: 'xs' | 'sm' | 'md' | 'lg'; muted?: boolean }) {
+  const { t } = useTranslation();
+  const roles = person?.roles || [];
+  const failedImage = useRef<string | undefined>(undefined);
   const initials = (person?.name || '?').trim().split(/\s+/).slice(0, 2).map((v) => v[0]).join('').toUpperCase();
-  return <span className={`avatar avatar-${size}${muted ? ' avatar-muted' : ''}`} title={person?.name || ''} aria-label={person?.name || ''}>
-    {person?.avatar ? <img src={person.avatar} alt="" /> : initials}
+  const label = [person?.name, ...roles.map(role => t(`role_${role}`))].filter(Boolean).join(' · ');
+  return <span className={`avatar avatar-${size}${muted ? ' avatar-muted' : ''}${roles.length ? ` avatar-role-${roles[0]}` : ''}${roles.length > 1 ? ' avatar-multiple-roles' : ''}`} title={label} aria-label={label}>
+    <span className="avatar-initials">{initials}</span>{person?.avatar && failedImage.current !== person.avatar && <img src={person.avatar} alt="" onError={(event) => { failedImage.current = person.avatar; event.currentTarget.style.display = 'none'; }} />}
   </span>;
 }
 
@@ -23,16 +27,21 @@ export function IconButton({ label, children, className = '', ...props }: React.
 export function Modal({ title, eyebrow, children, onClose, size = 'md', testId, className = '' }: { title: string; eyebrow?: string; children: ReactNode; onClose: () => void; size?: 'sm' | 'md' | 'lg'; testId?: string; className?: string }) {
   const { t } = useTranslation();
   const dialog = useRef<HTMLDivElement>(null);
+  const previouslyFocusedRef = useRef(typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    const timer = window.setTimeout(() => dialog.current?.focus(), 10);
+    const previouslyFocused = previouslyFocusedRef.current;
+    const timer = window.setTimeout(() => {
+      if (!dialog.current || dialog.current.contains(document.activeElement)) return;
+      const first = dialog.current.querySelector<HTMLElement>('[data-autofocus], input:not(:disabled), textarea:not(:disabled), button:not(:disabled)');
+      (first || dialog.current).focus();
+    }, 0);
     const onKeyDown = (event: KeyboardEvent) => {
       const openDialogs = [...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')];
       const isTop = openDialogs[openDialogs.length - 1] === dialog.current;
-      if (!isTop) return;
-      if (event.key === 'Escape') { event.stopPropagation(); onCloseRef.current(); }
+      if (!isTop || event.defaultPrevented || document.querySelector('[data-workspace-popover]')) return;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCloseRef.current(); }
       if (event.key === 'Tab' && dialog.current) {
         const items = [...dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])')];
         if (!items.length) return;
@@ -71,7 +80,20 @@ export function Spinner({ label }: { label?: string }) {
 }
 
 export function Toast({ text, onClose }: { text: string; onClose: () => void }) {
+  const { t } = useTranslation();
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => { timer.current = window.setTimeout(onClose, 3400); return () => window.clearTimeout(timer.current); }, [onClose]);
-  return <div className="toast" role="status"><span>{text}</span><IconButton label="Close" onClick={onClose}><X size={15} /></IconButton></div>;
+  return <div className="toast" role="status"><span>{text}</span><IconButton label={t('close')} onClick={onClose}><X size={15} /></IconButton></div>;
+}
+
+/** Route an explicit save to the active top form, never a remembered card or comment. */
+export function dispatchActiveFormSave(target: Element | null): boolean {
+  const modals = [...document.querySelectorAll<HTMLElement>('.modal[aria-modal="true"]')];
+  const scope = modals.at(-1) || document.querySelector<HTMLElement>('.content-scroll');
+  if (!scope) return false;
+  const focused = target?.closest<HTMLElement>('[data-workspace-save]');
+  const form = focused && scope.contains(focused) ? focused : scope.querySelector<HTMLElement>('[data-workspace-save]');
+  if (!form) return false;
+  form.dispatchEvent(new CustomEvent('workspace:save-form', { bubbles: true, cancelable: true, detail: { target } }));
+  return true;
 }

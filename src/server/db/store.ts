@@ -1,9 +1,9 @@
 import { and, asc, desc, eq, isNotNull, isNull, notInArray } from 'drizzle-orm';
-import type { AppSettings, Issue, Journal, Notification, Operation, Person, Project, Status, Priority, Version } from '../../shared/types.js';
+import type { AppSettings, Issue, Journal, Notification, Operation, PeopleField, Person, Project, Status, Priority, Version } from '../../shared/types.js';
 import { demoIssues, demoJournalIssues, demoJournals, demoMe, demoPeople, demoPriorities, demoProjectMembers, demoProjects, demoStatuses, demoVersions } from '../demo/fixtures.js';
 import { defaultSettings } from '../settings.js';
 import type { AppDatabase } from './connection.js';
-import { drafts, issues, issueRoles, journals, keyValues, notifications, operations, projects, sourceEvents, syncCursors, versions } from './schema.js';
+import { drafts, issues, issueRoles, journals, keyValues, notifications, operations, peopleSelections, projects, sourceEvents, syncCursors, versions } from './schema.js';
 
 export interface OperationRecord {
   operation: Operation;
@@ -11,9 +11,19 @@ export interface OperationRecord {
   version?: Version;
   context?: Record<string, unknown>;
 }
+export interface PersonSelectionRecord {
+  operationId: string;
+  projectId: number;
+  personId: number;
+  field: PeopleField;
+}
 
 const encode = (value: unknown) => JSON.stringify(value);
 const decode = <T>(value: string): T => JSON.parse(value) as T;
+const demoMembershipRoles = {
+  '10': { '2': [{ id: 1, name: 'Developer' }], '3': [{ id: 2, name: 'QA' }], '4': [{ id: 3, name: 'Support' }], '5': [{ id: 1, name: 'Developer' }, { id: 2, name: 'QA' }] },
+  '20': { '3': [{ id: 2, name: 'QA' }], '4': [{ id: 1, name: 'Developer' }], '5': [{ id: 3, name: 'Support' }] },
+};
 
 export class WorkspaceStore {
   constructor(readonly db: AppDatabase, public scope: string) {}
@@ -30,7 +40,17 @@ export class WorkspaceStore {
   }
 
   async initializeDemo(): Promise<void> {
-    if (this.scope !== 'demo:isolated' || (await this.getProjects()).length > 0) return;
+    if (this.scope !== 'demo:isolated') return;
+    const existingProjects = await this.getProjects();
+    if (existingProjects.length > 0) {
+      if (!(await this.getValue('projectMembershipIds'))) await this.setValue('projectMembershipIds', demoProjectMembers);
+      if (!(await this.getValue('projectMembershipRoles'))) await this.setValue('projectMembershipRoles', demoMembershipRoles);
+      for (const project of existingProjects) {
+        const fixture = demoProjects.find(entry => entry.id === project.id);
+        if (project.trackers === undefined && fixture?.trackers) await this.saveProject({ ...project, trackers: fixture.trackers });
+      }
+      return;
+    }
     for (const project of demoProjects) await this.saveProject(project);
     for (const version of demoVersions) await this.saveVersion(version);
     for (const issue of demoIssues) await this.saveIssue(issue);
@@ -39,6 +59,8 @@ export class WorkspaceStore {
     await this.setValue('statuses', demoStatuses);
     await this.setValue('priorities', demoPriorities);
     await this.setValue('projectMembers', demoProjectMembers);
+    await this.setValue('projectMembershipIds', demoProjectMembers);
+    await this.setValue('projectMembershipRoles', demoMembershipRoles);
     for (let i = 0; i < demoJournals.length; i++) {
       const journal = demoJournals[i]!;
       await this.saveJournal(demoJournalIssues[String(journal.id)]!, journal);
@@ -73,19 +95,52 @@ export class WorkspaceStore {
     if (!settings) {
       const initial = structuredClone(defaultSettings);
       await this.setSettings(initial);
+      await this.setValue('settingsSchemaVersion', 1);
       return initial;
     }
-    const compatible: AppSettings = {
+    let compatible: AppSettings = {
       ...structuredClone(defaultSettings), ...settings,
       projectQa: settings.projectQa ?? {}, subscriptions: settings.subscriptions ?? {},
+      personRoleOverrides: settings.personRoleOverrides ?? {},
       shortcuts: settings.shortcuts ?? structuredClone(defaultSettings.shortcuts), savedViews: settings.savedViews ?? [],
       sort: { ...defaultSettings.sort, ...settings.sort },
       theme: settings.theme ?? defaultSettings.theme, palette: settings.palette ?? defaultSettings.palette,
     };
+    const schemaVersion = await this.getValue<number>('settingsSchemaVersion') ?? 0;
+    if (schemaVersion < 1) {
+      compatible = { ...compatible, shortcuts: ensureSaveFormShortcut(compatible.shortcuts) };
+      await this.setSettings(compatible);
+      await this.setValue('settingsSchemaVersion', 1);
+    }
     return compatible;
   }
 
   async setSettings(settings: AppSettings): Promise<void> { await this.setValue('settings', settings); }
+
+  async isProjectMember(projectId: number, personId: number): Promise<boolean> {
+    const memberships = await this.getValue<Record<string, number[]>>('projectMembershipIds');
+    return memberships?.[String(projectId)]?.includes(personId) ?? false;
+  }
+
+  async recordPeopleSelection(selection: PersonSelectionRecord): Promise<'inserted' | 'duplicate' | 'conflict'> {
+    const inserted = this.db.$client.prepare(`INSERT OR IGNORE INTO people_selections
+      (scope, operation_id, project_id, person_id, field, selected_on) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(this.scope, selection.operationId, selection.projectId, selection.personId, selection.field, new Date().toISOString());
+    if (inserted.changes > 0) return 'inserted';
+    const existing = this.db.$client.prepare(`SELECT project_id AS projectId, person_id AS personId
+      FROM people_selections WHERE scope = ? AND operation_id = ? AND field = ?`)
+      .get(this.scope, selection.operationId, selection.field) as { projectId: number; personId: number } | undefined;
+    if (existing?.projectId === selection.projectId && existing.personId === selection.personId) return 'duplicate';
+    return 'conflict';
+  }
+
+  async getPeopleRecommendations(projectId: number, field: PeopleField): Promise<number[]> {
+    const rows = this.db.$client.prepare(`SELECT person_id AS personId, COUNT(*) AS choiceCount, MAX(selected_on) AS lastSelectedOn
+      FROM people_selections WHERE scope = ? AND project_id = ? AND field = ?
+      GROUP BY person_id ORDER BY choiceCount DESC, lastSelectedOn DESC, personId ASC`)
+      .all(this.scope, projectId, field) as { personId: number; choiceCount: number; lastSelectedOn: string }[];
+    return rows.map(row => row.personId);
+  }
 
   async getProjects(): Promise<Project[]> {
     return (await this.db.select({ payload: projects.payload }).from(projects).where(eq(projects.scope, this.scope)))
@@ -256,4 +311,16 @@ export class WorkspaceStore {
       .where(eq(operations.scope, this.scope)).orderBy(asc(operations.createdOn)))
       .map(row => decode<OperationRecord>(row.payload));
   }
+}
+
+function ensureSaveFormShortcut(shortcuts: AppSettings['shortcuts']): AppSettings['shortcuts'] {
+  if (shortcuts.length === 0) return structuredClone(defaultSettings.shortcuts);
+  if (shortcuts.some(shortcut => shortcut.action === 'saveForm')) return shortcuts;
+  const hasEnabledSaveBinding = shortcuts.some(shortcut => shortcut.enabled && isPortableSaveBinding(shortcut.keys));
+  return hasEnabledSaveBinding ? shortcuts : [...shortcuts, structuredClone(defaultSettings.shortcuts.find(item => item.action === 'saveForm')!)];
+}
+
+function isPortableSaveBinding(value: string): boolean {
+  const canonical = value.trim().toLocaleLowerCase().replace(/\s+/g, '').replace(/^(ctrl|control|meta|command|mod)\+/, 'cmd+');
+  return canonical === 'cmd+s';
 }

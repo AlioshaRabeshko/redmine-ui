@@ -13,8 +13,12 @@ export const demoPeople: Person[] = [
 ];
 
 export const demoProjects: Project[] = [
-  { id: 10, name: 'Core API', identifier: 'core-api', description: 'API та сервісні інтеграції' },
-  { id: 20, name: 'Example Project', identifier: 'example-project', description: 'Демонстраційний проєкт' },
+  { id: 10, name: 'Core API', identifier: 'core-api', description: 'API та сервісні інтеграції', trackers: [
+    { id: 1, name: 'Feature' }, { id: 2, name: 'Bug' }, { id: 3, name: 'Task' },
+  ] },
+  { id: 20, name: 'Example Project', identifier: 'example-project', description: 'Демонстраційний проєкт', trackers: [
+    { id: 1, name: 'Feature' }, { id: 2, name: 'Bug' }, { id: 3, name: 'Task' },
+  ] },
 ];
 
 export const demoStatuses: Status[] = [

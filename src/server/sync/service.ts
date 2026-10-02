@@ -79,6 +79,21 @@ export class SyncService {
       }
       const projectMembers = Object.fromEntries(Object.entries(mergedProjectMembers).map(([projectId, ids]) => [projectId, [...ids]]));
       await this.store.setValue('projectMembers', projectMembers);
+      const previousMembershipIds = await this.store.getValue<Record<string, number[]>>('projectMembershipIds') ?? {};
+      const previousMembershipRoles = await this.store.getValue<Record<string, Record<string, { id: number; name: string }[]>>>('projectMembershipRoles') ?? {};
+      const currentProjectIds = new Set(snapshot.projects.map(project => String(project.id)));
+      const membershipIds: Record<string, number[]> = {};
+      const membershipRoles: Record<string, Record<string, { id: number; name: string }[]>> = {};
+      for (const projectId of currentProjectIds) {
+        const currentIds = snapshot.projectMembershipIds?.[projectId];
+        const currentRoles = snapshot.projectMembershipRoles?.[projectId];
+        if (currentIds !== undefined) membershipIds[projectId] = currentIds;
+        else if (previousMembershipIds[projectId] !== undefined) membershipIds[projectId] = previousMembershipIds[projectId]!;
+        if (currentRoles !== undefined) membershipRoles[projectId] = currentRoles;
+        else if (previousMembershipRoles[projectId] !== undefined) membershipRoles[projectId] = previousMembershipRoles[projectId]!;
+      }
+      await this.store.setValue('projectMembershipIds', membershipIds);
+      await this.store.setValue('projectMembershipRoles', membershipRoles);
       const previousCapabilities = await this.store.getValue<{ branchFieldId?: number; labelsFieldId?: number; warnings?: string[] }>('capabilities');
       await this.store.setValue('capabilities', { canWrite: false,
         branchFieldId: snapshot.branchFieldId ?? previousCapabilities?.branchFieldId,

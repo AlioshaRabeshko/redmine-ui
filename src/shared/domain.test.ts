@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { branchForIssue, filterIssues, groupBoard, issueColumnId, releaseReadiness, sortIssues } from './domain.js';
+import { branchForIssue, filterIssues, groupBoard, issueColumnId, releaseReadiness, sortIssues, toggleAssignedToMe } from './domain.js';
 import type { Issue, Status, Version } from './types.js';
 
 const statuses: Status[] = [
@@ -38,6 +38,26 @@ describe('board and release rules', () => {
     expect(filterIssues(tasks, statuses, 'all', 1)).toHaveLength(1);
     expect(filterIssues(tasks, statuses, 'all', 1, { statusIds: [3] }).map(i => i.id)).toEqual([2]);
     expect(filterIssues(tasks, statuses, 'backlog', 1).map(i => i.id)).toEqual([3]);
+  });
+  it('searches labels and the people connected to an issue', () => {
+    const tasks = [
+      issue({ id: 1, labels: ['accessibility'], assignedToId: 2 }),
+      issue({ id: 2, labels: ['backend'], assignedToId: 3 }),
+    ];
+    const people = [{ id: 2, name: 'Example Person A QA' }, { id: 3, name: 'Maksym Developer' }];
+    expect(filterIssues(tasks, statuses, 'all', 1, { search: 'accessibility' }, people).map(i => i.id)).toEqual([1]);
+    expect(filterIssues(tasks, statuses, 'all', 1, { search: 'maksym' }, people).map(i => i.id)).toEqual([2]);
+  });
+  it('matches any selected label and keeps the legacy single-label field readable', () => {
+    const tasks = [issue({ id: 1, labels: ['frontend'] }), issue({ id: 2, labels: ['support'] }), issue({ id: 3, labels: ['docs'] })];
+    expect(filterIssues(tasks, statuses, 'all', 1, { labels: ['frontend', 'support'] }).map(i => i.id)).toEqual([1, 2]);
+    expect(filterIssues(tasks, statuses, 'all', 1, { label: 'docs' }).map(i => i.id)).toEqual([3]);
+  });
+  it('toggles assigned-to-me without clearing other filters', () => {
+    const current = { search: 'dialog', statusIds: [2], labels: ['ux'], assigneeId: 9 };
+    const enabled = toggleAssignedToMe(current);
+    expect(enabled).toEqual({ ...current, assignedToMe: true });
+    expect(toggleAssignedToMe(enabled)).toEqual(current);
   });
   it('sorts by priority rank, not raw Redmine priority ID', () => {
     const tasks = [issue({ id: 2, priorityId: 100 }), issue({ id: 1, priorityId: 4 })];

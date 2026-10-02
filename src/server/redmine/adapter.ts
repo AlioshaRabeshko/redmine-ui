@@ -1,12 +1,13 @@
 import type { AppConfig } from '../config.js';
-import type { Attachment, Issue, Journal, Person, Priority, Project, Status, StatusKey, Version } from '../../shared/types.js';
+import type { Attachment, Issue, Journal, Person, Priority, Project, ProjectTracker, RedmineRole, Status, StatusKey, Version } from '../../shared/types.js';
 import type { WorkspaceStore } from '../db/store.js';
 import { RedmineRequestError, RedmineTransport, type FetchLike } from './transport.js';
 
 interface RedmineUser { id: number; name?: string; firstname?: string; lastname?: string; avatar_url?: string }
 interface RedmineIssueStatus { id: number; name: string; is_closed?: boolean }
 interface RedminePriority { id: number; name: string; position?: number }
-interface RedmineProject { id: number; name: string; identifier: string; description?: string }
+interface RedmineProject { id: number; name: string; identifier: string; description?: string; trackers?: unknown }
+interface RedmineMembership { user?: RedmineUser; roles?: RedmineRole[] }
 interface RedmineVersion { id: number; project?: { id: number }; name: string; status?: string; due_date?: string; description?: string }
 interface RedmineJournalDetail { name?: string; property?: string; old_value?: unknown; new_value?: unknown }
 interface RedmineJournal { id: number; user?: RedmineUser; notes?: string; created_on: string; details?: RedmineJournalDetail[] }
@@ -27,6 +28,8 @@ export interface RedmineSnapshot {
   issues: Issue[];
   people: Person[];
   projectMembers: Record<string, number[]>;
+  projectMembershipIds?: Record<string, number[]>;
+  projectMembershipRoles?: Record<string, Record<string, RedmineRole[]>>;
   journals: { issueId: number; journal: Journal }[];
   branchFieldId?: number;
   labelsFieldId?: number;
@@ -47,7 +50,7 @@ export class RedmineAdapter {
   async snapshot(since?: string, knownMe?: Person): Promise<RedmineSnapshot> {
     const [me, rawProjects, rawStatuses, rawPriorities] = await Promise.all([
       knownMe ? Promise.resolve(knownMe) : this.currentUser(),
-      this.readPaged<RedmineProject>('projects.json', 'projects'),
+      this.readPaged<RedmineProject>('projects.json?include=trackers', 'projects'),
       this.transport.request<{ issue_statuses: RedmineIssueStatus[] }>('issue_statuses.json'),
       this.transport.request<{ issue_priorities: RedminePriority[] }>('enumerations/issue_priorities.json'),
     ]);
@@ -56,6 +59,8 @@ export class RedmineAdapter {
     const priorities: Priority[] = rawPriorities.issue_priorities.map((item, index) => ({ id: item.id, name: item.name, rank: item.position ?? index + 1 }));
     const peopleById = new Map<number, Person>([[me.id, me]]);
     const projectMembers: Record<string, number[]> = {};
+    const projectMembershipIds: Record<string, number[]> = {};
+    const projectMembershipRoles: Record<string, Record<string, RedmineRole[]>> = {};
     const warnings: string[] = [];
     const allIssues: Issue[] = [];
     const allVersions: Version[] = [];
@@ -66,21 +71,31 @@ export class RedmineAdapter {
     for (const project of projects) {
       const updatedFilter = since ? `&updated_on=%3E%3D${encodeURIComponent(since)}` : '';
       const query = `issues.json?project_id=${project.id}&subproject_id=%21%2A&status_id=*&${updatedFilter ? `${updatedFilter.slice(1)}&` : ''}limit=100&offset=0`;
-      const [rawIssues, rawVersions, rawMemberships] = await Promise.all([
+      const [rawIssues, rawVersions, membershipResponse] = await Promise.all([
         this.readPaged<RedmineIssue>(query, 'issues'),
         this.readPaged<RedmineVersion>(`projects/${encodeURIComponent(String(project.id))}/versions.json`, 'versions').catch(() => {
           warnings.push(`Не вдалося прочитати релізи проєкту ${project.name}.`); return [] as RedmineVersion[];
         }),
-        this.readPaged<{ user?: RedmineUser }>(`projects/${encodeURIComponent(String(project.id))}/memberships.json`, 'memberships').catch(() => {
-          warnings.push(`Список учасників проєкту ${project.name} недоступний для цього токена.`); return [] as { user?: RedmineUser }[];
+        this.readPaged<RedmineMembership>(`projects/${encodeURIComponent(String(project.id))}/memberships.json`, 'memberships').catch(() => {
+          warnings.push(`Список учасників проєкту ${project.name} недоступний для цього токена.`); return undefined;
         }),
       ]);
+      const rawMemberships = membershipResponse ?? [];
       const projectPeople = new Set<number>([me.id]);
+      const projectMemberIds: number[] = [];
+      const membershipRoles: Record<string, RedmineRole[]> = {};
       for (const membership of rawMemberships) {
         if (!membership.user) continue;
         const mapped = person(membership.user);
         peopleById.set(mapped.id, mapped);
         projectPeople.add(mapped.id);
+        projectMemberIds.push(mapped.id);
+        membershipRoles[String(mapped.id)] = (membership.roles ?? []).filter((role) => Number.isSafeInteger(role.id) && typeof role.name === 'string')
+          .map(role => ({ id: role.id, name: role.name.trim() }));
+      }
+      if (membershipResponse !== undefined) {
+        projectMembershipIds[String(project.id)] = [...new Set(projectMemberIds)];
+        projectMembershipRoles[String(project.id)] = membershipRoles;
       }
       const hydratedIssues = await mapLimit(rawIssues, 4, async (listIssue) => {
         const detail = await this.transport.request<{ issue: RedmineIssue }>(
@@ -116,7 +131,8 @@ export class RedmineAdapter {
     if (!branchFieldId) warnings.push('Поле Branch не знайдено у доступних задачах.');
     if (!labelsFieldId) warnings.push('Поле Labels не визначено у доступних задачах.');
     return { me, projects, statuses, priorities, versions: allVersions, issues: allIssues,
-      people: [...peopleById.values()], projectMembers, journals: allJournals, branchFieldId, labelsFieldId, warnings };
+      people: [...peopleById.values()], projectMembers, projectMembershipIds, projectMembershipRoles,
+      journals: allJournals, branchFieldId, labelsFieldId, warnings };
   }
 
   private async readPaged<T>(initialPath: string, collection: string): Promise<T[]> {
@@ -182,7 +198,24 @@ function person(user: RedmineUser): Person {
     ...(user.avatar_url ? { avatar: user.avatar_url } : {}) };
 }
 function mapProject(project: RedmineProject): Project {
-  return { id: project.id, name: project.name, identifier: project.identifier, ...(project.description ? { description: project.description } : {}) };
+  const trackers = mapProjectTrackers(project.trackers);
+  return { id: project.id, name: project.name, identifier: project.identifier,
+    ...(project.description ? { description: project.description } : {}), ...(trackers !== undefined ? { trackers } : {}) };
+}
+function mapProjectTrackers(value: unknown): ProjectTracker[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<number>();
+  const trackers: ProjectTracker[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const { id, name } = item as { id?: unknown; name?: unknown };
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || seen.has(id) || typeof name !== 'string') continue;
+    const safeName = name.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+    if (!safeName || safeName.length > 100) continue;
+    seen.add(id);
+    trackers.push({ id, name: safeName });
+  }
+  return trackers;
 }
 function mapVersion(version: RedmineVersion, projectId: number): Version {
   const status = ['open', 'locked', 'closed'].includes(version.status ?? '') ? version.status as Version['status'] : 'open';

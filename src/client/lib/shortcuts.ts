@@ -9,6 +9,7 @@ export const defaultShortcuts: Shortcut[] = [
   { id: 'palette', keys: 'Mod+K', action: 'commandPalette', enabled: true },
   { id: 'copy-branch', keys: 'Mod+Shift+C', action: 'copyBranch', enabled: true },
   { id: 'move-status', keys: 'S', action: 'moveStatus', enabled: true },
+  { id: 'save-form', keys: 'Mod+S', action: 'saveForm', enabled: true },
 ];
 
 export function normalizeShortcutKeys(keys: string): string {
@@ -44,6 +45,13 @@ export function shortcutForEvent(shortcut: Shortcut, event: KeyboardEvent): bool
 }
 
 export function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return !!target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]');
+  if (!(target instanceof Element)) return false;
+  const element = target as HTMLElement;
+  return element.isContentEditable || !!element.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]');
+}
+
+/** A visible top dialog owns issue shortcuts; otherwise use the currently focused board card. */
+export function resolveIssueShortcutTarget(context: { hasModal: boolean; modalIssueId?: number; focusedCardIssueId?: number }): number | undefined {
+  if (context.hasModal) return context.modalIssueId;
+  return context.focusedCardIssueId;
 }

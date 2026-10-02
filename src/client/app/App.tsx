@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Bell, BellDot, BookOpen, Check, ChevronDown, Command, Inbox, LayoutDashboard, ListTodo, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, Rocket, Search, Settings2, ShieldCheck, Sparkles, UserRound, X } from 'lucide-react';
+import { Activity, Bell, BellDot, Check, ChevronDown, Command, Inbox, LayoutDashboard, ListTodo, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, Rocket, Search, Settings2, ShieldCheck, Sparkles, UserRound, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppSettings, BoardData, Bootstrap, Command as WorkspaceCommand, CommandResult, Filters, Issue, IssueDetail, Notification, Operation, Person, Project, SavedView, Status, View } from '../../shared/types';
+import type { AppSettings, BoardData, Bootstrap, Command as WorkspaceCommand, CommandResult, Filters, Issue, IssueDetail, Notification, Operation, Person, Project, SavedView, SettingsPatch, Status, View } from '../../shared/types';
 import { api, ApiRequestError, friendlyError, issueUrl } from '../lib/api';
-import { isEditableTarget, shortcutForEvent } from '../lib/shortcuts';
-import { Avatar, Button, IconButton, Modal, Notice, Spinner, Toast } from '../components/ui';
+import { isEditableTarget, resolveIssueShortcutTarget, shortcutForEvent } from '../lib/shortcuts';
+import { toggleAssignedToMe } from '../../shared/domain';
+import { Avatar, Button, dispatchActiveFormSave, IconButton, Modal, Notice, Spinner, Toast } from '../components/ui';
 import { BoardPage } from '../features/board/BoardPage';
 import { IssueDialog, CreateIssueDialog, type IssueEditPatch } from '../features/issues/IssueDialog';
 import { InboxPage } from '../features/inbox/InboxPage';
@@ -13,6 +14,80 @@ import { ReleasesPage } from '../features/releases/ReleasesPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 
 type Screen = 'board' | 'backlog' | 'inbox' | 'releases' | 'settings';
+
+function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
+  const { projectQa, subscriptions, personRoleOverrides, ...simpleFields } = patch;
+  const next: AppSettings = { ...current, ...simpleFields };
+  if (projectQa) {
+    next.projectQa = { ...current.projectQa };
+    for (const [projectId, personId] of Object.entries(projectQa)) {
+      if (personId === null) delete next.projectQa[projectId]; else next.projectQa[projectId] = personId;
+    }
+  }
+  if (subscriptions) {
+    next.subscriptions = { ...current.subscriptions };
+    for (const [projectId, subscription] of Object.entries(subscriptions)) {
+      if (subscription === null) delete next.subscriptions[projectId]; else next.subscriptions[projectId] = subscription;
+    }
+  }
+  if (personRoleOverrides) {
+    next.personRoleOverrides = structuredClone(current.personRoleOverrides);
+    for (const [projectId, people] of Object.entries(personRoleOverrides)) {
+      if (people === null) { delete next.personRoleOverrides[projectId]; continue; }
+      const projectPeople = { ...(next.personRoleOverrides[projectId] || {}) };
+      for (const [personId, roles] of Object.entries(people)) {
+        if (roles === null) delete projectPeople[personId]; else projectPeople[personId] = roles;
+      }
+      if (Object.keys(projectPeople).length) next.personRoleOverrides[projectId] = projectPeople; else delete next.personRoleOverrides[projectId];
+    }
+  }
+  return next;
+}
+
+function restoreSettingsPatch(current: AppSettings, confirmed: AppSettings, optimistic: AppSettings, patch: SettingsPatch): AppSettings {
+  const restored = { ...current };
+  const mapFields = new Set(['projectQa', 'subscriptions', 'personRoleOverrides']);
+  for (const key of Object.keys(patch) as (keyof AppSettings)[]) {
+    if (mapFields.has(key)) continue;
+    if (current[key] === optimistic[key]) Object.assign(restored, { [key]: confirmed[key] });
+  }
+  for (const projectId of Object.keys(patch.projectQa || {})) {
+    if (current.projectQa[projectId] === optimistic.projectQa[projectId]) {
+      const values = { ...restored.projectQa };
+      if (confirmed.projectQa[projectId] === undefined) delete values[projectId]; else values[projectId] = confirmed.projectQa[projectId];
+      restored.projectQa = values;
+    }
+  }
+  for (const projectId of Object.keys(patch.subscriptions || {})) {
+    if (current.subscriptions[projectId] === optimistic.subscriptions[projectId]) {
+      const values = { ...restored.subscriptions };
+      if (confirmed.subscriptions[projectId] === undefined) delete values[projectId]; else values[projectId] = confirmed.subscriptions[projectId];
+      restored.subscriptions = values;
+    }
+  }
+  for (const [projectId, people] of Object.entries(patch.personRoleOverrides || {})) {
+    if (people === null) {
+      if (current.personRoleOverrides[projectId] === optimistic.personRoleOverrides[projectId]) {
+        const values = { ...restored.personRoleOverrides };
+        if (confirmed.personRoleOverrides[projectId] === undefined) delete values[projectId]; else values[projectId] = confirmed.personRoleOverrides[projectId];
+        restored.personRoleOverrides = values;
+      }
+      continue;
+    }
+    const currentPeople = current.personRoleOverrides[projectId] || {};
+    const optimisticPeople = optimistic.personRoleOverrides[projectId] || {};
+    const confirmedPeople = confirmed.personRoleOverrides[projectId] || {};
+    const restoredPeople = { ...(restored.personRoleOverrides[projectId] || {}) };
+    for (const personId of Object.keys(people)) {
+      if (currentPeople[personId] !== optimisticPeople[personId]) continue;
+      if (confirmedPeople[personId] === undefined) delete restoredPeople[personId]; else restoredPeople[personId] = confirmedPeople[personId];
+    }
+    const values = { ...restored.personRoleOverrides };
+    if (Object.keys(restoredPeople).length) values[projectId] = restoredPeople; else delete values[projectId];
+    restored.personRoleOverrides = values;
+  }
+  return restored;
+}
 
 export default function App() {
   const { t } = useTranslation();
@@ -35,6 +110,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const [filters, setFilters] = useState<Filters>({});
   const [issueId, setIssueId] = useState<number>();
   const [issueOpen, setIssueOpen] = useState(false);
+  const [freshIssueDetailId, setFreshIssueDetailId] = useState<number>();
   const [initialJournalId, setInitialJournalId] = useState<number>();
   const [createIssueOpen, setCreateIssueOpen] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<number>();
@@ -43,12 +119,16 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const [projectSearch, setProjectSearch] = useState('');
   const [showActivity, setShowActivity] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
-  const [showQuickMove, setShowQuickMove] = useState(false);
+  const [quickMoveIssueId, setQuickMoveIssueId] = useState<number>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toastText, setToastText] = useState('');
   const [busySync, setBusySync] = useState(false);
   const [pendingIssueIds, setPendingIssueIds] = useState<Set<number>>(() => new Set());
   const pendingIssueIdsRef = useRef(new Set<number>());
+  const issueOpenSequenceRef = useRef(0);
+  const settingsQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const settingsWriteSequenceRef = useRef(0);
+  const confirmedSettingsRef = useRef(bootstrap.settings);
   const scrollPositionsRef = useRef<Record<string, number>>({});
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -69,14 +149,18 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const canWrite = bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite;
   const members = board?.members || [];
   const activeIssue = board?.issues.find((item) => item.id === issueId);
-  const issueDetail = issueQuery.data || (activeIssue ? { issue: activeIssue, journals: [], watchers: members.filter((person) => activeIssue.watcherIds.includes(person.id)) } : undefined);
+  const issueDetailIssue = freshIssueDetailId === issueId
+    ? issueQuery.data?.issue || activeIssue
+    : activeIssue || issueQuery.data?.issue;
+  const issueDetail = issueDetailIssue
+    ? { ...(issueQuery.data || { journals: [], watchers: members.filter(person => issueDetailIssue.watcherIds.includes(person.id)) }), issue: issueDetailIssue }
+    : undefined;
+  const quickMoveIssue = board?.issues.find(issue => issue.id === quickMoveIssueId);
   const notifications = screen === 'inbox' && archived ? archivedQuery.data || [] : unreadQuery.data || [];
   const customViews = settings.savedViews.filter((saved) => saved.projectId === selectedProjectId);
+  const mineFilterActive = Boolean(filters.assignedToMe || view === 'mine');
   const unreadCount = unreadQuery.data?.length || 0;
 
-  useEffect(() => {
-    setSettings(bootstrap.settings);
-  }, [bootstrap.settings]);
   useEffect(() => {
     void i18n.changeLanguage(settings.locale);
     document.documentElement.lang = settings.locale;
@@ -116,7 +200,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     try {
       stream = new EventSource('/api/events');
       stream.onmessage = () => { void queryClient.invalidateQueries(); };
-      for (const eventName of ['sync', 'issue', 'release', 'settings', 'operation', 'notifications']) {
+      for (const eventName of ['sync', 'issue', 'release', 'settings', 'operation', 'notifications', 'peopleRecommendations']) {
         stream.addEventListener(eventName, () => { void queryClient.invalidateQueries(); });
       }
       stream.onerror = () => { /* EventSource reconnects automatically; cached state remains visible. */ };
@@ -147,67 +231,96 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     return result;
   }, [canWrite, commandMutation, t]);
 
-  const updateSettings = useCallback(async (next: AppSettings, quiet = false) => {
-    const previous = settingsRef.current;
-    setSettings(next);
-    try {
-      const saved = await api.put<AppSettings>('/api/settings', next);
-      setSettings(saved || next);
-      if (next.automationEnabled !== previous.automationEnabled && bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite) {
-        await commandMutation.mutateAsync({ type: 'runAutomation', input: { enabled: next.automationEnabled } });
+  const patchSettings = useCallback((patch: SettingsPatch, quiet = true) => {
+    const optimistic = mergeSettingsPatch(settingsRef.current, patch);
+    settingsRef.current = optimistic;
+    setSettings(optimistic);
+    const sequence = ++settingsWriteSequenceRef.current;
+    const write = settingsQueueRef.current.catch(() => undefined).then(async () => {
+      const persistedBefore = confirmedSettingsRef.current;
+      let patchCommitted = false;
+      try {
+        const saved = await api.patch<AppSettings>('/api/settings', patch);
+        const confirmed = saved || mergeSettingsPatch(persistedBefore, patch);
+        confirmedSettingsRef.current = confirmed;
+        patchCommitted = true;
+        if (sequence === settingsWriteSequenceRef.current) {
+          settingsRef.current = confirmed;
+          setSettings(confirmed);
+        }
+        if (patch.automationEnabled !== undefined && patch.automationEnabled !== persistedBefore.automationEnabled && bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite) {
+          await commandMutation.mutateAsync({ type: 'runAutomation', input: { enabled: patch.automationEnabled } });
+        }
+        if (!quiet) notify(t('settingsSaved'));
+      } catch (error) {
+        if (!patchCommitted) {
+          const restored = restoreSettingsPatch(settingsRef.current, confirmedSettingsRef.current, optimistic, patch);
+          settingsRef.current = restored;
+          setSettings(restored);
+        }
+        throw new Error(friendlyError(error, t));
       }
-      if (!quiet) notify(t('settingsSaved'));
-    } catch (error) {
-      setSettings(previous);
-      throw new Error(friendlyError(error, t));
-    }
+    });
+    settingsQueueRef.current = write;
+    return write;
   }, [bootstrap, commandMutation, notify, t]);
-  const saveSettings = useCallback(async (next: AppSettings) => {
-    await updateSettings(next);
-  }, [updateSettings]);
-
   const openIssue = useCallback((issue: Issue, journalId?: number) => {
+    const requestSequence = ++issueOpenSequenceRef.current;
     setIssueId(issue.id);
     setInitialJournalId(journalId);
+    setFreshIssueDetailId(undefined);
     setIssueOpen(true);
-  }, []);
-  const closeIssue = useCallback(() => { setIssueOpen(false); setInitialJournalId(undefined); }, []);
+    void queryClient.fetchQuery({ queryKey: ['issue', issue.id], queryFn: () => api.get<IssueDetail>(`/api/issues/${issue.id}`), staleTime: 0 })
+      .then(() => { if (issueOpenSequenceRef.current === requestSequence) setFreshIssueDetailId(issue.id); })
+      .catch(error => { if (issueOpenSequenceRef.current === requestSequence) notify(friendlyError(error, t)); });
+  }, [queryClient, notify, t]);
+  const closeIssue = useCallback(() => { issueOpenSequenceRef.current += 1; setIssueOpen(false); setInitialJournalId(undefined); setFreshIssueDetailId(undefined); }, []);
   const pickProject = (nextProject: Project) => {
     setSelectedProjectId(nextProject.id);
     setProjectPickerOpen(false);
     setProjectSearch('');
     setScreen('board'); setView('all'); setFilters({}); setSelectedVersionId(undefined);
   };
-  const selectView = (next: View) => { setScreen(next === 'backlog' ? 'backlog' : 'board'); setView(next); setFilters({}); };
+  const selectView = (next: View) => {
+    if (next === 'mine') {
+      setScreen('board');
+      if (view === 'mine') setView('all');
+      setFilters(current => toggleAssignedToMe(current));
+      return;
+    }
+    if (next === 'all') setFilters(current => current.assignedToMe ? toggleAssignedToMe(current) : current);
+    setScreen(next === 'backlog' ? 'backlog' : 'board');
+    setView(next);
+  };
   const selectSavedView = (saved: SavedView) => { setScreen('board'); setView(saved.view); setFilters(saved.filters); };
   const onSaveView = async (name: string, nextFilters: Filters, savedView: View) => {
     const next: SavedView[] = [...settingsRef.current.savedViews.filter((item) => !(item.projectId === selectedProjectId && item.name === name)), { id: crypto.randomUUID(), projectId: selectedProjectId, name, filters: nextFilters, view: savedView }];
-    await updateSettings({ ...settingsRef.current, savedViews: next }, true);
+    await patchSettings({ savedViews: next });
     notify(t('saved'));
   };
   const removeSavedView = async (saved: SavedView) => {
-    await updateSettings({ ...settingsRef.current, savedViews: settingsRef.current.savedViews.filter((item) => item.id !== saved.id) }, true);
+    await patchSettings({ savedViews: settingsRef.current.savedViews.filter((item) => item.id !== saved.id) });
   };
-  const saveIssue = async (issue: Issue, patch: IssueEditPatch): Promise<Issue | void> => {
+  const saveIssue = async (issue: Issue, patch: IssueEditPatch, operationId?: string): Promise<Issue | void> => {
     const input: Record<string, unknown> = { ...patch };
     for (const optionalKey of ['assignedToId', 'fixedVersionId', 'dueDate'] as const) {
       if (optionalKey in patch && patch[optionalKey] === undefined) input[optionalKey] = null;
     }
-    const result = await runCommand({ type: 'updateIssue', issueId: issue.id, input });
+    const result = await runCommand({ type: 'updateIssue', issueId: issue.id, operationId, input });
     if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
     await refreshQueries();
     return result.issue;
   };
-  const saveIssueRoles = async (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }): Promise<Issue | void> => {
+  const saveIssueRoles = async (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }, operationId?: string): Promise<Issue | void> => {
     let updated: Issue | undefined;
-    try { updated = await api.post<Issue>(`/api/issues/${issue.id}/roles`, rolePatch); }
+    try { updated = await api.post<Issue>(`/api/issues/${issue.id}/roles`, { ...rolePatch, operationId }); }
     catch (error) { throw new Error(friendlyError(error, t)); }
     await refreshQueries();
     return updated;
   };
   const commentIssue = async (issue: Issue, notes: string) => { const result = await runCommand({ type: 'comment', issueId: issue.id, input: { notes } }); if (result.operation.status !== 'done') throw new Error(t('operationRunning')); };
-  const createIssue = async (input: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; assignedToId?: number; fixedVersionId?: number }) => {
-    const result = await runCommand({ type: 'createIssue', projectId: selectedProjectId, input });
+  const createIssue = async (input: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; assignedToId?: number; fixedVersionId?: number }, operationId?: string) => {
+    const result = await runCommand({ type: 'createIssue', projectId: selectedProjectId, operationId, input });
     if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
     await refreshQueries();
     notify(t('saved'));
@@ -239,7 +352,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     await runCommand({ type: 'assignRelease', projectId: selectedProjectId, versionId, input: { issueIds, fixedVersionId } });
     await refreshQueries();
   };
-  const updateRelease = async (version: import('../../shared/types').Version, patch: Partial<import('../../shared/types').Version>) => {
+  const updateRelease = async (version: import('../../shared/types').Version, patch: Omit<Partial<import('../../shared/types').Version>, 'dueDate'> & { dueDate?: string | null }) => {
     await runCommand({ type: 'updateRelease', projectId: selectedProjectId, versionId: version.id, input: patch as Record<string, unknown> });
     await refreshQueries();
   };
@@ -254,12 +367,15 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   };
   const openNotification = async (notification: Notification) => {
     try {
+      const requestSequence = ++issueOpenSequenceRef.current;
       const [detail] = await Promise.all([
         queryClient.fetchQuery({ queryKey: ['issue', notification.issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${notification.issueId}`), staleTime: 0 }),
         queryClient.fetchQuery({ queryKey: ['board', notification.projectId], queryFn: () => api.get<import('../../shared/types').BoardData>(`/api/projects/${notification.projectId}/board`) }),
       ]);
+      if (issueOpenSequenceRef.current !== requestSequence) return;
       setSelectedProjectId(notification.projectId);
       setIssueId(notification.issueId);
+      setFreshIssueDetailId(notification.issueId);
       setInitialJournalId(notification.journalId);
       setIssueOpen(true);
       if (!notification.readAt) await markRead(notification);
@@ -272,52 +388,56 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     catch (error) { notify(friendlyError(error, t)); }
     finally { setBusySync(false); }
   };
-  const moveActiveIssue = async (statusId: number) => {
-    if (!activeIssue) return;
-    setShowQuickMove(false);
-    await moveIssue(activeIssue, { statusId, fixedVersionId: activeIssue.fixedVersionId });
-  };
-  const copyActiveUrl = useCallback(async () => {
-    if (!issueId) return;
-    try { await navigator.clipboard.writeText(issueUrl(bootstrap.redmineUrl, issueId)); notify(t('copied')); } catch { notify(t('error')); }
-  }, [bootstrap.redmineUrl, issueId, notify, t]);
-  const copyActiveBranch = useCallback(async () => {
-    const issue = board?.issues.find((entry) => entry.id === issueId);
+  const copyIssueUrl = useCallback(async (targetIssueId: number) => {
+    try { await navigator.clipboard.writeText(issueUrl(bootstrap.redmineUrl, targetIssueId)); notify(t('copied')); } catch { notify(t('error')); }
+  }, [bootstrap.redmineUrl, notify, t]);
+  const copyIssueBranch = useCallback(async (targetIssueId: number) => {
+    const issue = board?.issues.find((entry) => entry.id === targetIssueId) || queryClient.getQueryData<IssueDetail>(['issue', targetIssueId])?.issue;
     if (!issue?.branch) return;
     try { await navigator.clipboard.writeText(issue.branch); notify(t('copied')); } catch { notify(t('error')); }
-  }, [board?.issues, issueId, notify, t]);
+  }, [board?.issues, notify, queryClient, t]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing || event.defaultPrevented || isEditableTarget(event.target)) return;
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
       const activeSelection = window.getSelection()?.toString();
       const shortcuts = settingsRef.current.shortcuts;
       const match = shortcuts.find((shortcut) => shortcutForEvent(shortcut, event));
       if (!match) return;
-      if (match.action === 'copyRedmineUrl') {
-        if (activeSelection) return;
-        const focusedCard = document.activeElement?.closest('.issue-card');
-        if (!issueOpen && !focusedCard) return;
-        event.preventDefault(); void copyActiveUrl(); return;
-      }
       const action = match.action === 'view' && match.value === 'mine' ? 'view/mine' : match.action;
+      const isSaveFormShortcut = action === 'saveForm' && (event.metaKey || event.ctrlKey);
+      if (isEditableTarget(event.target) && !isSaveFormShortcut) return;
+      if (document.querySelector('[data-workspace-popover]') && !isSaveFormShortcut) return;
+      if (action === 'saveForm') {
+        if (isSaveFormShortcut && dispatchActiveFormSave(event.target instanceof Element ? event.target : null)) event.preventDefault();
+        return;
+      }
       if ((action === 'createIssue' || action === 'moveStatus') && !canWrite) return;
+      const topModal = [...document.querySelectorAll<HTMLElement>('.modal[aria-modal="true"]')].at(-1);
+      const focusedCard = document.activeElement instanceof Element ? document.activeElement.closest<HTMLElement>('.issue-card') : null;
+      const focusedCardIssueId = Number(focusedCard?.dataset.issueId) || undefined;
+      const modalIssueId = topModal?.classList.contains('issue-dialog') && issueOpen ? issueId : undefined;
+      const targetIssueId = resolveIssueShortcutTarget({ hasModal: Boolean(topModal), modalIssueId, focusedCardIssueId });
+      if ((action === 'copyBranch' || action === 'copyRedmineUrl') && (activeSelection || !targetIssueId)) return;
+      if (action === 'moveStatus' && !targetIssueId) return;
       event.preventDefault();
-      if (action === 'view/mine') selectView('mine');
+      if (action === 'view/mine') { setFilters(current => toggleAssignedToMe(current)); if (view === 'mine') setView('all'); }
       else if (action === 'projectPicker') setProjectPickerOpen(true);
       else if (action === 'search') searchRef.current?.focus();
       else if (action === 'createIssue') setCreateIssueOpen(true);
       else if (action === 'commandPalette') setShowPalette(true);
-      else if (action === 'copyBranch') void copyActiveBranch();
+      else if (action === 'copyBranch') void copyIssueBranch(targetIssueId!);
+      else if (action === 'copyRedmineUrl') void copyIssueUrl(targetIssueId!);
       else if (action === 'moveStatus') {
         const targeted = match.value && statuses.find((status) => String(status.id) === match.value || status.key === match.value);
-        if (targeted && activeIssue) void moveIssue(activeIssue, { statusId: targeted.id, fixedVersionId: activeIssue.fixedVersionId }).catch((error) => notify(friendlyError(error, t)));
-        else setShowQuickMove(true);
+        const targetIssue = targetIssueId ? board?.issues.find(issue => issue.id === targetIssueId) || queryClient.getQueryData<IssueDetail>(['issue', targetIssueId])?.issue : undefined;
+        if (targeted && targetIssue) void moveIssue(targetIssue, { statusId: targeted.id, fixedVersionId: targetIssue.fixedVersionId }).catch((error) => notify(friendlyError(error, t)));
+        else if (targetIssue) setQuickMoveIssueId(targetIssue.id);
       }
       else if (action === 'label' && match.value) setFilters((current) => ({ ...current, label: match.value }));
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeIssue, canWrite, copyActiveBranch, copyActiveUrl, issueOpen, notify, statuses, t]);
+  }, [board?.issues, canWrite, copyIssueBranch, copyIssueUrl, issueId, issueOpen, notify, queryClient, statuses, t, view]);
 
   const visibleProjects = bootstrap.projects.filter((item) => `${item.name} ${item.identifier}`.toLocaleLowerCase().includes(projectSearch.toLocaleLowerCase()));
   const statusesReady = statuses.length > 0;
@@ -328,8 +448,8 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       <button type="button" className="project-selector" onClick={() => { setProjectPickerOpen(true); setProjectSearch(''); }} aria-haspopup="dialog"><span className="project-symbol">{project.name.trim().charAt(0).toUpperCase()}</span><span className="project-selector-text"><small>{t('projects')}</small><strong>{project.name}</strong></span><ChevronDown size={15} /></button>
       <div className="sidebar-scroll">
         <div className="nav-group"><span className="nav-label">{t('workspace')}</span>
-          <NavItem active={screen === 'board' && view === 'all'} label={t('all')} icon={<LayoutDashboard size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('all')} />
-          <NavItem active={screen === 'board' && view === 'mine'} label={t('mine')} icon={<UserRound size={17} />} collapsed={sidebarCollapsed} shortcut="Q" onClick={() => selectView('mine')} />
+          <NavItem active={screen === 'board' && view === 'all' && !mineFilterActive} label={t('viewAll')} icon={<LayoutDashboard size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('all')} />
+          <NavItem active={(screen === 'board' || screen === 'backlog') && mineFilterActive} label={t('viewMine')} icon={<UserRound size={17} />} collapsed={sidebarCollapsed} shortcut="Q" onClick={() => selectView('mine')} />
           <NavItem active={screen === 'board' && view === 'watching'} label={t('watching')} icon={<Bell size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('watching')} />
           <NavItem active={screen === 'backlog'} label={t('backlog')} icon={<ListTodo size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('backlog')} />
         </div>
@@ -338,13 +458,12 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
           <NavItem active={screen === 'releases'} label={t('releases')} icon={<Rocket size={17} />} collapsed={sidebarCollapsed} onClick={() => { setScreen('releases'); setSelectedVersionId(undefined); }} />
           <NavItem active={screen === 'settings'} label={t('settings')} icon={<Settings2 size={17} />} collapsed={sidebarCollapsed} onClick={() => setScreen('settings')} />
         </div>
-        {customViews.length > 0 && <div className="nav-group saved-nav-group"><div className="nav-label-row"><span className="nav-label">{t('customViews')}</span><IconButton label={t('filters')} onClick={() => setScreen('settings')}><Plus size={13} /></IconButton></div>{customViews.map((saved) => <div className="saved-view-row" key={saved.id}><NavItem active={screen === 'board' && filters.search === saved.filters.search && view === saved.view} label={saved.name} icon={<BookOpen size={16} />} collapsed={sidebarCollapsed} onClick={() => selectSavedView(saved)} /><IconButton label={t('deleteView')} className="saved-view-remove" onClick={() => void removeSavedView(saved)}><X size={12} /></IconButton></div>)}</div>}
       </div>
       <div className="sidebar-bottom"><div className="mode-footer"><span className={`connection-indicator ${bootstrap.connected ? 'is-connected' : 'is-offline'}`} /><span>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</span></div><div className="user-footer"><Avatar person={bootstrap.me} size="sm" /><span><strong>{bootstrap.me.name}</strong><small>{bootstrap.mode === 'demo' ? t('demo') : t('readOnlyBadge')}</small></span></div></div>
     </aside>
     <div className="app-main">
       <header className="topbar">
-        <div className="breadcrumbs"><span>{project.name}</span><span className="crumb-separator">/</span><strong>{screen === 'board' ? view === 'mine' ? t('mine') : view === 'watching' ? t('watching') : t('board') : screen === 'backlog' ? t('backlog') : screen === 'inbox' ? t('inbox') : screen === 'releases' ? t('releases') : t('settings')}</strong></div>
+        <div className="breadcrumbs"><span>{project.name}</span><span className="crumb-separator">/</span><strong>{screen === 'board' ? view === 'mine' || (view === 'all' && filters.assignedToMe) ? t('viewMine') : view === 'watching' ? t('viewWatching') : t('board') : screen === 'backlog' ? t('viewBacklog') : screen === 'inbox' ? t('inbox') : screen === 'releases' ? t('releases') : t('settings')}</strong></div>
         <div className="topbar-actions">
           <label className="global-search"><Search size={16} /><input ref={searchRef} type="search" aria-label={t('search')} placeholder={t('searchPlaceholder')} value={filters.search || ''} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value || undefined }))} /><kbd>⌘ K</kbd></label>
           <div className={`connection-pill ${bootstrap.connected ? 'connection-online' : 'connection-offline'}`} title={bootstrap.connected ? t('connected') : t('offline')}><span />{bootstrap.connected ? (bootstrap.mode === 'demo' ? t('demo') : t('connected')) : t('offline')}</div>
@@ -354,19 +473,19 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       </header>
       <div className="mode-banner"><span className={`mode-banner-mark ${bootstrap.mode === 'demo' ? 'is-demo' : 'is-readonly'}`}>{bootstrap.mode === 'demo' ? <Sparkles size={14} /> : <ShieldCheck size={14} />}</span><span><strong>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</strong><small>{bootstrap.mode === 'demo' ? t('demoNote') : t('readOnlyNote')}</small></span>{bootstrap.mode === 'redmine' && <span className="mode-banner-trailing">{t('readOnlyBadge')}</span>}</div>
       <div className="content-scroll" ref={contentScrollRef} onScroll={(event) => { scrollPositionsRef.current[`${selectedProjectId}:${screen}`] = event.currentTarget.scrollTop; }}>
-        {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(next) => { setSettings(next); void updateSettings(next, true).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onCreateIssue={() => setCreateIssueOpen(true)} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
+        {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={(next) => { setScreen(next === 'backlog' ? 'backlog' : 'board'); setView(next); }} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onCreateIssue={() => setCreateIssueOpen(true)} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
         {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => setArchived((value) => !value)} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
         {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} onSelectVersion={setSelectedVersionId} onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
-        {screen === 'settings' && <SettingsPage key={`${selectedProjectId}-${settings.savedViews.length}`} settings={settings} members={members} project={project} projects={bootstrap.projects} statuses={statuses} labels={board?.labels || []} readOnly={bootstrap.mode === 'redmine' || bootstrap.readOnly} onSave={saveSettings} onResetViews={() => void updateSettings({ ...settings, savedViews: settings.savedViews.filter((saved) => saved.projectId !== selectedProjectId) })} onToast={notify} />}
+        {screen === 'settings' && <SettingsPage key={selectedProjectId} settings={settings} members={members} peopleRecommendations={board?.peopleRecommendations} project={project} projects={bootstrap.projects} statuses={statuses} labels={board?.labels || []} readOnly={bootstrap.mode === 'redmine' || bootstrap.readOnly} onPatchSettings={patch => patchSettings(patch)} onResetViews={() => { void patchSettings({ savedViews: settingsRef.current.savedViews.filter((saved) => saved.projectId !== selectedProjectId) }).catch(error => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} />}
       </div>
     </div>
 
-    {issueOpen && issueId && issueDetail && <IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onToast={notify} />}
-    {issueOpen && issueId && !issueDetail && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading"><Spinner label={issueQuery.isError ? t('issueNotFound') : t('loading')} />{issueQuery.isError && <Button size="sm" onClick={() => issueQuery.refetch()}>{t('retry')}</Button>}</div></Modal>}
+    {issueOpen && issueId && issueDetail && freshIssueDetailId === issueId && <IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onToast={notify} />}
+    {issueOpen && issueId && (freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading"><Spinner label={issueQuery.isError ? t('issueNotFound') : t('loading')} />{issueQuery.isError && <Button size="sm" onClick={() => { setFreshIssueDetailId(undefined); void issueQuery.refetch().then(() => setFreshIssueDetailId(issueId)); }}>{t('retry')}</Button>}</div></Modal>}
     {createIssueOpen && <CreateIssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} project={project} board={board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} canWrite={canWrite} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} onClose={() => setCreateIssueOpen(false)} onCreate={createIssue} />}
     {projectPickerOpen && <ProjectPickerDialog projects={visibleProjects} current={project} search={projectSearch} onSearch={setProjectSearch} onPick={pickProject} onClose={() => setProjectPickerOpen(false)} />}
     {showPalette && <CommandPalette onClose={() => setShowPalette(false)} onSearch={() => { setShowPalette(false); searchRef.current?.focus(); }} onCreate={() => { setShowPalette(false); setCreateIssueOpen(true); }} onProject={() => { setShowPalette(false); setProjectPickerOpen(true); }} onInbox={() => { setShowPalette(false); setScreen('inbox'); setArchived(false); }} onRelease={() => { setShowPalette(false); setScreen('releases'); }} />}
-    {showQuickMove && activeIssue && <QuickMoveDialog issue={activeIssue} statuses={statuses} onMove={(statusId) => { void moveActiveIssue(statusId).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onClose={() => setShowQuickMove(false)} canWrite={canWrite} />}
+    {quickMoveIssue && <QuickMoveDialog issue={quickMoveIssue} statuses={statuses} onMove={(statusId) => { setQuickMoveIssueId(undefined); void moveIssue(quickMoveIssue, { statusId, fixedVersionId: quickMoveIssue.fixedVersionId }).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onClose={() => setQuickMoveIssueId(undefined)} canWrite={canWrite} />}
     {showActivity && <OperationsDrawer operations={operationsQuery.data || []} mode={bootstrap.mode} onClose={() => setShowActivity(false)} onRetry={(operation) => { void retryOperation(operation, runCommand, notify, t); }} />}
     {toastText && <Toast text={toastText} onClose={() => setToastText('')} />}
   </div>;

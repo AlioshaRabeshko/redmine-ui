@@ -96,6 +96,52 @@ describe('durable workspace commands using isolated SQLite', () => {
     await expect(commands.execute({ ...command, type: 'comment', issueId: 1001, input: { notes: 'conflict' } })).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it('uses project tracker metadata before issue fixtures and validates enabled tracker IDs', async () => {
+    await store.saveIssue({ ...(await store.getIssue(1004))!, id: 9001, trackerId: 2, trackerName: 'Issue fixture name' });
+
+    const feature = await commands.execute({ type: 'createIssue', projectId: 10, input: {
+      subject: 'Tracker name comes from the project', trackerId: 1, trackerName: 'Task',
+    } });
+    expect(feature.issue).toMatchObject({ trackerId: 1, trackerName: 'Feature' });
+    const bug = await commands.execute({ type: 'createIssue', projectId: 10, input: {
+      subject: 'Canonical bug tracker', trackerId: 2, trackerName: 'Feature',
+    } });
+    expect(bug.issue).toMatchObject({ trackerId: 2, trackerName: 'Bug' });
+
+    const changed = await commands.execute({ type: 'updateIssue', issueId: 1004, input: { trackerId: 2, trackerName: 'Feature' } });
+    expect(changed.issue).toMatchObject({ trackerId: 2, trackerName: 'Bug' });
+    const projectOnlyType = await commands.execute({ type: 'createIssue', projectId: 10, input: {
+      subject: 'Enabled type absent from issues', trackerId: 3,
+    } });
+    expect(projectOnlyType.issue).toMatchObject({ trackerId: 3, trackerName: 'Task' });
+    await expect(commands.execute({ type: 'updateIssue', issueId: 1004, input: { trackerId: 99 } }))
+      .rejects.toMatchObject({ statusCode: 400, code: 'TRACKER_REQUIRED' });
+    await expect(commands.execute({ type: 'createIssue', projectId: 10, input: { subject: 'Disabled project type', trackerId: 99 } }))
+      .rejects.toMatchObject({ statusCode: 400, code: 'TRACKER_REQUIRED' });
+
+    const unseenProjectType = await commands.execute({ type: 'createIssue', projectId: 20, input: {
+      subject: 'Tracker not represented by cached issues', trackerId: 2,
+    } });
+    expect(unseenProjectType.issue).toMatchObject({ trackerId: 2, trackerName: 'Bug' });
+    for (const trackerId of [0, -1, 1.5]) {
+      await expect(commands.execute({ type: 'createIssue', projectId: 10, input: { subject: `Invalid tracker ${trackerId}`, trackerId } }))
+        .rejects.toMatchObject({ statusCode: 400, code: 'TRACKER_REQUIRED' });
+    }
+
+    await store.saveProject({ id: 30, name: 'No tracker fixtures', identifier: 'no-tracker-fixtures' });
+    await store.saveProject({ id: 31, name: 'Default tracker fallback', identifier: 'default-tracker-fallback' });
+    const fallback = await commands.execute({ type: 'createIssue', projectId: 30, input: {
+      subject: 'Explicit local tracker', trackerId: 77, trackerName: 'Custom Type',
+    } });
+    expect(fallback.issue).toMatchObject({ trackerId: 77, trackerName: 'Custom Type' });
+    const unnamedFallback = await commands.execute({ type: 'createIssue', projectId: 30, input: {
+      subject: 'Unlisted type without metadata', trackerId: 78,
+    } });
+    expect(unnamedFallback.issue).toMatchObject({ trackerId: 78, trackerName: 'Type #78' });
+    const defaulted = await commands.execute({ type: 'createIssue', projectId: 31, input: { subject: 'Default local tracker' } });
+    expect(defaulted.issue).toMatchObject({ trackerId: 1, trackerName: 'Type #1' });
+  });
+
   it('serializes concurrent creations from separate tabs into distinct IDs', async () => {
     const results = await Promise.all(['First concurrent', 'Second concurrent'].map(subject => commands.execute({ type: 'createIssue', projectId: 10, input: { subject } })));
     expect(new Set(results.map(result => result.issue?.id)).size).toBe(2);

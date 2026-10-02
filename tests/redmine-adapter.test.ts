@@ -17,9 +17,12 @@ function fixtureFetch(failDetail = false) {
     if (url.pathname.endsWith('/users/current.json')) body = { user: { id: 1, firstname: 'Me', lastname: 'User', api_key: 'sensitive-api-response-key' } };
     else if (url.pathname.endsWith('/issue_statuses.json')) body = { issue_statuses: [{ id: 903, name: 'Review', is_closed: false }] };
     else if (url.pathname.endsWith('/enumerations/issue_priorities.json')) body = { issue_priorities: [{ id: 88, name: 'Urgent', position: 5 }] };
-    else if (url.pathname.endsWith('/projects.json')) body = { projects: [{ id: 10, name: 'Project', identifier: 'project' }], total_count: 1, limit: 100 };
+    else if (url.pathname.endsWith('/projects.json')) body = { projects: [{ id: 10, name: 'Project', identifier: 'project', trackers: [
+      { id: 1, name: '  Bug\u0000 ' }, { id: 2, name: ' Task ' }, { id: 0, name: 'Invalid' },
+      { id: 3, name: '   ' }, { id: 1, name: 'Duplicate' }, { id: '4', name: 'String ID' },
+    ] }], total_count: 1, limit: 100 };
     else if (url.pathname.endsWith('/versions.json')) body = { versions: [{ id: 99, project: { id: 10 }, name: 'NEXT', status: 'open' }] };
-    else if (url.pathname.endsWith('/memberships.json')) body = { memberships: [{ user: { id: 2, name: 'Developer' } }] };
+    else if (url.pathname.endsWith('/memberships.json')) body = { memberships: [{ user: { id: 2, name: 'Developer' }, roles: [{ id: 5, name: 'Developer' }] }] };
     else if (url.pathname.endsWith('/issues.json')) {
       const offset = Number(url.searchParams.get('offset'));
       body = { issues: [101, 102, 103].slice(offset, offset + 2).map(rawIssue), total_count: 3, limit: 2, offset };
@@ -45,11 +48,15 @@ describe('Redmine read-only adapter integration contract', () => {
     expect(data.issues.every(i => i.watcherIds.includes(1))).toBe(true);
     expect(data.journals).toHaveLength(3);
     expect(data.priorities[0].rank).toBe(5);
+    expect(data.projects[0].trackers).toEqual([{ id: 1, name: 'Bug' }, { id: 2, name: 'Task' }]);
+    expect(fixture.requested.find(url => url.pathname.endsWith('/projects.json'))?.searchParams.get('include')).toBe('trackers');
     const lists = fixture.requested.filter(url => url.pathname.endsWith('/issues.json'));
     expect(lists.map(url => Number(url.searchParams.get('offset')))).toEqual([0, 2]);
     expect(lists.every(url => url.searchParams.get('subproject_id') === '!*')).toBe(true);
     expect(data.branchFieldId).toBe(24);
     expect(data.labelsFieldId).toBe(23);
+    expect(data.projectMembershipIds?.['10']).toEqual([2]);
+    expect(data.projectMembershipRoles?.['10']?.['2']).toEqual([{ id: 5, name: 'Developer' }]);
     expect(JSON.stringify(data)).not.toContain('sensitive-api-response-key');
   });
   it('fails incomplete detail hydration instead of falsely reporting a completed sync', async () => {

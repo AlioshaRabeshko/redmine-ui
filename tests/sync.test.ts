@@ -28,6 +28,13 @@ describe('background notification ingestion', () => {
   afterEach(() => close());
   const journal = (id: number, actorId: number, notes = 'comment'): Journal => ({ id, user: demoPeople.find(person => person.id === actorId)!, notes, createdOn: new Date().toISOString(), changes: [] });
 
+  it('persists Redmine project tracker metadata through the existing project sync path', async () => {
+    snapshot.projects[0] = { ...snapshot.projects[0]!, trackers: [{ id: 88, name: 'Release type' }] };
+    await service.sync();
+    expect((await store.getProjects()).find(project => project.id === snapshot.projects[0]!.id)?.trackers)
+      .toEqual([{ id: 88, name: 'Release type' }]);
+  });
+
   it('starts with a quiet baseline then persists/deduplicates new foreign comments', async () => {
     snapshot.journals = [{ issueId: 1001, journal: journal(70, 2, 'historical') }];
     await service.sync();

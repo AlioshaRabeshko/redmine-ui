@@ -1,4 +1,4 @@
-import type { AppSettings, Filters, Issue, Priority, Status, StatusKey, Version, View } from './types.js';
+import type { AppSettings, Filters, Issue, Person, Priority, Status, StatusKey, Version, View } from './types.js';
 
 export const primaryStatusKeys: StatusKey[] = ['suspended', 'todo', 'progress', 'review', 'qa', 'deploy'];
 
@@ -10,8 +10,9 @@ export function branchForIssue(id: number, title: string): string {
   return `${id}-${slug}`;
 }
 
-export function filterIssues(issues: Issue[], statuses: Status[], view: View, meId: number, filters: Filters = {}): Issue[] {
+export function filterIssues(issues: Issue[], statuses: Status[], view: View, meId: number, filters: Filters = {}, people: Person[] = []): Issue[] {
   const statusById = new Map(statuses.map(s => [s.id, s]));
+  const personById = new Map(people.map(person => [person.id, person]));
   const query = filters.search?.trim().toLocaleLowerCase();
   return issues.filter(issue => {
     const status = statusById.get(issue.statusId);
@@ -20,15 +21,33 @@ export function filterIssues(issues: Issue[], statuses: Status[], view: View, me
     if (view === 'backlog' && status?.key !== 'backlog') return false;
     if (view !== 'backlog' && !explicitlyFiltered && status?.key === 'backlog') return false;
     if (view === 'mine' && issue.assignedToId !== meId) return false;
+    if (filters.assignedToMe && issue.assignedToId !== meId) return false;
     if (view === 'watching' && !issue.watcherIds.includes(meId)) return false;
-    if (query && !`${issue.id} ${issue.subject} ${issue.description} ${issue.branch}`.toLocaleLowerCase().includes(query)) return false;
+    if (query) {
+      const issuePeople = [issue.authorId, issue.assignedToId, issue.developerId, issue.qaId, ...issue.watcherIds]
+        .filter((id): id is number => id !== undefined)
+        .map(id => personById.get(id)?.name || '')
+        .join(' ');
+      const searchable = `${issue.id} ${issue.subject} ${issue.description} ${issue.branch} ${issue.labels.join(' ')} ${issuePeople}`;
+      if (!searchable.toLocaleLowerCase().includes(query)) return false;
+    }
     if (filters.assigneeId !== undefined && issue.assignedToId !== filters.assigneeId) return false;
-    if (filters.label && !issue.labels.includes(filters.label)) return false;
+    const selectedLabels = [...new Set([...(filters.labels || []), ...(filters.label ? [filters.label] : [])])];
+    if (selectedLabels.length && !selectedLabels.some(label => issue.labels.includes(label))) return false;
     if (filters.versionId !== undefined && issue.fixedVersionId !== filters.versionId) return false;
     if (filters.statusIds?.length && !filters.statusIds.includes(issue.statusId)) return false;
     if (filters.priorityIds?.length && !filters.priorityIds.includes(issue.priorityId)) return false;
     return true;
   });
+}
+
+/** Toggle the personal assignment constraint without disturbing the current board context. */
+export function toggleAssignedToMe(filters: Filters): Filters {
+  if (filters.assignedToMe) {
+    const { assignedToMe: _assignedToMe, ...rest } = filters;
+    return rest;
+  }
+  return { ...filters, assignedToMe: true };
 }
 
 export function sortIssues(issues: Issue[], priorities: Priority[], sort: AppSettings['sort']): Issue[] {

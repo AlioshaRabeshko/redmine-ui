@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config.js';
-import type { AppSettings, Command, CommandResult, Issue, Journal, Operation, OperationStep, StatusKey, Version } from '../../shared/types.js';
+import type { AppSettings, Command, CommandResult, Issue, Journal, Operation, OperationStep, PeopleField, StatusKey, Version } from '../../shared/types.js';
 import { branchForIssue, releaseReadiness } from '../../shared/domain.js';
 import { WorkspaceStore, type OperationRecord } from '../db/store.js';
-import { parseSettings } from '../settings.js';
+import { applySettingsPatch, parseSettings, parseSettingsPatch } from '../settings.js';
 import type { EventHub } from '../sync/service.js';
 
 export class ApiFault extends Error {
@@ -101,18 +101,99 @@ export class CommandService {
     return settings;
   }
 
-  async saveIssueRoles(issueId: number, input: { developerId?: number | null; qaId?: number | null }): Promise<Issue> {
+  async patchSettings(value: unknown): Promise<AppSettings> {
+    let patch: ReturnType<typeof parseSettingsPatch>;
+    try { patch = parseSettingsPatch(value); }
+    catch { throw new ApiFault(400, 'INVALID_SETTINGS', 'Налаштування мають некоректний формат.'); }
+    for (const [projectIdString, personId] of Object.entries(patch.projectQa ?? {})) {
+      if (personId !== null) await this.assertProjectMember(Number(projectIdString), personId);
+    }
+    for (const [projectIdString, people] of Object.entries(patch.personRoleOverrides ?? {})) {
+      if (!people) continue;
+      const projectId = Number(projectIdString);
+      for (const [personIdString, roles] of Object.entries(people)) {
+        if (roles !== null) await this.assertProjectMember(projectId, Number(personIdString));
+      }
+    }
+    const settings = applySettingsPatch(await this.store.getSettings(), patch);
+    await this.store.setSettings(settings);
+    this.events?.publish('settings', { updatedAt: now() });
+    return settings;
+  }
+
+  async recordPeopleSelection(selection: { projectId: number; personId: number; field: PeopleField; operationId: string }): Promise<{
+    recorded: boolean; duplicate?: boolean; reason?: string;
+  }> {
+    await this.assertProjectMember(selection.projectId, selection.personId);
+    const operationRecord = await this.store.getOperationRecord(selection.operationId);
+    let manual = false;
+    if (operationRecord) {
+      if (operationRecord.operation.status !== 'done') {
+        throw new ApiFault(409, 'PEOPLE_CHOICE_NOT_SUCCESSFUL', 'Вибір людини не збережено успішно.');
+      }
+      manual = isManualPeopleChoice(operationRecord, selection.field, selection.personId, selection.projectId);
+    } else if (selection.field === 'qa') {
+      const settings = await this.store.getSettings();
+      manual = settings.projectQa[String(selection.projectId)] === selection.personId;
+    }
+    if (!manual) return { recorded: false, reason: 'not-a-successful-manual-choice' };
+
+    const result = await this.store.recordPeopleSelection(selection);
+    if (result === 'conflict') throw new ApiFault(409, 'PEOPLE_CHOICE_CONFLICT', 'Цей operationId уже використано для іншого вибору людини.');
+    if (result === 'inserted') {
+      this.events?.publish('peopleRecommendations', { projectId: selection.projectId });
+      return { recorded: true };
+    }
+    return { recorded: false, duplicate: true };
+  }
+
+  private async assertProjectMember(projectId: number, personId: number): Promise<void> {
+    if (!(await this.store.getProjects()).some(project => project.id === projectId)) {
+      throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    }
+    if (!(await this.store.isProjectMember(projectId, personId))) {
+      throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не є учасником цього проєкту Redmine.');
+    }
+  }
+
+  async saveIssueRoles(issueId: number, input: { developerId?: number | null; qaId?: number | null }, operationId?: string): Promise<Issue> {
     const issue = await this.store.getIssue(issueId);
     if (!issue) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
+    if (operationId) {
+      const existing = await this.store.getOperationRecord(operationId);
+      if (existing && existing.operation.type !== 'saveIssueRoles') throw new ApiFault(409, 'OPERATION_CONFLICT', 'Цей operationId уже використано для іншої команди.');
+      if (existing?.operation.status === 'done') {
+        const signature = createHash('sha256').update(JSON.stringify(sortObject(input))).digest('hex');
+        if (existing.operation.issueId !== issueId || existing.context?.rolesSignature !== signature) {
+          throw new ApiFault(409, 'OPERATION_CONFLICT', 'Цей operationId уже використано з іншими даними.');
+        }
+        return existing.issue ?? (await this.store.getIssue(issueId)) ?? issue;
+      }
+      if (existing) throw new ApiFault(409, 'OPERATION_CONFLICT', 'Цей operationId уже використано для невдалого збереження.');
+    }
     if (input.developerId !== undefined && input.developerId !== null && !Number.isSafeInteger(input.developerId)) {
       throw new ApiFault(400, 'INVALID_ROLE', 'ID розробника має бути цілим числом.');
     }
     if (input.qaId !== undefined && input.qaId !== null && !Number.isSafeInteger(input.qaId)) {
       throw new ApiFault(400, 'INVALID_ROLE', 'ID QA має бути цілим числом.');
     }
+    for (const personId of [input.developerId, input.qaId]) {
+      if (personId !== undefined && personId !== null) await this.assertProjectMember(issue.projectId, personId);
+    }
     await this.store.setIssueRoles(issueId, input.developerId, input.qaId);
     const updated = await this.store.getIssue(issueId);
     if (!updated) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
+    if (operationId) {
+      const manualRoleChoices: Record<string, number> = {};
+      if (input.developerId) manualRoleChoices.developerId = input.developerId;
+      if (input.qaId) manualRoleChoices.qaId = input.qaId;
+      await this.store.saveOperationRecord({
+        operation: { id: operationId, type: 'saveIssueRoles', issueId, status: 'done',
+          steps: [{ name: 'Зберегти локальні ролі задачі', status: 'done' }], createdOn: now() },
+        issue: updated, context: { manualRoleChoices,
+          rolesSignature: createHash('sha256').update(JSON.stringify(sortObject(input))).digest('hex') },
+      });
+    }
     this.events?.publish('issue', { issueId });
     return updated;
   }
@@ -147,7 +228,8 @@ export class CommandService {
   private async createIssue(record: OperationRecord, command: Command): Promise<void> {
     const input = command.input;
     const projectId = command.projectId ?? numberField(input, 'projectId');
-    if (!projectId || !(await this.store.getProjects()).some(project => project.id === projectId)) throw new ApiFault(400, 'PROJECT_REQUIRED', 'Виберіть доступний проєкт.');
+    const project = projectId ? (await this.store.getProjects()).find(item => item.id === projectId) : undefined;
+    if (!projectId || !project) throw new ApiFault(400, 'PROJECT_REQUIRED', 'Виберіть доступний проєкт.');
     const subject = stringField(input, 'subject')?.trim();
     if (!subject) throw new ApiFault(400, 'SUBJECT_REQUIRED', 'Вкажіть назву задачі.');
     const issues = await this.store.getIssues();
@@ -163,11 +245,29 @@ export class CommandService {
     const requestedPriority = numberField(input, 'priorityId');
     const priorityId = requestedPriority ?? [...priorities].sort((a, b) => b.rank - a.rank)[0]?.id ?? 1;
     if (priorities.length && !priorities.some(priority => priority.id === priorityId)) throw new ApiFault(400, 'PRIORITY_REQUIRED', 'Виберіть коректний пріоритет.');
-    const trackerId = numberField(input, 'trackerId') ?? 1;
+    const issueTrackers = knownTrackers(await this.store.getIssues(projectId));
+    const projectTrackers = new Map((project.trackers ?? []).map(tracker => [tracker.id, tracker.name]));
+    const hasProjectTrackerMetadata = project.trackers !== undefined;
+    const suppliedTrackerId = input.trackerId === undefined ? undefined : numberField(input, 'trackerId');
+    if (input.trackerId !== undefined && (!suppliedTrackerId || suppliedTrackerId <= 0)) {
+      throw new ApiFault(400, 'TRACKER_REQUIRED', 'Виберіть коректний тип задачі.');
+    }
+    if (suppliedTrackerId !== undefined && hasProjectTrackerMetadata && !projectTrackers.has(suppliedTrackerId)) {
+      throw new ApiFault(400, 'TRACKER_REQUIRED', 'Виберіть тип задачі, доступний у цьому проєкті.');
+    }
+    const availableTrackerIds = hasProjectTrackerMetadata ? projectTrackers.keys() : issueTrackers.keys();
+    const knownTrackerIds = [...availableTrackerIds];
+    const defaultTrackerId = (hasProjectTrackerMetadata ? projectTrackers : issueTrackers).has(1) ? 1 : knownTrackerIds[0];
+    if (suppliedTrackerId === undefined && hasProjectTrackerMetadata && defaultTrackerId === undefined) {
+      throw new ApiFault(400, 'TRACKER_REQUIRED', 'У цьому проєкті немає доступних типів задач.');
+    }
+    const trackerId = suppliedTrackerId ?? defaultTrackerId ?? 1;
+    const trackerName = projectTrackers.get(trackerId) ?? issueTrackers.get(trackerId) ?? validTrackerName(stringField(input, 'trackerName'))
+      ?? (this.config.mode === 'demo' ? `Type #${trackerId}` : '');
     const me = await this.store.getValue<{ id: number }>('me') ?? { id: 1 };
     const prepared: Issue = {
       id, projectId, subject, description: stringField(input, 'description') ?? '', statusId,
-      priorityId, trackerId, trackerName: stringField(input, 'trackerName') ?? 'Task', authorId: me.id,
+      priorityId, trackerId, trackerName, authorId: me.id,
       ...(numberField(input, 'assignedToId') ? { assignedToId: numberField(input, 'assignedToId') } : {}),
       ...(numberField(input, 'developerId') ? { developerId: numberField(input, 'developerId') } : {}),
       ...(numberField(input, 'qaId') ? { qaId: numberField(input, 'qaId') } : {}),
@@ -196,14 +296,33 @@ export class CommandService {
   private async updateIssue(record: OperationRecord, command: Command): Promise<void> {
     const issue = await this.requireIssue(command.issueId);
     const input = command.input;
+    assertExpectedUpdatedOn(issue, input);
     const requestedStatusId = typeof input.statusId === 'number' ? input.statusId : undefined;
     const updated: Issue = { ...issue };
     if (typeof input.subject === 'string') updated.subject = input.subject.trim();
     if (!updated.subject) throw new ApiFault(400, 'SUBJECT_REQUIRED', 'Назва задачі не може бути порожньою.');
     if (typeof input.description === 'string') updated.description = input.description;
     if (typeof input.priorityId === 'number') updated.priorityId = input.priorityId;
-    if (typeof input.trackerId === 'number') updated.trackerId = input.trackerId;
-    if (typeof input.trackerName === 'string') updated.trackerName = input.trackerName;
+    const project = (await this.store.getProjects()).find(item => item.id === issue.projectId);
+    const issueTrackers = knownTrackers(await this.store.getIssues(issue.projectId));
+    const projectTrackers = new Map((project?.trackers ?? []).map(tracker => [tracker.id, tracker.name]));
+    const hasProjectTrackerMetadata = project?.trackers !== undefined;
+    const previousTrackerId = issue.trackerId;
+    if (input.trackerId !== undefined) {
+      const trackerId = numberField(input, 'trackerId');
+      if (!trackerId || trackerId <= 0) throw new ApiFault(400, 'TRACKER_REQUIRED', 'Виберіть коректний тип задачі.');
+      if (hasProjectTrackerMetadata && !projectTrackers.has(trackerId)) {
+        throw new ApiFault(400, 'TRACKER_REQUIRED', 'Виберіть тип задачі, доступний у цьому проєкті.');
+      }
+      updated.trackerId = trackerId;
+    }
+    const canonicalTrackerName = projectTrackers.get(updated.trackerId) ?? issueTrackers.get(updated.trackerId);
+    if (canonicalTrackerName) updated.trackerName = canonicalTrackerName;
+    else if (typeof input.trackerName === 'string' && validTrackerName(input.trackerName)) {
+      updated.trackerName = validTrackerName(input.trackerName)!;
+    } else if (updated.trackerId !== previousTrackerId) {
+      updated.trackerName = this.config.mode === 'demo' ? `Type #${updated.trackerId}` : '';
+    }
     if (typeof input.assignedToId === 'number' || input.assignedToId === null) updated.assignedToId = input.assignedToId === null ? undefined : input.assignedToId;
     if (typeof input.developerId === 'number' || input.developerId === null) updated.developerId = input.developerId === null ? undefined : input.developerId;
     if (typeof input.qaId === 'number' || input.qaId === null) updated.qaId = input.qaId === null ? undefined : input.qaId;
@@ -225,7 +344,8 @@ export class CommandService {
       input.qaId === null ? null : updated.qaId);
     record.issue = updated;
     if (requestedStatusId !== undefined && requestedStatusId !== issue.statusId) {
-      await this.moveIssue(record, { ...command, type: 'moveIssue', input: { ...input, statusId: requestedStatusId } });
+      const { expectedUpdatedOn: _expectedUpdatedOn, ...moveInput } = input;
+      await this.moveIssue(record, { ...command, type: 'moveIssue', input: { ...moveInput, statusId: requestedStatusId } });
       return;
     }
     if (this.config.mode === 'demo' && issue.statusId === updated.statusId
@@ -240,6 +360,7 @@ export class CommandService {
 
   private async moveIssue(record: OperationRecord, command: Command): Promise<void> {
     const issue = await this.requireIssue(command.issueId);
+    assertExpectedUpdatedOn(issue, command.input);
     const statusId = await this.targetStatusId(command.input) ?? issue.statusId;
     const status = (await this.getStatuses()).find(item => item.id === statusId);
     if (!status) throw new ApiFault(400, 'STATUS_REQUIRED', 'Виберіть коректний статус.');
@@ -268,6 +389,7 @@ export class CommandService {
 
   private async handoffToQA(record: OperationRecord, command: Command): Promise<void> {
     let issue = await this.requireIssue(command.issueId);
+    assertExpectedUpdatedOn(issue, command.input);
     const statuses = await this.getStatuses();
     const review = statusByKey(statuses, 'review');
     const qaStatus = statusByKey(statuses, 'qa');
@@ -311,6 +433,7 @@ export class CommandService {
 
   private async returnToDeveloper(record: OperationRecord, command: Command): Promise<void> {
     const issue = await this.requireIssue(command.issueId);
+    assertExpectedUpdatedOn(issue, command.input);
     const currentStatus = statusById(await this.getStatuses(), issue.statusId)?.key;
     const developerId = numberField(command.input, 'developerId') ?? issue.developerId;
     if (!developerId) return this.block(record, 'Розробника не вдалося визначити. Виберіть його вручну.', undefined, 'DEVELOPER_REQUIRED');
@@ -606,6 +729,49 @@ function statusByKey(statuses: import('../../shared/types.js').Status[], key: St
 function statusById(statuses: import('../../shared/types.js').Status[], id: number) { return statuses.find(status => status.id === id); }
 function stepDone(record: OperationRecord, key: string): boolean {
   return ((record.context?.completedSteps as string[] | undefined) ?? []).includes(key);
+}
+function assertExpectedUpdatedOn(issue: Issue, input: Record<string, unknown>): void {
+  if (input.expectedUpdatedOn === undefined) return;
+  if (typeof input.expectedUpdatedOn !== 'string') throw new ApiFault(400, 'INVALID_UPDATED_ON', 'expectedUpdatedOn має бути рядком.');
+  if (input.expectedUpdatedOn !== issue.updatedOn) {
+    throw new ApiFault(409, 'STALE', 'Картка змінилася. Оновіть її перед збереженням.', {
+      expectedUpdatedOn: input.expectedUpdatedOn, actualUpdatedOn: issue.updatedOn,
+    });
+  }
+}
+function knownTrackers(issues: Issue[]): Map<number, string> {
+  const namesById = new Map<number, Map<string, number>>();
+  for (const issue of issues) {
+    if (!Number.isSafeInteger(issue.trackerId) || issue.trackerId <= 0) continue;
+    const name = validTrackerName(issue.trackerName);
+    if (!name) continue;
+    const names = namesById.get(issue.trackerId) ?? new Map<string, number>();
+    names.set(name, (names.get(name) ?? 0) + 1);
+    namesById.set(issue.trackerId, names);
+  }
+  return new Map([...namesById].map(([id, names]) => [id, [...names]
+    .sort(([nameA, countA], [nameB, countB]) => countB - countA || nameA.localeCompare(nameB))[0]![0]]));
+}
+function validTrackerName(value?: string): string | undefined {
+  const name = value?.trim();
+  return name && name.length <= 100 ? name : undefined;
+}
+function isManualPeopleChoice(record: OperationRecord, field: PeopleField, personId: number, projectId: number): boolean {
+  if (record.issue?.projectId !== projectId) return false;
+  const targetId = field === 'assignee' ? record.issue.assignedToId
+    : field === 'developer' ? record.issue.developerId : record.issue.qaId;
+  if (targetId !== personId) return false;
+  const original = record.context?.originalCommand as Command | undefined;
+  const commandType = original?.type ?? record.operation.type;
+  if (commandType === 'runAutomation' || record.operation.type === 'runAutomation') return false;
+  if (record.operation.type === 'saveIssueRoles') {
+    const choices = record.context?.manualRoleChoices as Record<string, number> | undefined;
+    const roleKey = field === 'developer' ? 'developerId' : field === 'qa' ? 'qaId' : undefined;
+    return roleKey !== undefined && choices?.[roleKey] === personId;
+  }
+  if (field === 'assignee' && ['handoffToQA', 'returnToDeveloper'].includes(commandType)) return false;
+  const inputKey = field === 'assignee' ? 'assignedToId' : field === 'developer' ? 'developerId' : 'qaId';
+  return original?.input?.[inputKey] === personId;
 }
 function sameNumbers(a: number[], b: number[]): boolean { return a.length === b.length && a.every((value, index) => value === b[index]); }
 function safeMessage(error: unknown): string { return error instanceof Error ? error.message : 'Команда не вдалася.'; }

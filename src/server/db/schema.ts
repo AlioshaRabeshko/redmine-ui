@@ -45,6 +45,15 @@ export const issueRoles = sqliteTable('issue_roles', {
   qaId: integer('qa_id'),
 }, (table) => [primaryKey({ columns: [table.scope, table.issueId] })]);
 
+export const peopleSelections = sqliteTable('people_selections', {
+  scope: text('scope').notNull(),
+  operationId: text('operation_id').notNull(),
+  projectId: integer('project_id').notNull(),
+  personId: integer('person_id').notNull(),
+  field: text('field').notNull(),
+  selectedOn: text('selected_on').notNull(),
+}, (table) => [primaryKey({ columns: [table.scope, table.operationId, table.field] })]);
+
 export const drafts = sqliteTable('drafts', {
   scope: text('scope').notNull(),
   issueId: integer('issue_id').notNull(),

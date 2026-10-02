@@ -152,3 +152,33 @@
 
 Пройдено вручну: project/navigation та desktop collapse, views, основні filters/search/sort/saved filter і settings reload persistence; roadmap та DnD; Review→QA та QA/Review→ToDo, включно з default QA і temporary override; create/edit/comment/branch і draft recovery; release create/fill/readiness/completion/closed archive/Done visibility; inbox/archive; shortcuts, config та input suppression; усі locales/themes/palettes і reload persistence; automation interval/settings та demo sync. Помилку release modal і clear-date payload підтверджено окремими root mock/request перевірками.  
 Неперевірені межі перелічено вище; вони не маскуються як пройдені сценарії.
+
+
+## Повторна перевірка після реалізації — 2026-10-02
+
+Переробку виконали три development subagent gpt-6-luna max; primary agent інтегрував, переглянув зміни й повторно перевірив Chrome demo. Цей розділ фіксує стан оновленої версії.
+
+| Знахідка | Результат | Підтвердження |
+| --- | --- | --- |
+| B1: shortcut діяв на останню відкриту картку | Виправлено | URL, branch і S беруть поточну картку з фокусом; активний modal має власний контекст. Chrome regression. |
+| B2: збереження старої чернетки повертало статус | Виправлено | При відкритті отримуються свіжі деталі; збереження тексту не відправляє status/assignee/version. Перевірено повторне відкриття після зміни статусу й окремо DnD. |
+| B3: помилка створення релізу позаду modal / unhandled rejection | Виправлено | Контрольований 503 видно у modal; назва лишається; pageerror порожній. |
+| B4: modal забирав autofocus | Виправлено | Створення задачі й релізу одразу фокусує назву. |
+| B5: очищення дати релізу не зберігалося | Виправлено | Передається null; GET і повторне відкриття підтверджують відсутню дату. |
+| B6: пошук не шукав людей/мітки | Виправлено | Domain tests перевіряють мітки та імена учасників задачі. |
+| B7: placeholder замість статусу у виборі задач релізу | Виправлено | Picker показує справжній status; Chrome перевірка To Do. |
+
+Зміни за зауваженнями користувача:
+
+- Filters — portal overlay; відкриття не змінює координату дошки. Multi-select дозволяє обрати To Do та Review без modifier. Nested Escape закриває спочатку внутрішній picker.
+- «Усі / Мої / Спостерігаю / Беклог» і власні збережені фільтри показані кнопками. Q повторно прибирає лише assigned-to-me; вибрані мітки й статуси лишаються.
+- People picker має пошук, avatar/initials, рамку ролі та персональні рекомендації. Чисте збереження ролей і відновлення Redmine ролей не змінює зовнішню membership. QA clearing / override restoring перевірені через UI та API.
+- Останнє уточнення: priority/type — кольорові плитки, assignee — рекомендовані аватари й Plus із повним пошуком у створенні та редагуванні. Плитки працюють зі стрілками клавіатури. Підтверджено створення з вибраним типом/пріоритетом/виконавцем та окреме автозбереження типу. Перелік типів включає project metadata, зокрема типи без жодної задачі.
+- Властивості задачі зберігаються окремо без загального Save. Контрольований 503 повертає підтверджений вибір і лишає текстову чернетку. Опис і коментар відновлюються після close/reload; selector autosave їх не надсилає.
+- Cmd/Ctrl+S явно зберігає форму; S лишається зміною статусу. Шорткати налаштувань мають окрему чернетку й явний Save; зміна теми її не зберігає.
+- Додатково під час integration review відтворено та виправлено втрату тексту, дописаного під час pending Save, та втрату shortcut draft після невдалого Save.
+- Виправлено гонку фокусу при дуже швидкому Enter після відкриття picker: пошук фокусується синхронно. Regression перевіряє два вибори з клавіатури та послідовне закриття вкладених меню через Escape.
+- Палітри світлої й темної тем перероблені; звичайний текст 13 px, назви карток 13 px, більшість metadata 11–12 px. Вибірковий Chrome contrast test для назви картки, branch, мітки, активного navigation, primary action, статусних позначок і кольорових плиток перевіряє ≥4.5:1 в усіх 8 theme/palette комбінаціях. Desktop screenshots оглянуті вручну.
+- Favicon перевірено з unread badge та після читання всіх подій. Background Build: Running → Failed у Review повертає To Do / developer зі збереженою roadmap membership, коли вкладка закрита.
+
+Підсумок: **76 unit/server tests і 24 Chrome E2E проходять**, typecheck / production build / Docker build проходять. Зовнішніх мутацій не було; токен не читався. Приватний Redmine workflow, upload вкладень і повний accessibility-аудит потребують окремої перевірки. Mobile UX відкладений користувачем.

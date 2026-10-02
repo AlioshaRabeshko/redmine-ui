@@ -14,6 +14,10 @@ describe('HTTP contract and development safety', () => {
     expect(bootResponse.statusCode).toBe(200);
     expect(boot.capabilities.canWrite).toBe(true);
     expect(bootResponse.body).not.toContain('secret-canary-test');
+    const board = await app.inject(`/api/projects/${boot.projects[0].id}/board`);
+    expect(board.json().trackers).toEqual([
+      { id: 1, name: 'Feature' }, { id: 2, name: 'Bug' }, { id: 3, name: 'Task' },
+    ]);
     const created = await app.inject({ method: 'POST', url: '/api/commands', payload: { type: 'createIssue', projectId: boot.projects[0].id, input: { subject: 'HTTP creation' } } });
     expect(created.statusCode).toBe(200);
     const result = created.json();

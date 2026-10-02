@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Bootstrap, BoardData, Command, IssueDetail, Person, ReleaseDetail } from '../shared/types.js';
+import type { Bootstrap, BoardData, Command, IssueDetail, PeopleField, Person, PersonRole, RedmineRole, ReleaseDetail } from '../shared/types.js';
 import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
@@ -130,12 +130,28 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const versions = await store.getVersions(projectId);
     const people = await store.getValue<Person[]>('people') ?? [];
     const memberIds = (await store.getValue<Record<string, number[]>>('projectMembers'))?.[String(projectId)] ?? [];
+    const membershipIds = new Set((await store.getValue<Record<string, number[]>>('projectMembershipIds'))?.[String(projectId)] ?? []);
+    const membershipRoles = (await store.getValue<Record<string, Record<string, RedmineRole[]>>>('projectMembershipRoles'))?.[String(projectId)] ?? {};
+    const settings = await store.getSettings();
     const members = [...new Map([...memberIds.map(id => people.find(person => person.id === id)).filter((person): person is Person => Boolean(person)),
       ...issues.flatMap(issue => [people.find(person => person.id === issue.authorId), people.find(person => person.id === issue.assignedToId),
-        ...issue.watcherIds.map(id => people.find(person => person.id === id))].filter((person): person is Person => Boolean(person)))].map(person => [person.id, person])).values()];
+        ...issue.watcherIds.map(id => people.find(person => person.id === id))].filter((person): person is Person => Boolean(person)))].map(person => [person.id, person])).values()]
+      .map(person => {
+        if (!membershipIds.has(person.id)) return person;
+        const redmineRoles = membershipRoles[String(person.id)] ?? [];
+        const override = settings.personRoleOverrides[String(projectId)]?.[String(person.id)];
+        const roles = override ?? personRolesFromRedmine(redmineRoles);
+        return { ...person, ...(redmineRoles.length ? { redmineRoles } : {}), ...(roles.length ? { roles } : override ? { roles: override } : {}) };
+      });
+    const peopleRecommendations: Partial<Record<PeopleField, number[]>> = {
+      assignee: await store.getPeopleRecommendations(projectId, 'assignee'),
+      developer: await store.getPeopleRecommendations(projectId, 'developer'),
+      qa: await store.getPeopleRecommendations(projectId, 'qa'),
+    };
     const syncedAt = await store.getCursor('baseline');
     return { issues, versions, members, labels: [...new Set(issues.flatMap(issue => issue.labels))].sort((a, b) => a.localeCompare(b)),
-      total: issues.length, ...(syncedAt ? { syncedAt } : {}) };
+      ...(project.trackers !== undefined ? { trackers: project.trackers } : {}),
+      total: issues.length, peopleRecommendations, ...(syncedAt ? { syncedAt } : {}) };
   });
 
   app.get<{ Params: { id: string } }>('/api/issues/:id', async (request): Promise<IssueDetail> => {
@@ -165,13 +181,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
 
   app.get('/api/settings', async () => store.getSettings());
   app.put('/api/settings', async (request) => commands.saveSettings(request.body));
+  app.patch('/api/settings', async (request) => commands.patchSettings(request.body));
+
+  app.post('/api/people/selection', async (request) => {
+    const body = z.object({ projectId: z.number().int().positive(), personId: z.number().int().positive(),
+      field: z.enum(['assignee', 'developer', 'qa']), operationId: z.string().min(1).max(200) }).parse(request.body);
+    await sync.bootstrapRead();
+    return commands.recordPeopleSelection(body);
+  });
 
   app.post<{ Params: { id: string } }>('/api/issues/:id/roles', async (request, reply) => {
     const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
-    const schema = z.object({ developerId: z.number().int().positive().nullable().optional(), qaId: z.number().int().positive().nullable().optional() });
+    const schema = z.object({ developerId: z.number().int().positive().nullable().optional(), qaId: z.number().int().positive().nullable().optional(),
+      operationId: z.string().min(1).max(200).optional() });
     const parsed = schema.safeParse(request.body);
-    if (!parsed.success || Object.keys(parsed.data ?? {}).length === 0) return reply.code(400).send({ code: 'INVALID_ROLE', message: 'Вкажіть розробника або QA.' });
-    return commands.saveIssueRoles(issueId, parsed.data);
+    if (!parsed.success || (parsed.data.developerId === undefined && parsed.data.qaId === undefined)) {
+      return reply.code(400).send({ code: 'INVALID_ROLE', message: 'Вкажіть розробника або QA.' });
+    }
+    const { operationId, ...roles } = parsed.data;
+    return commands.saveIssueRoles(issueId, roles, operationId);
   });
 
   app.get<{ Params: { id: string } }>('/api/issues/:id/draft', async (request) => {
@@ -198,7 +226,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     events.publish('notifications', { unreadCount });
     return { updated, unreadCount };
   });
-  app.get('/api/operations', async () => store.getOperations());
+  app.get('/api/operations', async () => (await store.getOperations()).filter(operation => operation.type !== 'saveIssueRoles'));
   app.post('/api/sync', async (_request, reply) => {
     try { return await sync.sync(); }
     catch {
@@ -239,6 +267,18 @@ function positiveId(value: string, code: string): number {
   const id = Number(value);
   if (!Number.isSafeInteger(id) || id <= 0) throw new ApiFault(404, code, 'Ресурс не знайдено.');
   return id;
+}
+
+function personRolesFromRedmine(redmineRoles: RedmineRole[]): PersonRole[] {
+  const roles = new Set<PersonRole>();
+  for (const role of redmineRoles) {
+    const name = role.name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+    if (/(^|\W)qa(\W|$)|quality\s*assurance|\btest(?:er|ing)\b/.test(name)) roles.add('qa');
+    if (/(^|\W)support(\W|$)|help\s*desk/.test(name)) roles.add('support');
+    if (/(^|\W)developer(?:s)?(\W|$)|\bdevelopment\b/.test(name)) roles.add('developer');
+  }
+  const orderedRoles: PersonRole[] = ['qa', 'support', 'developer'];
+  return orderedRoles.filter(role => roles.has(role));
 }
 
 function assertLocalOrigin(request: FastifyRequest): void {

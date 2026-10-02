@@ -85,6 +85,35 @@ Object.assign(es, {
   errorQaRequired: 'Elige una persona de QA en los ajustes antes de enviar esta tarea.', errorDeveloperRequired: 'Elige un desarrollador para esta tarea antes de devolverla.', errorReleaseNotReady: 'Mueve todas las tareas pendientes a Deploy antes de completar esta versión.', errorTransitionNotAllowed: 'Esta tarea no puede pasar a ese estado desde su estado actual.', errorOperationBlocked: 'La acción está bloqueada. Revisa la tarea y los ajustes del proyecto e inténtalo de nuevo.',
 });
 
+Object.assign(en, {
+  choose: 'Choose…', searchOptions: 'Search options…', noOptions: 'No matching options', frequentPerson: 'Frequently chosen', role_qa: 'QA', role_developer: 'Developer', role_support: 'Support', support: 'Support',
+  roleOverrides: 'People and roles', roleOverridesHint: 'Project roles come from Redmine. You can override their display locally.', useRedmineRoles: 'Use Redmine roles', restoreRedmineRoles: 'Restore Redmine roles',
+  saveFormShortcut: 'Save the active form', saveShortcuts: 'Save shortcuts', shortcutsSaved: 'Shortcuts saved', autosaved: 'Changes save automatically', savingSettings: 'Saving preferences…', unsavedChanges: 'Unsaved changes',
+  savedViews: 'Saved filters', saveView: 'Save filter', viewName: 'Filter name', deleteView: 'Delete saved filter', clearAllFilters: 'Clear filters', viewAll: 'All', viewMine: 'Mine', viewWatching: 'Watching', viewBacklog: 'Backlog',
+  noRelease: 'No release', sortField: 'Field', sortDirection: 'Direction', deleteShortcut: 'Delete shortcut', enableShortcut: 'Enable shortcut', boardViews: 'Board filters', activeFilters: 'Filters', closed: 'Closed', textChanges: 'Text changes', editPeopleRoles: 'Display roles', inheritedRoles: 'From Redmine', noRole: 'No role',
+});
+Object.assign(uk, {
+  choose: 'Вибрати…', searchOptions: 'Пошук варіантів…', noOptions: 'Варіантів не знайдено', frequentPerson: 'Часто обираєте', role_qa: 'QA', role_developer: 'Розробник', role_support: 'Підтримка', support: 'Підтримка',
+  roleOverrides: 'Люди та ролі', roleOverridesHint: 'Ролі проєкту надходять із Redmine. Їх відображення можна перевизначити локально.', useRedmineRoles: 'Ролі з Redmine', restoreRedmineRoles: 'Відновити ролі Redmine',
+  saveFormShortcut: 'Зберегти поточну форму', saveShortcuts: 'Зберегти шорткати', shortcutsSaved: 'Шорткати збережено', autosaved: 'Зміни зберігаються автоматично', savingSettings: 'Збереження налаштувань…', unsavedChanges: 'Незбережені зміни',
+  savedViews: 'Збережені фільтри', saveView: 'Зберегти фільтр', viewName: 'Назва фільтра', deleteView: 'Видалити збережений фільтр', clearAllFilters: 'Очистити фільтри', viewAll: 'Усі', viewMine: 'Мої', viewWatching: 'Спостерігаю', viewBacklog: 'Беклог',
+  noRelease: 'Без релізу', sortField: 'Поле', sortDirection: 'Напрямок', deleteShortcut: 'Видалити шорткат', enableShortcut: 'Увімкнути шорткат', boardViews: 'Фільтри дошки', activeFilters: 'Фільтри', closed: 'Завершений', textChanges: 'Текстові зміни', editPeopleRoles: 'Ролі для відображення', inheritedRoles: 'Із Redmine', noRole: 'Без ролі',
+});
+Object.assign(pl, {
+  choose: 'Wybierz…', searchOptions: 'Szukaj opcji…', noOptions: 'Brak pasujących opcji', frequentPerson: 'Często wybierasz', role_qa: 'QA', role_developer: 'Programista', role_support: 'Wsparcie', support: 'Wsparcie',
+  roleOverrides: 'Osoby i role', roleOverridesHint: 'Role projektu pochodzą z Redmine. Możesz lokalnie zmienić ich wyświetlanie.', useRedmineRoles: 'Role z Redmine', restoreRedmineRoles: 'Przywróć role Redmine',
+  saveFormShortcut: 'Zapisz aktywny formularz', saveShortcuts: 'Zapisz skróty', shortcutsSaved: 'Skróty zapisane', autosaved: 'Zmiany zapisują się automatycznie', savingSettings: 'Zapisywanie ustawień…', unsavedChanges: 'Niezapisane zmiany',
+  savedViews: 'Zapisane filtry', saveView: 'Zapisz filtr', viewName: 'Nazwa filtra', deleteView: 'Usuń zapisany filtr', clearAllFilters: 'Wyczyść filtry', viewAll: 'Wszystkie', viewMine: 'Moje', viewWatching: 'Obserwowane', viewBacklog: 'Backlog',
+  noRelease: 'Bez wydania', sortField: 'Pole', sortDirection: 'Kierunek', deleteShortcut: 'Usuń skrót', enableShortcut: 'Włącz skrót', boardViews: 'Filtry tablicy', activeFilters: 'Filtry', closed: 'Zamknięte', textChanges: 'Zmiany tekstu', editPeopleRoles: 'Wyświetlane role', inheritedRoles: 'Z Redmine', noRole: 'Bez roli',
+});
+Object.assign(es, {
+  choose: 'Elegir…', searchOptions: 'Buscar opciones…', noOptions: 'No hay opciones coincidentes', frequentPerson: 'Elegido con frecuencia', role_qa: 'QA', role_developer: 'Desarrollador', role_support: 'Soporte', support: 'Soporte',
+  roleOverrides: 'Personas y roles', roleOverridesHint: 'Los roles del proyecto vienen de Redmine. Puedes cambiar su visualización localmente.', useRedmineRoles: 'Roles de Redmine', restoreRedmineRoles: 'Restaurar roles de Redmine',
+  saveFormShortcut: 'Guardar el formulario activo', saveShortcuts: 'Guardar atajos', shortcutsSaved: 'Atajos guardados', autosaved: 'Los cambios se guardan automáticamente', savingSettings: 'Guardando ajustes…', unsavedChanges: 'Cambios sin guardar',
+  savedViews: 'Filtros guardados', saveView: 'Guardar filtro', viewName: 'Nombre del filtro', deleteView: 'Eliminar filtro guardado', clearAllFilters: 'Borrar filtros', viewAll: 'Todas', viewMine: 'Mías', viewWatching: 'Observadas', viewBacklog: 'Backlog',
+  noRelease: 'Sin versión', sortField: 'Campo', sortDirection: 'Dirección', deleteShortcut: 'Eliminar atajo', enableShortcut: 'Activar atajo', boardViews: 'Filtros del tablero', activeFilters: 'Filtros', closed: 'Cerrada', textChanges: 'Cambios de texto', editPeopleRoles: 'Roles mostrados', inheritedRoles: 'De Redmine', noRole: 'Sin rol',
+});
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },
