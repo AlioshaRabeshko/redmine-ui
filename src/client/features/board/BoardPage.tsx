@@ -140,17 +140,8 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
   };
   const clearFilters = () => { onFiltersChange(defaultFilters); };
   const submitSavedView = (event: React.FormEvent) => { event.preventDefault(); if (viewName.trim()) { onSaveView(viewName.trim(), filters, view); setViewName(''); setSavingView(false); } };
-  const changeView = (next: View) => {
-    if (next === 'mine') {
-      if (view === 'mine') {
-        if (filters.assignedToMe) onFiltersChange(toggleAssignedToMe(filters));
-        onViewChange('all');
-      } else onFiltersChange(toggleAssignedToMe(filters));
-      return;
-    }
-    if (next === 'all' && filters.assignedToMe) onFiltersChange(toggleAssignedToMe(filters));
-    onViewChange(next === view ? 'all' : next);
-  };
+  const changeView = (next: View) => onViewChange(next);
+
   const changeSort = (value: string) => {
     const [field, direction] = value.split(':') as [AppSettings['sort']['field'], AppSettings['sort']['direction']];
     if (field && direction) onSettingsChange({ sort: { field, direction } });

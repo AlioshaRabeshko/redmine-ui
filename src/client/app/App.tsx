@@ -4,6 +4,7 @@ import { Activity, Bell, BellDot, Check, ChevronDown, Command, Inbox, LayoutDash
 import { useTranslation } from 'react-i18next';
 import type { AppSettings, BoardData, Bootstrap, Command as WorkspaceCommand, CommandResult, Filters, Issue, IssueDetail, Notification, Operation, Person, Project, SavedView, SettingsPatch, Status, View } from '../../shared/types';
 import { api, ApiRequestError, friendlyError, issueUrl } from '../lib/api';
+import { useWorkspaceNavigation, type NavigationState, type Screen } from '../lib/workspaceNavigation';
 import { isEditableTarget, resolveIssueShortcutTarget, shortcutForEvent } from '../lib/shortcuts';
 import { toggleAssignedToMe } from '../../shared/domain';
 import { Avatar, Button, dispatchActiveFormSave, IconButton, Modal, Notice, Spinner, Toast } from '../components/ui';
@@ -12,8 +13,6 @@ import { IssueDialog, CreateIssueDialog, type IssueEditPatch } from '../features
 import { InboxPage } from '../features/inbox/InboxPage';
 import { ReleasesPage } from '../features/releases/ReleasesPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
-
-type Screen = 'board' | 'backlog' | 'inbox' | 'releases' | 'settings';
 
 function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
   const { projectQa, subscriptions, personRoleOverrides, ...simpleFields } = patch;
@@ -101,49 +100,54 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [settings, setSettings] = useState<AppSettings>(bootstrap.settings);
-  const [selectedProjectId, setSelectedProjectId] = useState<number>(() => {
-    const stored = Number(localStorage.getItem('redmine-workspace:project'));
-    return bootstrap.projects.some((project) => project.id === stored) ? stored : bootstrap.projects[0]?.id || 0;
+  const { location, navigate, close: closeNavigation } = useWorkspaceNavigation();
+  const [initialProjectId] = useState(() => {
+    let stored = 0;
+    try { stored = Number(localStorage.getItem('redmine-workspace:project')); } catch { /* URL still works without storage. */ }
+    return bootstrap.projects.some(project => project.id === stored) ? stored : bootstrap.projects[0]?.id || 0;
   });
-  const [screen, setScreen] = useState<Screen>('board');
-  const [view, setView] = useState<View>('all');
-  const [filters, setFilters] = useState<Filters>({});
-  const [issueId, setIssueId] = useState<number>();
-  const [issueOpen, setIssueOpen] = useState(false);
+  const fallbackProjectId = bootstrap.projects.some(project => project.id === initialProjectId) ? initialProjectId : bootstrap.projects[0]?.id || 0;
+  const selectedProjectId = bootstrap.projects.some(project => project.id === location.projectId) ? location.projectId! : fallbackProjectId;
+  const { screen, view, filters, issueId, versionId: selectedVersionId, archived, journalId: initialJournalId, createIssue: createIssueDefaults } = location;
+  const issueOpen = issueId !== undefined;
+  const projectPickerOpen = location.overlay === 'projects';
+  const showActivity = location.overlay === 'activity';
+  const showPalette = location.overlay === 'commands';
+  const quickMoveIssueId = location.overlay === 'move' ? location.moveIssueId : undefined;
   const [freshIssueDetailId, setFreshIssueDetailId] = useState<number>();
-  const [initialJournalId, setInitialJournalId] = useState<number>();
-  const [createIssueDefaults, setCreateIssueDefaults] = useState<{ statusId?: number; fixedVersionId?: number | null }>();
-  const [selectedVersionId, setSelectedVersionId] = useState<number>();
-  const [archived, setArchived] = useState(false);
-  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [issueLoadAttempt, setIssueLoadAttempt] = useState(0);
+  const [issueLoadError, setIssueLoadError] = useState<string>();
   const [projectSearch, setProjectSearch] = useState('');
-  const [showActivity, setShowActivity] = useState(false);
-  const [showPalette, setShowPalette] = useState(false);
-  const [quickMoveIssueId, setQuickMoveIssueId] = useState<number>();
+  const searchEditingRef = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toastText, setToastText] = useState('');
   const [busySync, setBusySync] = useState(false);
   const [pendingIssueIds, setPendingIssueIds] = useState<Set<number>>(() => new Set());
   const pendingIssueIdsRef = useRef(new Set<number>());
   const issueOpenSequenceRef = useRef(0);
+  const notificationOpenSequenceRef = useRef(0);
   const settingsQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const settingsWriteSequenceRef = useRef(0);
   const confirmedSettingsRef = useRef(bootstrap.settings);
   const scrollPositionsRef = useRef<Record<string, number>>({});
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const focusSearchAfterCloseRef = useRef(false);
   const project = bootstrap.projects.find((item) => item.id === selectedProjectId) || bootstrap.projects[0];
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const projectRef = useRef(project);
   projectRef.current = project;
   const notify = useCallback((text: string) => setToastText(text), []);
+  const translateRef = useRef(t);
+  translateRef.current = t;
 
   const boardQuery = useQuery({ queryKey: ['board', selectedProjectId], queryFn: () => api.get<import('../../shared/types').BoardData>(`/api/projects/${selectedProjectId}/board`), enabled: !!selectedProjectId, staleTime: 15_000, retry: 1 });
   const unreadQuery = useQuery({ queryKey: ['notifications', 'unread'], queryFn: () => api.get<Notification[]>('/api/notifications'), staleTime: 15_000, refetchInterval: 30_000 });
   const archivedQuery = useQuery({ queryKey: ['notifications', 'archived'], queryFn: () => api.get<Notification[]>('/api/notifications?archived=true'), enabled: screen === 'inbox' && archived, staleTime: 15_000 });
   const operationsQuery = useQuery({ queryKey: ['operations'], queryFn: () => api.get<Operation[]>('/api/operations'), staleTime: 10_000, refetchInterval: 12_000 });
   const issueQuery = useQuery({ queryKey: ['issue', issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${issueId}`), enabled: issueOpen && !!issueId, staleTime: 5_000 });
+  const quickMoveQuery = useQuery({ queryKey: ['issue', quickMoveIssueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${quickMoveIssueId}`), enabled: !!quickMoveIssueId, staleTime: 0, retry: false });
   const board = boardQuery.data;
   const statuses = bootstrap.statuses;
   const canWrite = bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite;
@@ -155,11 +159,60 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const issueDetail = issueDetailIssue
     ? { ...(issueQuery.data || { journals: [], watchers: members.filter(person => issueDetailIssue.watcherIds.includes(person.id)) }), issue: issueDetailIssue }
     : undefined;
-  const quickMoveIssue = board?.issues.find(issue => issue.id === quickMoveIssueId);
+  const quickMoveIssue = quickMoveQuery.data?.issue || board?.issues.find(issue => issue.id === quickMoveIssueId);
   const notifications = screen === 'inbox' && archived ? archivedQuery.data || [] : unreadQuery.data || [];
   const customViews = settings.savedViews.filter((saved) => saved.projectId === selectedProjectId);
   const mineFilterActive = Boolean(filters.assignedToMe || view === 'mine');
   const unreadCount = unreadQuery.data?.length || 0;
+
+  useEffect(() => {
+    navigate({ projectId: selectedProjectId || undefined }, { replace: true });
+  }, [selectedProjectId, navigate]);
+
+  useEffect(() => {
+    if (location.overlay === 'commands' || !focusSearchAfterCloseRef.current) return;
+    focusSearchAfterCloseRef.current = false;
+    const frame = requestAnimationFrame(() => searchRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [location.overlay]);
+
+  useEffect(() => {
+    if (quickMoveIssueId && quickMoveQuery.data) navigate({ projectId: quickMoveQuery.data.issue.projectId }, { replace: true });
+  }, [quickMoveIssueId, quickMoveQuery.data, navigate]);
+
+  useEffect(() => {
+    const sequence = ++issueOpenSequenceRef.current;
+    setFreshIssueDetailId(undefined);
+    setIssueLoadError(undefined);
+    if (!issueId) return;
+    let cancelled = false;
+    void queryClient.fetchQuery({ queryKey: ['issue', issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${issueId}`), staleTime: 0 })
+      .then(async detail => {
+        if (cancelled || sequence !== issueOpenSequenceRef.current) return;
+        navigate(current => current.issueId === issueId ? { projectId: detail.issue.projectId } : {}, { replace: true });
+        await queryClient.fetchQuery({ queryKey: ['board', detail.issue.projectId], queryFn: () => api.get<BoardData>(`/api/projects/${detail.issue.projectId}/board`), staleTime: 15_000 });
+        if (!cancelled && sequence === issueOpenSequenceRef.current) setFreshIssueDetailId(issueId);
+      })
+      .catch(error => { if (!cancelled && sequence === issueOpenSequenceRef.current) setIssueLoadError(friendlyError(error, translateRef.current)); });
+    return () => { cancelled = true; };
+  }, [issueId, issueLoadAttempt, queryClient, navigate]);
+
+  useEffect(() => {
+    if (!board) return;
+    const patch: Partial<NavigationState> = {};
+    const selectedVersion = board.versions.find(version => version.id === selectedVersionId);
+    if (selectedVersionId && !selectedVersion) {
+      patch.versionId = undefined; patch.releaseForm = undefined;
+    }
+    if (selectedVersion?.status === 'closed' && (location.releaseForm === 'edit' || location.releaseForm === 'assign')) patch.releaseForm = undefined;
+    if (createIssueDefaults) {
+      const defaults = { ...createIssueDefaults };
+      if (defaults.statusId && !statuses.some(status => status.id === defaults.statusId)) delete defaults.statusId;
+      if (defaults.fixedVersionId && !board.versions.some(version => version.id === defaults.fixedVersionId && version.status !== 'closed')) delete defaults.fixedVersionId;
+      if (JSON.stringify(defaults) !== JSON.stringify(createIssueDefaults)) patch.createIssue = defaults;
+    }
+    if (Object.keys(patch).length) navigate(patch, { replace: true });
+  }, [board, statuses, selectedVersionId, createIssueDefaults, location.releaseForm, navigate]);
 
   useEffect(() => {
     void i18n.changeLanguage(settings.locale);
@@ -178,7 +231,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     return () => media.removeEventListener('change', apply);
   }, [settings.theme, settings.palette]);
   useEffect(() => {
-    if (selectedProjectId) localStorage.setItem('redmine-workspace:project', String(selectedProjectId));
+    try { if (selectedProjectId) localStorage.setItem('redmine-workspace:project', String(selectedProjectId)); } catch { /* URL retains the project when storage is unavailable. */ }
   }, [selectedProjectId]);
   useEffect(() => {
     const key = `${selectedProjectId}:${screen}`;
@@ -264,36 +317,40 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     settingsQueueRef.current = write;
     return write;
   }, [bootstrap, commandMutation, notify, t]);
+  const renderedHref = window.location.href;
+  const clearForms = { issueId: undefined, journalId: undefined, createIssue: undefined, releaseForm: undefined, overlay: undefined, moveIssueId: undefined };
   const openIssue = useCallback((issue: Issue, journalId?: number) => {
-    const requestSequence = ++issueOpenSequenceRef.current;
-    setIssueId(issue.id);
-    setInitialJournalId(journalId);
-    setFreshIssueDetailId(undefined);
-    setIssueOpen(true);
-    void queryClient.fetchQuery({ queryKey: ['issue', issue.id], queryFn: () => api.get<IssueDetail>(`/api/issues/${issue.id}`), staleTime: 0 })
-      .then(() => { if (issueOpenSequenceRef.current === requestSequence) setFreshIssueDetailId(issue.id); })
-      .catch(error => { if (issueOpenSequenceRef.current === requestSequence) notify(friendlyError(error, t)); });
-  }, [queryClient, notify, t]);
-  const closeIssue = useCallback(() => { issueOpenSequenceRef.current += 1; setIssueOpen(false); setInitialJournalId(undefined); setFreshIssueDetailId(undefined); }, []);
+    navigate({ projectId: issue.projectId, issueId: issue.id, journalId, createIssue: undefined, releaseForm: undefined, overlay: undefined, moveIssueId: undefined });
+  }, [navigate]);
+  const closeIssue = useCallback(() => closeNavigation({ issueId: undefined, journalId: undefined }), [closeNavigation]);
+  const openCreateIssue = (defaults: NavigationState['createIssue'] = {}) => navigate({ ...clearForms, createIssue: defaults });
+  const closeCreateIssue = () => { if (window.location.href === renderedHref) closeNavigation({ createIssue: undefined }); };
+  const openScreen = (next: Screen, replace = false) => navigate({ ...clearForms, screen: next, archived: next === 'inbox' ? false : archived, versionId: next === 'releases' ? undefined : selectedVersionId }, { replace });
+  const setFilters = (update: Filters | ((current: Filters) => Filters), replace = false) => navigate(current => ({ filters: typeof update === 'function' ? update(current.filters) : update }), { replace });
+  const openOverlay = (overlay: NavigationState['overlay'], moveIssueId?: number) => navigate({ overlay, moveIssueId });
+  const closeOverlay = () => closeNavigation({ overlay: undefined, moveIssueId: undefined });
   const pickProject = (nextProject: Project) => {
-    setSelectedProjectId(nextProject.id);
-    setCreateIssueDefaults(undefined);
-    setProjectPickerOpen(false);
+    if (projectPickerOpen && nextProject.id === selectedProjectId) { closeOverlay(); setProjectSearch(''); return; }
+    navigate({ ...clearForms, projectId: nextProject.id, screen: 'board', view: 'all', filters: {}, versionId: undefined, archived: false }, { replace: projectPickerOpen });
     setProjectSearch('');
-    setScreen('board'); setView('all'); setFilters({}); setSelectedVersionId(undefined);
   };
   const selectView = (next: View) => {
-    if (next === 'mine') {
-      setScreen('board');
-      if (view === 'mine') setView('all');
-      setFilters(current => toggleAssignedToMe(current));
-      return;
-    }
-    if (next === 'all') setFilters(current => current.assignedToMe ? toggleAssignedToMe(current) : current);
-    setScreen(next === 'backlog' ? 'backlog' : 'board');
-    setView(next);
+    navigate(current => {
+      const base = { ...clearForms, screen: next === 'backlog' || (next === 'mine' && current.view === 'backlog') ? 'backlog' as const : 'board' as const };
+      if (next === 'mine') return { ...base, view: current.view === 'mine' ? 'all' : current.view, filters: toggleAssignedToMe(current.filters) };
+      return { ...base, view: next, filters: next === 'all' && current.filters.assignedToMe ? toggleAssignedToMe(current.filters) : current.filters };
+    });
   };
-  const selectSavedView = (saved: SavedView) => { setScreen('board'); setView(saved.view); setFilters(saved.filters); };
+  const selectSavedView = (saved: SavedView) => navigate({ ...clearForms, screen: saved.view === 'backlog' ? 'backlog' : 'board', view: saved.view, filters: saved.filters });
+  const selectVersion = (versionId?: number) => {
+    if (versionId === undefined) closeNavigation({ versionId: undefined, releaseForm: undefined });
+    else navigate({ versionId, releaseForm: undefined });
+  };
+  const changeReleaseForm = (releaseForm: NavigationState['releaseForm']) => {
+    if (releaseForm === undefined) {
+      if (window.location.href === renderedHref) closeNavigation({ releaseForm: undefined });
+    } else navigate({ releaseForm });
+  };
   const onSaveView = async (name: string, nextFilters: Filters, savedView: View) => {
     const next: SavedView[] = [...settingsRef.current.savedViews.filter((item) => !(item.projectId === selectedProjectId && item.name === name)), { id: crypto.randomUUID(), projectId: selectedProjectId, name, filters: nextFilters, view: savedView }];
     await patchSettings({ savedViews: next });
@@ -321,9 +378,11 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   };
   const commentIssue = async (issue: Issue, notes: string) => { const result = await runCommand({ type: 'comment', issueId: issue.id, input: { notes } }); if (result.operation.status !== 'done') throw new Error(t('operationRunning')); };
   const createIssue = async (input: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; assignedToId?: number; fixedVersionId?: number }, operationId?: string) => {
+    const fromUrl = window.location.href;
     const result = await runCommand({ type: 'createIssue', projectId: selectedProjectId, operationId, input });
     if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
     await refreshQueries();
+    if (window.location.href === fromUrl) navigate({ createIssue: undefined }, { complete: true });
     notify(t('saved'));
   };
   const moveIssue = async (issue: Issue, target: { statusId?: number; fixedVersionId?: number | null }) => {
@@ -342,20 +401,25 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     }
   };
   const createRelease = async (input: { name: string; dueDate?: string; description?: string; issueIds?: number[] }) => {
+    const fromUrl = window.location.href;
     const result = await runCommand({ type: 'createRelease', projectId: selectedProjectId, input });
     if (result.operation.status !== 'done' && result.operation.status !== 'running') throw new Error(t('operationRunning'));
     await refreshQueries();
-    if (result.version) setSelectedVersionId(result.version.id);
+    if (result.version && window.location.href === fromUrl) navigate({ versionId: result.version.id, releaseForm: undefined }, { replace: true });
     notify(t('releaseCreated'));
   };
   const assignRelease = async (versionId: number, issueIds: number[], fixedVersionId: number | null) => {
     if (issueIds.length === 0) return;
+    const fromUrl = window.location.href;
     await runCommand({ type: 'assignRelease', projectId: selectedProjectId, versionId, input: { issueIds, fixedVersionId } });
     await refreshQueries();
+    if (location.releaseForm === 'assign' && window.location.href === fromUrl) navigate({ releaseForm: undefined }, { complete: true });
   };
   const updateRelease = async (version: import('../../shared/types').Version, patch: Omit<Partial<import('../../shared/types').Version>, 'dueDate'> & { dueDate?: string | null }) => {
+    const fromUrl = window.location.href;
     await runCommand({ type: 'updateRelease', projectId: selectedProjectId, versionId: version.id, input: patch as Record<string, unknown> });
     await refreshQueries();
+    if (location.releaseForm === 'edit' && window.location.href === fromUrl) navigate({ releaseForm: undefined }, { complete: true });
   };
   const finishRelease = async (version: import('../../shared/types').Version) => {
     const result = await runCommand({ type: 'finishRelease', projectId: selectedProjectId, versionId: version.id, input: {} });
@@ -367,20 +431,13 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     await queryClient.invalidateQueries({ queryKey: ['notifications'] });
   };
   const openNotification = async (notification: Notification) => {
+    const sequence = ++notificationOpenSequenceRef.current;
+    const fromUrl = window.location.href;
     try {
-      const requestSequence = ++issueOpenSequenceRef.current;
-      const [detail] = await Promise.all([
-        queryClient.fetchQuery({ queryKey: ['issue', notification.issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${notification.issueId}`), staleTime: 0 }),
-        queryClient.fetchQuery({ queryKey: ['board', notification.projectId], queryFn: () => api.get<import('../../shared/types').BoardData>(`/api/projects/${notification.projectId}/board`) }),
-      ]);
-      if (issueOpenSequenceRef.current !== requestSequence) return;
-      setSelectedProjectId(notification.projectId);
-      setIssueId(notification.issueId);
-      setFreshIssueDetailId(notification.issueId);
-      setInitialJournalId(notification.journalId);
-      setIssueOpen(true);
+      const detail = await queryClient.fetchQuery({ queryKey: ['issue', notification.issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${notification.issueId}`), staleTime: 0 });
+      if (window.location.href !== fromUrl || sequence !== notificationOpenSequenceRef.current) return;
+      navigate({ ...clearForms, projectId: detail.issue.projectId, issueId: notification.issueId, journalId: notification.journalId });
       if (!notification.readAt) await markRead(notification);
-      if (detail.issue.projectId !== notification.projectId) notify(t('errorGeneric'));
     } catch (error) { notify(friendlyError(error, t)); }
   };
   const manualSync = async () => {
@@ -421,24 +478,24 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       if ((action === 'copyBranch' || action === 'copyRedmineUrl') && (activeSelection || !targetIssueId)) return;
       if (action === 'moveStatus' && !targetIssueId) return;
       event.preventDefault();
-      if (action === 'view/mine') { setFilters(current => toggleAssignedToMe(current)); if (view === 'mine') setView('all'); }
-      else if (action === 'projectPicker') setProjectPickerOpen(true);
+      if (action === 'view/mine') navigate(current => ({ filters: toggleAssignedToMe(current.filters), view: current.view === 'mine' ? 'all' : current.view }));
+      else if (action === 'projectPicker') openOverlay('projects');
       else if (action === 'search') searchRef.current?.focus();
-      else if (action === 'createIssue') setCreateIssueDefaults({});
-      else if (action === 'commandPalette') setShowPalette(true);
+      else if (action === 'createIssue') openCreateIssue();
+      else if (action === 'commandPalette') openOverlay('commands');
       else if (action === 'copyBranch') void copyIssueBranch(targetIssueId!);
       else if (action === 'copyRedmineUrl') void copyIssueUrl(targetIssueId!);
       else if (action === 'moveStatus') {
         const targeted = match.value && statuses.find((status) => String(status.id) === match.value || status.key === match.value);
         const targetIssue = targetIssueId ? board?.issues.find(issue => issue.id === targetIssueId) || queryClient.getQueryData<IssueDetail>(['issue', targetIssueId])?.issue : undefined;
         if (targeted && targetIssue) void moveIssue(targetIssue, { statusId: targeted.id, fixedVersionId: targetIssue.fixedVersionId }).catch((error) => notify(friendlyError(error, t)));
-        else if (targetIssue) setQuickMoveIssueId(targetIssue.id);
+        else if (targetIssue) openOverlay('move', targetIssue.id);
       }
       else if (action === 'label' && match.value) setFilters((current) => ({ ...current, label: match.value }));
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [board?.issues, canWrite, copyIssueBranch, copyIssueUrl, issueId, issueOpen, notify, queryClient, statuses, t, view]);
+  }, [board?.issues, canWrite, copyIssueBranch, copyIssueUrl, issueId, issueOpen, notify, queryClient, statuses, t, view, navigate, location]);
 
   const visibleProjects = bootstrap.projects.filter((item) => `${item.name} ${item.identifier}`.toLocaleLowerCase().includes(projectSearch.toLocaleLowerCase()));
   const statusesReady = statuses.length > 0;
@@ -446,7 +503,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   return <div className={`app-frame${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
     <aside className="sidebar">
       <div className="sidebar-top"><a href="#home" className="brand-lockup" onClick={(e) => e.preventDefault()}><span className="brand-mark"><LayoutDashboard size={17} /></span><span className="brand-name">Redmine<span>Workspace</span></span></a><IconButton label={sidebarCollapsed ? t('open') : t('close')} className="sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</IconButton></div>
-      <button type="button" className="project-selector" onClick={() => { setProjectPickerOpen(true); setProjectSearch(''); }} aria-haspopup="dialog"><span className="project-symbol">{project.name.trim().charAt(0).toUpperCase()}</span><span className="project-selector-text"><small>{t('projects')}</small><strong>{project.name}</strong></span><ChevronDown size={15} /></button>
+      <button type="button" className="project-selector" onClick={() => { openOverlay('projects'); setProjectSearch(''); }} aria-haspopup="dialog"><span className="project-symbol">{project.name.trim().charAt(0).toUpperCase()}</span><span className="project-selector-text"><small>{t('projects')}</small><strong>{project.name}</strong></span><ChevronDown size={15} /></button>
       <div className="sidebar-scroll">
         <div className="nav-group"><span className="nav-label">{t('workspace')}</span>
           <NavItem active={screen === 'board' && view === 'all' && !mineFilterActive} label={t('viewAll')} icon={<LayoutDashboard size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('all')} />
@@ -455,9 +512,9 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
           <NavItem active={screen === 'backlog'} label={t('backlog')} icon={<ListTodo size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('backlog')} />
         </div>
         <div className="nav-group"><span className="nav-label">{t('personal')}</span>
-          <NavItem active={screen === 'inbox'} label={t('inbox')} icon={unreadCount > 0 ? <BellDot size={17} /> : <Inbox size={17} />} collapsed={sidebarCollapsed} count={unreadCount} onClick={() => { setScreen('inbox'); setArchived(false); }} />
-          <NavItem active={screen === 'releases'} label={t('releases')} icon={<Rocket size={17} />} collapsed={sidebarCollapsed} onClick={() => { setScreen('releases'); setSelectedVersionId(undefined); }} />
-          <NavItem active={screen === 'settings'} label={t('settings')} icon={<Settings2 size={17} />} collapsed={sidebarCollapsed} onClick={() => setScreen('settings')} />
+          <NavItem active={screen === 'inbox'} label={t('inbox')} icon={unreadCount > 0 ? <BellDot size={17} /> : <Inbox size={17} />} collapsed={sidebarCollapsed} count={unreadCount} onClick={() => openScreen('inbox')} />
+          <NavItem active={screen === 'releases'} label={t('releases')} icon={<Rocket size={17} />} collapsed={sidebarCollapsed} onClick={() => openScreen('releases')} />
+          <NavItem active={screen === 'settings'} label={t('settings')} icon={<Settings2 size={17} />} collapsed={sidebarCollapsed} onClick={() => openScreen('settings')} />
         </div>
       </div>
       <div className="sidebar-bottom"><div className="mode-footer"><span className={`connection-indicator ${bootstrap.connected ? 'is-connected' : 'is-offline'}`} /><span>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</span></div><div className="user-footer"><Avatar person={bootstrap.me} size="sm" /><span><strong>{bootstrap.me.name}</strong><small>{bootstrap.mode === 'demo' ? t('demo') : t('readOnlyBadge')}</small></span></div></div>
@@ -466,28 +523,31 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       <header className="topbar">
         <div className="breadcrumbs"><span>{project.name}</span><span className="crumb-separator">/</span><strong>{screen === 'board' ? view === 'mine' || (view === 'all' && filters.assignedToMe) ? t('viewMine') : view === 'watching' ? t('viewWatching') : t('board') : screen === 'backlog' ? t('viewBacklog') : screen === 'inbox' ? t('inbox') : screen === 'releases' ? t('releases') : t('settings')}</strong></div>
         <div className="topbar-actions">
-          <label className="global-search"><Search size={16} /><input ref={searchRef} type="search" aria-label={t('search')} placeholder={t('searchPlaceholder')} value={filters.search || ''} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value || undefined }))} /><kbd>⌘ K</kbd></label>
+          <label className="global-search"><Search size={16} /><input ref={searchRef} type="search" aria-label={t('search')} placeholder={t('searchPlaceholder')} value={filters.search || ''} onFocus={() => { searchEditingRef.current = false; }} onBlur={() => { searchEditingRef.current = false; }} onChange={e => { setFilters(current => ({ ...current, search: e.target.value || undefined }), searchEditingRef.current); searchEditingRef.current = true; }} /><kbd>⌘ K</kbd></label>
           <div className={`connection-pill ${bootstrap.connected ? 'connection-online' : 'connection-offline'}`} title={bootstrap.connected ? t('connected') : t('offline')}><span />{bootstrap.connected ? (bootstrap.mode === 'demo' ? t('demo') : t('connected')) : t('offline')}</div>
-          <IconButton label={t('operationTitle')} onClick={() => setShowActivity(true)} className="activity-trigger"><Activity size={17} /></IconButton>
+          <IconButton label={t('operationTitle')} onClick={() => openOverlay('activity')} className="activity-trigger"><Activity size={17} /></IconButton>
           <Button variant="quiet" size="sm" onClick={manualSync} disabled={busySync}>{busySync ? <Spinner /> : <Sparkles size={15} />}{t('sync')}</Button>
         </div>
       </header>
       <div className="mode-banner"><span className={`mode-banner-mark ${bootstrap.mode === 'demo' ? 'is-demo' : 'is-readonly'}`}>{bootstrap.mode === 'demo' ? <Sparkles size={14} /> : <ShieldCheck size={14} />}</span><span><strong>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</strong><small>{bootstrap.mode === 'demo' ? t('demoNote') : t('readOnlyNote')}</small></span>{bootstrap.mode === 'redmine' && <span className="mode-banner-trailing">{t('readOnlyBadge')}</span>}</div>
       <div className="content-scroll" ref={contentScrollRef} onScroll={(event) => { scrollPositionsRef.current[`${selectedProjectId}:${screen}`] = event.currentTarget.scrollTop; }}>
-        {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={(next) => { setScreen(next === 'backlog' ? 'backlog' : 'board'); setView(next); }} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onCreateIssue={defaults => setCreateIssueDefaults(defaults || {})} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
-        {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => setArchived((value) => !value)} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
-        {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} onSelectVersion={setSelectedVersionId} onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
+        {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={selectView} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onCreateIssue={openCreateIssue} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
+        {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => navigate({ archived: !archived })} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
+        {screen === 'releases' && !board && <div className="page-loading">{boardQuery.isError ? <Notice tone="error">{friendlyError(boardQuery.error, t)} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice> : <Spinner label={t('loading')} />}</div>}
+        {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} onSelectVersion={selectVersion} form={location.releaseForm} onFormChange={changeReleaseForm} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`}  onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
         {screen === 'settings' && <SettingsPage key={selectedProjectId} settings={settings} members={members} peopleRecommendations={board?.peopleRecommendations} project={project} projects={bootstrap.projects} statuses={statuses} labels={board?.labels || []} readOnly={bootstrap.mode === 'redmine' || bootstrap.readOnly} onPatchSettings={patch => patchSettings(patch)} onResetViews={() => { void patchSettings({ savedViews: settingsRef.current.savedViews.filter((saved) => saved.projectId !== selectedProjectId) }).catch(error => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} />}
       </div>
     </div>
 
     {issueOpen && issueId && issueDetail && freshIssueDetailId === issueId && <IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onToast={notify} />}
-    {issueOpen && issueId && (freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading"><Spinner label={issueQuery.isError ? t('issueNotFound') : t('loading')} />{issueQuery.isError && <Button size="sm" onClick={() => { setFreshIssueDetailId(undefined); void issueQuery.refetch().then(() => setFreshIssueDetailId(issueId)); }}>{t('retry')}</Button>}</div></Modal>}
-    {createIssueDefaults && <CreateIssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} project={project} board={board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} canWrite={canWrite} defaults={createIssueDefaults} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} onClose={() => setCreateIssueDefaults(undefined)} onCreate={createIssue} />}
-    {projectPickerOpen && <ProjectPickerDialog projects={visibleProjects} current={project} search={projectSearch} onSearch={setProjectSearch} onPick={pickProject} onClose={() => setProjectPickerOpen(false)} />}
-    {showPalette && <CommandPalette onClose={() => setShowPalette(false)} onSearch={() => { setShowPalette(false); searchRef.current?.focus(); }} onCreate={() => { setShowPalette(false); setCreateIssueDefaults({}); }} onProject={() => { setShowPalette(false); setProjectPickerOpen(true); }} onInbox={() => { setShowPalette(false); setScreen('inbox'); setArchived(false); }} onRelease={() => { setShowPalette(false); setScreen('releases'); }} />}
-    {quickMoveIssue && <QuickMoveDialog issue={quickMoveIssue} statuses={statuses} onMove={(statusId) => { setQuickMoveIssueId(undefined); void moveIssue(quickMoveIssue, { statusId, fixedVersionId: quickMoveIssue.fixedVersionId }).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onClose={() => setQuickMoveIssueId(undefined)} canWrite={canWrite} />}
-    {showActivity && <OperationsDrawer operations={operationsQuery.data || []} mode={bootstrap.mode} onClose={() => setShowActivity(false)} onRetry={(operation) => { void retryOperation(operation, runCommand, notify, t); }} />}
+    {issueOpen && issueId && (freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading">{issueLoadError ? <><Notice tone="error">{issueLoadError}</Notice><Button size="sm" onClick={() => setIssueLoadAttempt(attempt => attempt + 1)}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
+    {createIssueDefaults && board && <CreateIssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} project={project} board={board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} canWrite={canWrite} defaults={createIssueDefaults} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} onClose={closeCreateIssue} onCreate={createIssue} />}
+    {createIssueDefaults && !board && <Modal title={t('createIssue')} onClose={closeCreateIssue} size="sm"><div className="center-loading">{boardQuery.isError ? <><Notice tone="error">{friendlyError(boardQuery.error, t)}</Notice><Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
+    {projectPickerOpen && <ProjectPickerDialog projects={visibleProjects} current={project} search={projectSearch} onSearch={setProjectSearch} onPick={pickProject} onClose={closeOverlay} />}
+    {showPalette && <CommandPalette onClose={closeOverlay} onSearch={() => { focusSearchAfterCloseRef.current = true; closeOverlay(); }} onCreate={() => navigate({ ...clearForms, createIssue: {} }, { replace: true })} onProject={() => navigate({ overlay: 'projects' }, { replace: true })} onInbox={() => openScreen('inbox', true)} onRelease={() => openScreen('releases', true)} />}
+    {quickMoveIssue && <QuickMoveDialog issue={quickMoveIssue} statuses={statuses} onMove={(statusId) => { closeOverlay(); void moveIssue(quickMoveIssue, { statusId, fixedVersionId: quickMoveIssue.fixedVersionId }).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onClose={() => closeOverlay()} canWrite={canWrite} />}
+    {quickMoveIssueId && !quickMoveIssue && <Modal title={`#${quickMoveIssueId}`} onClose={closeOverlay} size="sm"><div className="center-loading">{quickMoveQuery.isError ? <><Notice tone="error">{friendlyError(quickMoveQuery.error, t)}</Notice><Button size="sm" onClick={() => quickMoveQuery.refetch()}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
+    {showActivity && <OperationsDrawer operations={operationsQuery.data || []} mode={bootstrap.mode} onClose={closeOverlay} onRetry={(operation) => { void retryOperation(operation, runCommand, notify, t); }} />}
     {toastText && <Toast text={toastText} onClose={() => setToastText('')} />}
   </div>;
 }
