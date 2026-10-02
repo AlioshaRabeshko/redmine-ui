@@ -4,11 +4,12 @@ Respond to the user in Ukrainian. Never respond in Russian.
 
 ## Development restriction: no external mutations
 
-The user explicitly prohibits ALL mutating operations against Redmine during development, even when a real API token is present in the project `.env`. This restriction remains until the user explicitly lifts it.
+The user explicitly prohibits ALL mutating operations against Redmine during development and testing, even when a real API token is present in the project `.env`. This is a TEMPORARY DEVELOPMENT RESTRICTION, not a permanent limitation of the intended product. The user clarified that writes should be enableable later, after validation and explicit authorization. Until then this restriction remains active.
 
 - Never create, edit, delete, assign, transition, watch/unwatch, comment, upload attachments, or change issues, Versions / NEXT, projects, custom fields, or any other Redmine resource during development or tests.
 - Never mutate Trello or other external services for development or tests.
 - Real Redmine requests are read-only: GET / HEAD only. Enforce this in the transport as well as in the real adapter. Real write commands must return a clear read-only error BEFORE any external request. Do not add an environment variable or UI toggle that bypasses this restriction.
+- Keep command/capability boundaries ready for a future explicitly authorized write mode. Once the user lifts the restriction, add deliberate opt-in write configuration with a safe read-only default; retain demo tests and authorization/error handling. Do not enable or exercise that future mode during this development/testing run. UI copy must describe the current block as temporary.
 - Background automations may read and calculate intended actions; they must not write to Redmine. Report blocked actions honestly and avoid repeated attempts.
 - Exercise editing, creation, transitions, comments, releases and automation execution only against isolated demo fixtures or mocked transports. Tests must verify that real transport write methods cannot be sent.
 - Local filesystem, Git commits, local application SQLite writes, migrations and isolated demo operations are authorized and are not external mutations.

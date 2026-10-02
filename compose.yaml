@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3010}:3000"
+    environment:
+      REDMINE_URL: ${REDMINE_URL:-https://redmine.example.invalid}
+      REDMINE_API_TOKEN: ${REDMINE_API_TOKEN:-}
+      APP_MODE: ${APP_MODE:-auto}
+      DATABASE_PATH: /data/workspace.sqlite
+      HOST: 0.0.0.0
+      PORT: 3000
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
+    volumes:
+      - workspace-data:/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+volumes:
+  workspace-data:
