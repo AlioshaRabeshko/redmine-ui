@@ -25,7 +25,7 @@ export interface BoardPageProps {
   onSelectSavedView: (saved: SavedView) => void;
   onDeleteSavedView: (saved: SavedView) => void;
   onOpenIssue: (issue: Issue) => void;
-  onCreateIssue: () => void;
+  onCreateIssue: (defaults?: { statusId?: number; fixedVersionId?: number | null }) => void;
   onMoveIssue: (issue: Issue, target: { statusId?: number; fixedVersionId?: number | null }) => void;
   onSaveView: (name: string, filters: Filters, view: View) => void;
   onToast: (message: string) => void;
@@ -84,8 +84,8 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
   </article>;
 }
 
-function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, onOpenIssue, onToast, activeIssueId }: {
-  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onToast: (message: string) => void; activeIssueId?: number;
+function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, onOpenIssue, onCreateIssue, onToast, activeIssueId }: {
+  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onCreateIssue: BoardPageProps['onCreateIssue']; onToast: (message: string) => void; activeIssueId?: number;
 }) {
   const { t, i18n } = useTranslation();
   const { isOver, setNodeRef } = useDroppable({ id: `lane:${column.id}`, disabled: !canWrite });
@@ -96,6 +96,10 @@ function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, o
       <h2>{column.name}</h2>
       {road && <span className="lane-roadmap-icon"><CalendarDays size={14} /></span>}
       <span className="lane-count">{column.issues.length}</span>
+      <IconButton className="lane-create" label={t('createInColumn', { column: column.name })} disabled={!canWrite} onClick={() => onCreateIssue({
+        statusId: column.status?.id ?? statuses.find(status => status.key === 'todo')?.id ?? statuses[0]?.id,
+        fixedVersionId: column.version?.id ?? null,
+      })}><Plus size={16} /></IconButton>
     </header>
     {road && <div className="lane-caption">{column.version?.dueDate ? `${t('dueDate')} · ${new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' }).format(new Date(`${column.version.dueDate}T00:00:00`))}` : t('roadmap')}</div>}
     <div className="lane-content">
@@ -202,7 +206,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
           </div>
         </Popover>
         <div className="board-sort-picker"><Picker label={t('sort')} options={sortOptions} value={`${settings.sort.field}:${settings.sort.direction}`} onChange={changeSort} /></div>
-        <Button variant="primary" onClick={onCreateIssue} disabled={!canWrite} data-testid="new-issue"><Plus size={16} />{t('create')}</Button>
+        <Button variant="primary" onClick={() => onCreateIssue()} disabled={!canWrite} data-testid="new-issue"><Plus size={16} />{t('create')}</Button>
       </div>
     </div>
 
@@ -218,9 +222,10 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     {activeChips.length > 0 && <div className="board-active-filters" aria-label={t('activeFilters')}><span className="active-filter-label">{t('activeFilters')}:</span>{activeChips.map(chip => <button key={chip.key} type="button" className="filter-chip" onClick={chip.remove} aria-label={`${t('clear')} · ${chip.label}`} title={`${t('clear')} · ${chip.label}`}>{chip.label}<X size={12} /></button>)}<Button size="sm" variant="quiet" onClick={clearFilters}>{t('clear')}</Button></div>}
 
     {view !== 'backlog' && <div className="board-hint"><span><CalendarDays size={15} />{t('roadmap')}</span><span>{t('keepRoadmapHint')}</span></div>}
-    {filtered.length === 0 ? <div className="empty-state board-empty"><div className="empty-illustration"><Search size={24} /></div><h2>{hasFilters ? t('emptySearch') : t('noIssues')}</h2><p>{t('noIssuesHint')}</p>{!hasFilters && canWrite && <Button variant="primary" onClick={onCreateIssue}><Plus size={15} />{t('createFirstIssue')}</Button>}</div> : <DndContext sensors={sensors} onDragStart={(event) => setDraggedId(Number(String(event.active.id).replace('issue:', '')))} onDragCancel={() => setDraggedId(undefined)} onDragEnd={onDragEnd}>
+    {filtered.length === 0 && columns.length > 0 && <p className="board-empty-hint" role="status">{hasFilters ? t('emptySearch') : t('noIssues')} · {t('noIssuesHint')}</p>}
+    {columns.length === 0 ? <div className="empty-state board-empty"><div className="empty-illustration"><Search size={24} /></div><h2>{hasFilters ? t('emptySearch') : t('noIssues')}</h2><p>{t('noIssuesHint')}</p>{!hasFilters && canWrite && <Button variant="primary" onClick={() => onCreateIssue()}><Plus size={15} />{t('createFirstIssue')}</Button>}</div> : <DndContext sensors={sensors} onDragStart={(event) => setDraggedId(Number(String(event.active.id).replace('issue:', '')))} onDragCancel={() => setDraggedId(undefined)} onDragEnd={onDragEnd}>
       <div className="board-scroll"><div className="board-lanes">
-        {columns.map((column) => <Lane key={column.id} column={{ ...column, issues: sortIssues(column.issues, priorities, settings.sort) }} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onOpenIssue={onOpenIssue} onToast={onToast} activeIssueId={draggedId} />)}
+        {columns.map((column) => <Lane key={column.id} column={{ ...column, issues: sortIssues(column.issues, priorities, settings.sort) }} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onOpenIssue={onOpenIssue} onCreateIssue={onCreateIssue} onToast={onToast} activeIssueId={draggedId} />)}
       </div></div>
       <DragOverlay>{draggedId ? (() => { const issue = data.issues.find((entry) => entry.id === draggedId); return issue ? <BoardCard issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={false} onOpen={onOpenIssue} onToast={onToast} isDragging /> : null; })() : null}</DragOverlay>
     </DndContext>}

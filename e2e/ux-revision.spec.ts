@@ -27,6 +27,74 @@ async function detail(request: APIRequestContext, id: number) {
   return (await (await request.get(`/api/issues/${id}`)).json() as IssueDetail).issue;
 }
 
+test('column creation preselects status or roadmap over old property drafts and keeps text drafts', async ({ page, request }) => {
+  const boot = await bootstrap(request);
+  await start(page, boot);
+  const lanes = page.locator('.board-lane');
+  await expect(page.locator('.lane-create')).toHaveCount(await lanes.count());
+  const dialog = page.getByTestId('issue-dialog');
+  await page.getByTestId('lane-version:100').locator('.lane-create').click();
+  await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('NEXT');
+  await dialog.getByTestId('issue-title').fill('Draft carried between columns');
+  await dialog.getByTestId('issue-description').fill('Keep this text when another column is chosen');
+  await choose(page, dialog, 'Статус', String(boot.statuses.find(status => status.key === 'qa')!.id));
+  await page.keyboard.press('Escape');
+  for (const key of ['suspended', 'todo', 'progress', 'review', 'qa', 'deploy']) {
+    const status = boot.statuses.find(entry => entry.key === key)!;
+    await page.getByTestId(`lane-status:${status.id}`).locator('.lane-create').click();
+    await expect(dialog.getByTestId('issue-title')).toBeFocused();
+    await expect(dialog.getByRole('combobox', { name: 'Статус', exact: true })).toContainText(status.name);
+    await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('Без релізу');
+    await expect(dialog.getByTestId('issue-title')).toHaveValue('Draft carried between columns');
+    await expect(dialog.getByTestId('issue-description')).toHaveValue('Keep this text when another column is chosen');
+    await page.keyboard.press('Escape');
+  }
+  const review = boot.statuses.find(status => status.key === 'review')!;
+  await page.getByTestId(`lane-status:${review.id}`).locator('.lane-create').click();
+  await dialog.getByTestId('issue-title').fill('UX issue created from Review column');
+  const saved = page.waitForResponse(response => response.url().endsWith('/api/commands') && response.request().method() === 'POST');
+  await page.keyboard.press('Meta+s');
+  const result = await (await saved).json() as CommandResult;
+  expect(result.issue).toMatchObject({ statusId: review.id });
+  expect(result.issue!.fixedVersionId).toBeUndefined();
+  await expect(page.getByTestId(`lane-status:${review.id}`).getByTestId(`issue-card-${result.issue!.id}`)).toBeVisible();
+  await page.getByTestId('lane-version:100').locator('.lane-create').click();
+  await expect(dialog.getByRole('combobox', { name: 'Статус', exact: true })).toContainText('To Do');
+  await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('NEXT');
+  await dialog.getByTestId('issue-title').fill('UX issue created from NEXT column');
+  const roadmapSave = page.waitForResponse(response => response.url().endsWith('/api/commands') && response.request().method() === 'POST');
+  await dialog.getByTestId('issue-submit').click();
+  const roadmapResult = await (await roadmapSave).json() as CommandResult;
+  expect(roadmapResult.issue).toMatchObject({ statusId: boot.statuses.find(status => status.key === 'todo')!.id, fixedVersionId: 100 });
+  await expect(page.getByTestId('lane-version:100').getByTestId(`issue-card-${roadmapResult.issue!.id}`)).toBeVisible();
+  await page.getByTestId('lane-version:100').locator('.lane-create').click();
+  await dialog.getByTestId('issue-title').fill('Draft for the first project');
+  await dialog.getByRole('button', { name: 'Скасувати', exact: true }).focus();
+  await page.keyboard.press('b');
+  const otherProject = boot.projects.find(project => project.id !== boot.projects[0].id)!;
+  await page.getByTestId('project-picker').locator('.project-picker-option').filter({ hasText: otherProject.name }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.getByTestId('new-issue').click();
+  await expect(dialog.getByTestId('issue-title')).toHaveValue('');
+  await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('Без релізу');
+});
+
+test('empty filtered boards retain column creation controls including backlog', async ({ page, request }) => {
+  const boot = await bootstrap(request);
+  await start(page, boot);
+  await page.getByRole('searchbox', { name: 'Пошук', exact: true }).fill('No matches for this lane creation check');
+  await expect(page.locator('[data-testid^="issue-card-"]')).toHaveCount(0);
+  await expect(page.locator('.board-empty-hint')).toBeVisible();
+  const todo = boot.statuses.find(status => status.key === 'todo')!;
+  await page.getByTestId(`lane-status:${todo.id}`).locator('.lane-create').click();
+  await expect(page.getByTestId('issue-dialog').getByRole('combobox', { name: 'Статус', exact: true })).toContainText(todo.name);
+  await page.keyboard.press('Escape');
+  await page.locator('.board-view-button').filter({ hasText: /^Беклог$/ }).click();
+  const backlog = boot.statuses.find(status => status.key === 'backlog')!;
+  await page.getByTestId(`lane-status:${backlog.id}`).locator('.lane-create').click();
+  await expect(page.getByTestId('issue-dialog').getByRole('combobox', { name: 'Статус', exact: true })).toContainText(backlog.name);
+});
+
 test('filters open above the board; Q toggles only mine; saved filters are visible buttons', async ({ page, request }) => {
   const boot = await bootstrap(request);
   const mine = await create(request, boot, 'UX label focus mine', { assignedToId: boot.me.id, labels: ['ux-regression'] });

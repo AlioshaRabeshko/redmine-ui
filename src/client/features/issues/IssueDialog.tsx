@@ -378,8 +378,9 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   </Modal>;
 }
 
-export function CreateIssueDialog({ project, board, statuses, priorities, canWrite, draftScope, onClose, onCreate }: {
+export function CreateIssueDialog({ project, board, statuses, priorities, canWrite, draftScope, defaults, onClose, onCreate }: {
   project: Project; board: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; draftScope: string; onClose: () => void; onCreate: (command: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; trackerName?: string; assignedToId?: number; fixedVersionId?: number }, operationId?: string) => Promise<void>;
+  defaults?: { statusId?: number; fixedVersionId?: number | null };
 }) {
   const { t } = useTranslation();
   const legacyDraftKey = `redmine-workspace:new-draft:${encodeURIComponent(draftScope)}`;
@@ -388,12 +389,13 @@ export function CreateIssueDialog({ project, board, statuses, priorities, canWri
   const descriptionKey = createIssueTextDraftKey(draftScope, project.id, 'description');
   const [subject, setSubject] = useState(() => readDraft(titleKey, String(legacyDraft.subject || '')));
   const [description, setDescription] = useState(() => readDraft(descriptionKey, String(legacyDraft.description || '')));
-  const [statusId, setStatusId] = useState(Number(legacyDraft.statusId || statuses.find((status) => status.key === 'todo')?.id || statuses[0]?.id || 0));
+  const [statusId, setStatusId] = useState(Number(defaults?.statusId ?? legacyDraft.statusId ?? statuses.find((status) => status.key === 'todo')?.id ?? statuses[0]?.id ?? 0));
   const [priorityId, setPriorityId] = useState(Number(legacyDraft.priorityId || priorities[0]?.id || 0));
   const trackers = board.trackers ?? [...new Map(board.issues.map(issue => [issue.trackerId, { id: issue.trackerId, name: issue.trackerName }])).values()];
   const [trackerId, setTrackerId] = useState<number | undefined>(typeof legacyDraft.trackerId === 'number' ? legacyDraft.trackerId : trackers[0]?.id);
   const [assignedToId, setAssignedToId] = useState<number | undefined>(typeof legacyDraft.assignedToId === 'number' ? legacyDraft.assignedToId : undefined);
-  const [fixedVersionId, setFixedVersionId] = useState<number | undefined>(typeof legacyDraft.fixedVersionId === 'number' ? legacyDraft.fixedVersionId : undefined);
+  const [fixedVersionId, setFixedVersionId] = useState<number | undefined>(defaults?.fixedVersionId !== undefined
+    ? defaults.fixedVersionId ?? undefined : typeof legacyDraft.fixedVersionId === 'number' ? legacyDraft.fixedVersionId : undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const formRef = useWorkspaceFormSave<HTMLFormElement>();

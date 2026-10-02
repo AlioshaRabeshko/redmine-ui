@@ -125,6 +125,9 @@ textarea { resize: vertical; }
 .lane-over { border-color: var(--accent); background: var(--accent-soft); }
 .lane-header { display: flex; gap: 8px; align-items: center; padding: 15px 13px; }
 .lane-header h2 { flex: 1; font-size: 12px; font-weight: 650; letter-spacing: 0; }
+.lane-create { width: 25px; height: 25px; color: var(--muted); flex-shrink: 0; }
+.lane-create:hover:not(:disabled) { color: var(--accent); background: var(--surface); }
+.board-empty-hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; flex-shrink: 0; }
 .lane-count { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--surface); border-radius: 5px; padding: 1px 6px; }
 .lane-dot { width: 7px; height: 7px; border-radius: 50%; background: #9aa3b4; }
 .dot-todo { background: #7c90b7; }.dot-progress { background: #5e88de; }.dot-review { background: #a782db; }.dot-qa { background: #d5a554; }.dot-deploy { background: #49a98e; }

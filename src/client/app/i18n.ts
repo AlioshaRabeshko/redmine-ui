@@ -86,6 +86,7 @@ Object.assign(es, {
 });
 
 Object.assign(en, {
+  createInColumn: 'Create issue in {{column}}',
   choose: 'Choose…', searchOptions: 'Search options…', noOptions: 'No matching options', frequentPerson: 'Frequently chosen', role_qa: 'QA', role_developer: 'Developer', role_support: 'Support', support: 'Support',
   roleOverrides: 'People and roles', roleOverridesHint: 'Project roles come from Redmine. You can override their display locally.', useRedmineRoles: 'Use Redmine roles', restoreRedmineRoles: 'Restore Redmine roles',
   saveFormShortcut: 'Save the active form', saveShortcuts: 'Save shortcuts', shortcutsSaved: 'Shortcuts saved', autosaved: 'Changes save automatically', savingSettings: 'Saving preferences…', unsavedChanges: 'Unsaved changes',
@@ -93,6 +94,7 @@ Object.assign(en, {
   noRelease: 'No release', sortField: 'Field', sortDirection: 'Direction', deleteShortcut: 'Delete shortcut', enableShortcut: 'Enable shortcut', boardViews: 'Board filters', activeFilters: 'Filters', closed: 'Closed', textChanges: 'Text changes', editPeopleRoles: 'Display roles', inheritedRoles: 'From Redmine', noRole: 'No role',
 });
 Object.assign(uk, {
+  createInColumn: 'Створити задачу в колонці {{column}}',
   choose: 'Вибрати…', searchOptions: 'Пошук варіантів…', noOptions: 'Варіантів не знайдено', frequentPerson: 'Часто обираєте', role_qa: 'QA', role_developer: 'Розробник', role_support: 'Підтримка', support: 'Підтримка',
   roleOverrides: 'Люди та ролі', roleOverridesHint: 'Ролі проєкту надходять із Redmine. Їх відображення можна перевизначити локально.', useRedmineRoles: 'Ролі з Redmine', restoreRedmineRoles: 'Відновити ролі Redmine',
   saveFormShortcut: 'Зберегти поточну форму', saveShortcuts: 'Зберегти шорткати', shortcutsSaved: 'Шорткати збережено', autosaved: 'Зміни зберігаються автоматично', savingSettings: 'Збереження налаштувань…', unsavedChanges: 'Незбережені зміни',
@@ -100,6 +102,7 @@ Object.assign(uk, {
   noRelease: 'Без релізу', sortField: 'Поле', sortDirection: 'Напрямок', deleteShortcut: 'Видалити шорткат', enableShortcut: 'Увімкнути шорткат', boardViews: 'Фільтри дошки', activeFilters: 'Фільтри', closed: 'Завершений', textChanges: 'Текстові зміни', editPeopleRoles: 'Ролі для відображення', inheritedRoles: 'Із Redmine', noRole: 'Без ролі',
 });
 Object.assign(pl, {
+  createInColumn: 'Utwórz zadanie w kolumnie {{column}}',
   choose: 'Wybierz…', searchOptions: 'Szukaj opcji…', noOptions: 'Brak pasujących opcji', frequentPerson: 'Często wybierasz', role_qa: 'QA', role_developer: 'Programista', role_support: 'Wsparcie', support: 'Wsparcie',
   roleOverrides: 'Osoby i role', roleOverridesHint: 'Role projektu pochodzą z Redmine. Możesz lokalnie zmienić ich wyświetlanie.', useRedmineRoles: 'Role z Redmine', restoreRedmineRoles: 'Przywróć role Redmine',
   saveFormShortcut: 'Zapisz aktywny formularz', saveShortcuts: 'Zapisz skróty', shortcutsSaved: 'Skróty zapisane', autosaved: 'Zmiany zapisują się automatycznie', savingSettings: 'Zapisywanie ustawień…', unsavedChanges: 'Niezapisane zmiany',
@@ -107,6 +110,7 @@ Object.assign(pl, {
   noRelease: 'Bez wydania', sortField: 'Pole', sortDirection: 'Kierunek', deleteShortcut: 'Usuń skrót', enableShortcut: 'Włącz skrót', boardViews: 'Filtry tablicy', activeFilters: 'Filtry', closed: 'Zamknięte', textChanges: 'Zmiany tekstu', editPeopleRoles: 'Wyświetlane role', inheritedRoles: 'Z Redmine', noRole: 'Bez roli',
 });
 Object.assign(es, {
+  createInColumn: 'Crear tarea en {{column}}',
   choose: 'Elegir…', searchOptions: 'Buscar opciones…', noOptions: 'No hay opciones coincidentes', frequentPerson: 'Elegido con frecuencia', role_qa: 'QA', role_developer: 'Desarrollador', role_support: 'Soporte', support: 'Soporte',
   roleOverrides: 'Personas y roles', roleOverridesHint: 'Los roles del proyecto vienen de Redmine. Puedes cambiar su visualización localmente.', useRedmineRoles: 'Roles de Redmine', restoreRedmineRoles: 'Restaurar roles de Redmine',
   saveFormShortcut: 'Guardar el formulario activo', saveShortcuts: 'Guardar atajos', shortcutsSaved: 'Atajos guardados', autosaved: 'Los cambios se guardan automáticamente', savingSettings: 'Guardando ajustes…', unsavedChanges: 'Cambios sin guardar',

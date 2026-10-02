@@ -76,6 +76,8 @@ test('read-only connection disables remote actions without hiding the board', as
   await page.goto('/');
   await expect(page.getByTestId('board')).toBeVisible();
   await expect(page.getByTestId('new-issue')).toBeDisabled();
+  expect(await page.locator('.lane-create').count()).toBeGreaterThan(0);
+  await expect(page.locator('.lane-create:enabled')).toHaveCount(0);
   await page.locator('[data-testid^="issue-card-"]').first().click();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
 });
