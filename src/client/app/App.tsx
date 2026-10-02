@@ -132,7 +132,12 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const [issueLoadError, setIssueLoadError] = useState<string>();
   const [projectSearch, setProjectSearch] = useState('');
   const searchEditingRef = useRef(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('redmine-workspace:sidebar-collapsed') === 'true'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('redmine-workspace:sidebar-collapsed', String(sidebarCollapsed)); } catch { /* Storage may be unavailable; toggling still works. */ }
+  }, [sidebarCollapsed]);
   const [toastText, setToastText] = useState('');
   const [busySync, setBusySync] = useState(false);
   const [pendingIssueIds, setPendingIssueIds] = useState<Set<number>>(() => new Set());
@@ -505,6 +510,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       const isSaveFormShortcut = action === 'saveForm' && (event.metaKey || event.ctrlKey);
       if (isEditableTarget(event.target) && !isSaveFormShortcut) return;
       if (document.querySelector('[data-workspace-popover]') && !isSaveFormShortcut) return;
+      if (action === 'toggleSidebar' && event.repeat) { event.preventDefault(); return; }
       if (action === 'saveForm') {
         if (isSaveFormShortcut && dispatchActiveFormSave(event.target instanceof Element ? event.target : null)) event.preventDefault();
         return;
@@ -519,6 +525,9 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       if (action === 'moveStatus' && !targetIssueId) return;
       event.preventDefault();
       if (action === 'view/mine') navigate(current => ({ filters: toggleAssignedToMe(current.filters), view: current.view === 'mine' ? 'all' : current.view }));
+      else if (action === 'toggleSidebar') setSidebarCollapsed(value => !value);
+      else if (action === 'openInbox') openScreen('inbox');
+      else if (action === 'openSettings') openScreen('settings');
       else if (action === 'projectPicker') openOverlay('projects');
       else if (action === 'search') searchRef.current?.focus();
       else if (action === 'createIssue') openCreateIssue();
@@ -537,12 +546,13 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [board?.issues, canWrite, copyIssueBranch, copyIssueUrl, issueId, issueOpen, notify, queryClient, statuses, t, view, navigate, location]);
 
+  const shortcutKeys = (action: string) => settings.shortcuts.find(item => item.action === action && item.enabled && item.keys.trim())?.keys;
   const visibleProjects = bootstrap.projects.filter((item) => `${item.name} ${item.identifier}`.toLocaleLowerCase().includes(projectSearch.toLocaleLowerCase()));
   const statusesReady = statuses.length > 0;
   if (!project) return <div className="startup-state startup-error"><div className="startup-brand"><span className="brand-mark"><LayoutDashboard size={18} /></span><strong>{t('appName')}</strong></div><div className="empty-illustration"><ShieldCheck size={24} /></div><h1>{t('noProjects')}</h1><p>{bootstrap.mode === 'redmine' ? t('readOnlyNote') : t('offline')}</p><Button variant="primary" onClick={onReload}>{t('retry')}</Button></div>;
   return <div className={`app-frame${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
     <aside className="sidebar">
-      <div className="sidebar-top"><a href="#home" className="brand-lockup" onClick={(e) => e.preventDefault()}><span className="brand-mark"><LayoutDashboard size={17} /></span><span className="brand-name">Redmine<span>Workspace</span></span></a><IconButton label={sidebarCollapsed ? t('open') : t('close')} className="sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</IconButton></div>
+      <div className="sidebar-top"><a href="#home" className="brand-lockup" onClick={(e) => e.preventDefault()}><span className="brand-mark"><LayoutDashboard size={17} /></span><span className="brand-name">Redmine<span>Workspace</span></span></a><IconButton label={sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')} title={`${sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')}${shortcutKeys('toggleSidebar') ? ` (${shortcutKeys('toggleSidebar')})` : ''}`} aria-expanded={!sidebarCollapsed} data-testid="sidebar-toggle" className="sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</IconButton></div>
       <button type="button" className="project-selector" onClick={() => { openOverlay('projects'); setProjectSearch(''); }} aria-haspopup="dialog"><span className="project-symbol">{project.name.trim().charAt(0).toUpperCase()}</span><span className="project-selector-text"><small>{t('projects')}</small><strong>{project.name}</strong></span><ChevronDown size={15} /></button>
       <div className="sidebar-scroll">
         <div className="nav-group"><span className="nav-label">{t('workspace')}</span>
@@ -552,9 +562,9 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
           <NavItem active={screen === 'backlog'} label={t('backlog')} icon={<ListTodo size={17} />} collapsed={sidebarCollapsed} onClick={() => selectView('backlog')} />
         </div>
         <div className="nav-group"><span className="nav-label">{t('personal')}</span>
-          <NavItem active={screen === 'inbox'} label={t('inbox')} icon={unreadCount > 0 ? <BellDot size={17} /> : <Inbox size={17} />} collapsed={sidebarCollapsed} count={unreadCount} onClick={() => openScreen('inbox')} />
+          <NavItem active={screen === 'inbox'} label={t('inbox')} icon={unreadCount > 0 ? <BellDot size={17} /> : <Inbox size={17} />} collapsed={sidebarCollapsed} shortcut={shortcutKeys('openInbox')} count={unreadCount} onClick={() => openScreen('inbox')} />
           <NavItem active={screen === 'releases'} label={t('releases')} icon={<Rocket size={17} />} collapsed={sidebarCollapsed} onClick={() => openScreen('releases')} />
-          <NavItem active={screen === 'settings'} label={t('settings')} icon={<Settings2 size={17} />} collapsed={sidebarCollapsed} onClick={() => openScreen('settings')} />
+          <NavItem active={screen === 'settings'} label={t('settings')} icon={<Settings2 size={17} />} collapsed={sidebarCollapsed} shortcut={shortcutKeys('openSettings')} onClick={() => openScreen('settings')} />
         </div>
       </div>
       <div className="sidebar-bottom"><div className="mode-footer"><span className={`connection-indicator ${bootstrap.connected ? 'is-connected' : 'is-offline'}`} /><span>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</span></div><div className="user-footer"><Avatar person={bootstrap.me} size="sm" /><span><strong>{bootstrap.me.name}</strong><small>{bootstrap.mode === 'demo' ? t('demo') : t('readOnlyBadge')}</small></span></div></div>
@@ -594,7 +604,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
 function emptyBoard(): BoardData { return { issues: [], versions: [], members: [], labels: [], total: 0 }; }
 
 function NavItem({ active, label, icon, collapsed, shortcut, count, onClick }: { active: boolean; label: string; icon: React.ReactNode; collapsed: boolean; shortcut?: string; count?: number; onClick: () => void }) {
-  return <button type="button" className={`nav-item${active ? ' nav-active' : ''}`} onClick={onClick} aria-label={label} title={label}><span className="nav-icon">{icon}</span>{!collapsed && <><span className="nav-text">{label}</span>{typeof count === 'number' && count > 0 && <span className="nav-count">{count > 99 ? '99+' : count}</span>}{shortcut && <kbd>{shortcut}</kbd>}</>}</button>;
+  return <button type="button" className={`nav-item${active ? ' nav-active' : ''}`} onClick={onClick} aria-label={label} title={`${label}${shortcut ? ` (${shortcut})` : ''}`}><span className="nav-icon">{icon}</span>{!collapsed && <><span className="nav-text">{label}</span>{typeof count === 'number' && count > 0 && <span className="nav-count">{count > 99 ? '99+' : count}</span>}{shortcut && <kbd>{shortcut}</kbd>}</>}</button>;
 }
 
 function ProjectPickerDialog({ projects, current, search, onSearch, onPick, onClose }: { projects: Project[]; current: Project; search: string; onSearch: (query: string) => void; onPick: (project: Project) => void; onClose: () => void }) {

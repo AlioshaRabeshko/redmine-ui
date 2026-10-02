@@ -2,6 +2,7 @@ import { and, asc, desc, eq, isNotNull, isNull, notInArray } from 'drizzle-orm';
 import type { AppSettings, Issue, Journal, Notification, Operation, PeopleField, Person, Project, Status, Priority, Version } from '../../shared/types.js';
 import { demoIssues, demoJournalIssues, demoJournals, demoMe, demoPeople, demoPriorities, demoProjectMembers, demoProjects, demoStatuses, demoVersions } from '../demo/fixtures.js';
 import { defaultSettings } from '../settings.js';
+import { navigationShortcuts, normalizeShortcutKeys } from '../../shared/shortcuts.js';
 import type { AppDatabase } from './connection.js';
 import { drafts, issues, issueRoles, journals, keyValues, notifications, operations, peopleSelections, projects, sourceEvents, syncCursors, versions } from './schema.js';
 
@@ -115,7 +116,7 @@ export class WorkspaceStore {
     if (!settings) {
       const initial = structuredClone(defaultSettings);
       await this.setSettings(initial);
-      await this.setValue('settingsSchemaVersion', 1);
+      await this.setValue('settingsSchemaVersion', 2);
       return initial;
     }
     let compatible: AppSettings = {
@@ -130,8 +131,11 @@ export class WorkspaceStore {
     const schemaVersion = await this.getValue<number>('settingsSchemaVersion') ?? 0;
     if (schemaVersion < 1) {
       compatible = { ...compatible, shortcuts: ensureSaveFormShortcut(compatible.shortcuts) };
+    }
+    if (schemaVersion < 2) {
+      compatible = { ...compatible, shortcuts: ensureNavigationShortcuts(compatible.shortcuts) };
       await this.setSettings(compatible);
-      await this.setValue('settingsSchemaVersion', 1);
+      await this.setValue('settingsSchemaVersion', 2);
     }
     return compatible;
   }
@@ -406,4 +410,17 @@ function ensureSaveFormShortcut(shortcuts: AppSettings['shortcuts']): AppSetting
 function isPortableSaveBinding(value: string): boolean {
   const canonical = value.trim().toLocaleLowerCase().replace(/\s+/g, '').replace(/^(ctrl|control|meta|command|mod)\+/, 'cmd+');
   return canonical === 'cmd+s';
+}
+
+/** Add new actions once without changing custom keys, disabled actions or existing bindings. */
+function ensureNavigationShortcuts(shortcuts: AppSettings['shortcuts']): AppSettings['shortcuts'] {
+  const result = [...shortcuts];
+  for (const shortcut of navigationShortcuts) {
+    if (result.some(item => item.action === shortcut.action)) continue;
+    const occupied = result.some(item => item.enabled && normalizeShortcutKeys(item.keys) === normalizeShortcutKeys(shortcut.keys));
+    let id = shortcut.id;
+    for (let suffix = 2; result.some(item => item.id === id); suffix++) id = `${shortcut.id}-${suffix}`;
+    result.push({ ...shortcut, id, enabled: !occupied });
+  }
+  return result;
 }

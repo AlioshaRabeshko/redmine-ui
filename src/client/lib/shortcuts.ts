@@ -1,4 +1,6 @@
 import type { Shortcut } from '../../shared/types';
+import { navigationShortcuts, normalizeShortcutKeys } from '../../shared/shortcuts';
+export { normalizeShortcutKeys } from '../../shared/shortcuts';
 
 export const defaultShortcuts: Shortcut[] = [
   { id: 'mine', keys: 'Q', action: 'view/mine', enabled: true },
@@ -10,20 +12,8 @@ export const defaultShortcuts: Shortcut[] = [
   { id: 'copy-branch', keys: 'Mod+Shift+C', action: 'copyBranch', enabled: true },
   { id: 'move-status', keys: 'S', action: 'moveStatus', enabled: true },
   { id: 'save-form', keys: 'Mod+S', action: 'saveForm', enabled: true },
+  ...navigationShortcuts,
 ];
-
-export function normalizeShortcutKeys(keys: string): string {
-  const parts = [...new Set(keys.trim().split('+').map((part) => {
-    const value = part.trim();
-    const lower = value.toLowerCase();
-    if (['mod', 'meta', 'cmd', 'command', 'ctrl', 'control'].includes(lower)) return 'Mod';
-    if (lower === 'alt' || lower === 'option') return 'Alt';
-    if (lower === 'shift') return 'Shift';
-    if (lower.length === 1) return lower.toUpperCase();
-    return value;
-  }).filter(Boolean))];
-  return parts.sort((a, b) => (a === 'Mod' ? -1 : b === 'Mod' ? 1 : a === 'Alt' ? -1 : b === 'Alt' ? 1 : a === 'Shift' ? -1 : b === 'Shift' ? 1 : a.localeCompare(b))).join('+');
-}
 
 export function shortcutForEvent(shortcut: Shortcut, event: KeyboardEvent): boolean {
   if (!shortcut.enabled || !shortcut.keys.trim()) return false;

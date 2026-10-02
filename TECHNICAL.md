@@ -231,3 +231,12 @@ Command API додає `editJournal` (`journalId`, `notes`, `expectedNotes`), `d
 Inline-редактор зберігає текст, початкові notes та operation ID у localStorage, ізолюючи scope/user/project/issue/journal. Закриття картки зберігає чернетку; Cancel явно її прибирає. Конфлікт відновленої чернетки блокує Save до свідомого рішення користувача. Відповідь Save не стирає дописаний під час запиту текст; він отримує підтверджену baseline. Delete confirmation зберігає snapshot notes для перевірки конфлікту. Cmd/Ctrl+S використовує активну форму редактора/відповіді, а не змінює інші текстові поля.
 
 Quote дописує рядки з `>` та автора/дату/посилання в чернетку відповіді; формат залишається безпечним вихідним текстом до впровадження renderer під формат Redmine. Копіювання використовує оригінальний URL Redmine з `#change-<journalId>`, не порядковий `#note-N`. Ці дві дії та локальні чернетки доступні також у read-only. Всі нові контролі перекладені uk/pl/es/en.
+
+
+### Стан сайдбара й навігаційні shortcuts
+
+`redmine-workspace:sidebar-collapsed` у localStorage містить `true` / `false`; lazy initializer читає лише `true` як згорнутий стан, effect зберігає кожну зміну. Недоступне сховище не блокує ручне перемикання. `aria-expanded` і перекладена назва кнопки відповідають стану; tooltip показує поточну ввімкнену прив'язку. Sidebar preference не створює History entry.
+
+Спільний `src/shared/shortcuts.ts` визначає `toggleSidebar` (Mod+B), `openInbox` (Shift+I), `openSettings` (Shift+P) та нормалізацію комбінацій для matcher і перевірки конфліктів міграції. Навігаційні дії викликають наявний `openScreen`, очищують transient форми й підтримують native History без command/read запитів. Повторний keydown при утриманні sidebar shortcut ігнорується. Зберігаються safeguards editable targets / popovers.
+
+`settingsSchemaVersion=2` одноразово додає відсутні дії зі збереженням власних keys/enabled і унікальними IDs. Зайнята enabled-комбінація залишає додану дію disabled; Cmd/Ctrl/Mod та порядок модифікаторів нормалізуються спільним helper. Після міграції видалення нової дії не спричиняє її повторне додавання.

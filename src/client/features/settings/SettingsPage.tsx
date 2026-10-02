@@ -256,7 +256,7 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
 
   const labelForShortcut = (item: Shortcut) => {
     const action = item.action === 'view' && item.value === 'mine' ? 'view/mine' : item.action;
-    return t(action === 'view/mine' ? 'assignShortcut' : action === 'projectPicker' ? 'openProjectPicker' : action === 'copyRedmineUrl' ? 'copyUrlShortcut' : action === 'search' ? 'openSearch' : action === 'createIssue' ? 'createShortcut' : action === 'copyBranch' ? 'copyBranchShortcut' : action === 'moveStatus' ? 'moveShortcut' : action === 'commandPalette' ? 'showHelp' : action === 'label' ? 'labelFilter' : action === 'saveForm' ? 'saveFormShortcut' : 'action');
+    return t(action === 'view/mine' ? 'assignShortcut' : action === 'projectPicker' ? 'openProjectPicker' : action === 'copyRedmineUrl' ? 'copyUrlShortcut' : action === 'search' ? 'openSearch' : action === 'createIssue' ? 'createShortcut' : action === 'copyBranch' ? 'copyBranchShortcut' : action === 'moveStatus' ? 'moveShortcut' : action === 'commandPalette' ? 'showHelp' : action === 'label' ? 'labelFilter' : action === 'saveForm' ? 'saveFormShortcut' : action === 'toggleSidebar' ? 'toggleSidebarShortcut' : action === 'openInbox' ? 'openInbox' : action === 'openSettings' ? 'openSettingsShortcut' : 'action');
   };
   const changeAction = (item: Shortcut, action: string) => setShortcut(item, { action, value: action === 'view' ? 'mine' : '' });
   const saveShortcuts = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -307,7 +307,7 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const labelOptions = labels.map((label) => ({ value: label, label }));
   const actionOptions = [
     ['view', 'assignShortcut'], ['projectPicker', 'openProjectPicker'], ['copyRedmineUrl', 'copyUrlShortcut'], ['search', 'openSearch'],
-    ['createIssue', 'createShortcut'], ['commandPalette', 'showHelp'], ['copyBranch', 'copyBranchShortcut'], ['moveStatus', 'moveShortcut'], ['label', 'labelFilter'], ['saveForm', 'saveFormShortcut'],
+    ['createIssue', 'createShortcut'], ['commandPalette', 'showHelp'], ['copyBranch', 'copyBranchShortcut'], ['moveStatus', 'moveShortcut'], ['label', 'labelFilter'], ['saveForm', 'saveFormShortcut'], ['toggleSidebar', 'toggleSidebarShortcut'], ['openInbox', 'openInbox'], ['openSettings', 'openSettingsShortcut'],
   ].map(([value, key]) => ({ value, label: t(key) }));
 
   const stateMessage = Object.values(saveStates).some((state) => state.state === 'pending') ? t('savingSettings') : Object.values(saveStates).some((state) => state.state === 'saved') ? t('autosaved') : '';
@@ -389,7 +389,7 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
         <form ref={shortcutFormRef} onSubmit={saveShortcuts} className="settings-shortcuts-form" data-workspace-save>
           <div className="settings-card-title"><Command size={18} /><div><h2>{t('keyboard')}</h2><p>{t('shortcutHint')}</p></div><div className="shortcut-heading-actions"><Button size="sm" onClick={addShortcut}><Plus size={13} />{t('addShortcut')}</Button><Button size="sm" onClick={() => updateShortcutDraft(() => defaultShortcuts)}>{t('resetShortcuts')}</Button></div></div>
           <div className="shortcut-list">
-            {shortcuts.map((shortcut) => <div className={`shortcut-row${duplicateShortcut === shortcut.id ? ' has-conflict' : ''}`} key={shortcut.id}>
+            {shortcuts.map((shortcut) => <div className={`shortcut-row${duplicateShortcut === shortcut.id ? ' has-conflict' : ''}`} key={shortcut.id} data-shortcut-action={shortcut.action}>
               <span className="shortcut-action">{labelForShortcut(shortcut)}</span>
               <input className="shortcut-input" aria-label={`${t('shortcut')} ${labelForShortcut(shortcut)}`} value={shortcut.keys} onChange={(e) => setShortcut(shortcut, { keys: e.target.value })} placeholder="—" />
               <Picker className="shortcut-action-picker" options={actionOptions} label={t('shortcutTarget')} value={shortcut.action} onChange={(action) => changeAction(shortcut, action)} />

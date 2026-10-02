@@ -96,6 +96,23 @@ describe('project people, recommendations, and settings patches', () => {
     expect(migrated.shortcuts.some((shortcut: { action: string }) => shortcut.action === 'saveForm')).toBe(false);
   });
 
+  it('adds navigation shortcuts once while preserving customized actions and occupied bindings', async () => {
+    const server = await createDemo();
+    const legacy = structuredClone(defaultSettings);
+    legacy.shortcuts = [...legacy.shortcuts.filter(item => !['toggleSidebar', 'openInbox', 'openSettings'].includes(item.action)),
+      { id: 'custom-sidebar', keys: 'Alt+B', action: 'toggleSidebar', enabled: false },
+      { id: 'open-inbox', keys: 'I+Shift', action: 'search', enabled: true }];
+    await server.backend.store.setSettings(legacy);
+    await server.backend.store.setValue('settingsSchemaVersion', 1);
+    const migrated = await server.backend.store.getSettings();
+    expect(migrated.shortcuts).toContainEqual(legacy.shortcuts.find(item => item.id === 'custom-sidebar'));
+    expect(migrated.shortcuts).toContainEqual({ id: 'open-inbox-2', keys: 'Shift+I', action: 'openInbox', enabled: false });
+    expect(migrated.shortcuts).toContainEqual({ id: 'open-settings', keys: 'Shift+P', action: 'openSettings', enabled: true });
+    expect(new Set(migrated.shortcuts.map(item => item.id)).size).toBe(migrated.shortcuts.length);
+    await server.backend.store.setSettings({ ...migrated, shortcuts: migrated.shortcuts.filter(item => item.action !== 'openSettings') });
+    expect((await server.backend.store.getSettings()).shortcuts.some(item => item.action === 'openSettings')).toBe(false);
+  });
+
   it('counts successful manual choices once, rejects failed choices, and skips automation', async () => {
     const server = await createDemo();
     async function updateAssignment(issueId: number, personId: number, operationId: string) {

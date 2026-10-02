@@ -182,6 +182,11 @@ Object.assign(es, {
   likesUnavailable: 'Aún no se ha confirmado que la API de esta instancia de Redmine admita reacciones.',
 });
 
+Object.assign(en, { toggleSidebarShortcut: 'Toggle sidebar', expandSidebar: 'Expand sidebar', collapseSidebar: 'Collapse sidebar', openSettingsShortcut: 'Open settings' });
+Object.assign(uk, { toggleSidebarShortcut: 'Згорнути / розгорнути сайдбар', expandSidebar: 'Розгорнути сайдбар', collapseSidebar: 'Згорнути сайдбар', openSettingsShortcut: 'Відкрити налаштування' });
+Object.assign(pl, { toggleSidebarShortcut: 'Zwiń / rozwiń panel boczny', expandSidebar: 'Rozwiń panel boczny', collapseSidebar: 'Zwiń panel boczny', openSettingsShortcut: 'Otwórz ustawienia' });
+Object.assign(es, { toggleSidebarShortcut: 'Contraer / expandir barra lateral', expandSidebar: 'Expandir barra lateral', collapseSidebar: 'Contraer barra lateral', openSettingsShortcut: 'Abrir ajustes' });
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },

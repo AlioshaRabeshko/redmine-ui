@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { navigationShortcuts } from '../shared/shortcuts.js';
 import type { AppSettings, SettingsPatch } from '../shared/types.js';
 export type { SettingsPatch } from '../shared/types.js';
 
@@ -74,6 +75,7 @@ export const defaultSettings: AppSettings = {
     { id: 'copy-branch', keys: 'Mod+Shift+C', action: 'copyBranch', enabled: true },
     { id: 'move-status', keys: 'S', action: 'moveStatus', enabled: true },
     { id: 'save-form', keys: 'Mod+S', action: 'saveForm', enabled: true },
+    ...navigationShortcuts,
   ],
   savedViews: [],
   sort: { field: 'priority', direction: 'desc' },
