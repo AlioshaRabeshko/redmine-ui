@@ -24,6 +24,8 @@ The user authorizes development subagents using gpt-6-luna with max reasoning. T
 
 Maintain an isolated demo mode and a real read-only mode. A failed real connection must not silently become demo mode. UI must clearly display its mode and explain disabled real write actions. Keep drafts when saving is blocked.
 
+For the next UX revision, follow the latest decisions in RESEARCH.md section 19: preserve compact typography; Q toggles the assigned-to-me filter without clearing other filters; S changes status and Cmd/Ctrl+S saves the active form. Settings autosave valid changes, while shortcut edits require explicit save and must remain separate drafts. Mobile UX work and a full mobile audit are deferred by the user; focus on desktop. These decisions do not lift the external mutation restriction.
+
 Issue status and roadmap membership are distinct. Roadmap membership takes display priority; commands use the actual status. Completing a release skips tasks already successfully completed in configured Done, checks Deploy for the remaining tasks, then closes them and the Version. Rejected is not automatically equivalent to successful completion. Implement/test this only in demo while the mutation restriction is active.
 
 ## Database connectors
