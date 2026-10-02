@@ -49,10 +49,12 @@ export class SyncService {
       const baseScope = this.config.scope;
       this.store.adoptInitialSettingsIntoUserScope(`${baseScope}:user:${remoteMe.id}`, baseScope);
       const initialCursor = await this.store.getCursor('baseline');
+      const storedFirstBaseline = await this.store.getCursor('first-baseline');
+      const firstBaseline = storedFirstBaseline ?? initialCursor;
       const lastFullSync = await this.store.getCursor('full-sync');
       const fullSync = !lastFullSync || Date.now() - Date.parse(lastFullSync) > 6 * 60 * 60_000;
       const since = !fullSync && initialCursor ? new Date(Date.parse(initialCursor) - 5 * 60_000).toISOString() : undefined;
-      const snapshot = await this.adapter.snapshot(since, remoteMe);
+      const snapshot = await this.adapter.snapshot(since, remoteMe, Boolean(initialCursor));
       this.lastSnapshot = snapshot;
       const previousIssues = new Map((await this.store.getIssues()).map(issue => [issue.id, issue]));
       for (const project of snapshot.projects) await this.store.saveProject(project);
@@ -113,7 +115,7 @@ export class SyncService {
         await this.store.saveJournal(item.issueId, item.journal);
         const sourceEventId = `journal:${item.journal.id}`;
         const wasSeen = await this.store.hasSeenSourceEvent(sourceEventId);
-        if (!initialCursor) {
+        if (!initialCursor || (firstBaseline && Date.parse(item.journal.createdOn) < Date.parse(firstBaseline))) {
           await this.store.markSourceEventSeen(sourceEventId);
           continue; // The first sync is a quiet historical baseline.
         }
@@ -139,6 +141,7 @@ export class SyncService {
         }
       }
       const syncedAt = new Date().toISOString();
+      if (!storedFirstBaseline) await this.store.setCursor('first-baseline', firstBaseline ?? syncStartedAt);
       if (fullSync) await this.store.setCursor('full-sync', syncStartedAt);
       await this.store.setCursor('baseline', syncStartedAt);
       this.connected = true;

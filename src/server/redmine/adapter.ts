@@ -47,7 +47,7 @@ export class RedmineAdapter {
     return person(response.user);
   }
 
-  async snapshot(since?: string, knownMe?: Person): Promise<RedmineSnapshot> {
+  async snapshot(since?: string, knownMe?: Person, hydrateDetails = true): Promise<RedmineSnapshot> {
     const [me, rawProjects, rawStatuses, rawPriorities] = await Promise.all([
       knownMe ? Promise.resolve(knownMe) : this.currentUser(),
       this.readPaged<RedmineProject>('projects.json?include=trackers', 'projects'),
@@ -69,8 +69,8 @@ export class RedmineAdapter {
     let labelsFieldId: number | undefined;
 
     for (const project of projects) {
-      const updatedFilter = since ? `&updated_on=%3E%3D${encodeURIComponent(since)}` : '';
-      const query = `issues.json?project_id=${project.id}&subproject_id=%21%2A&status_id=*&${updatedFilter ? `${updatedFilter.slice(1)}&` : ''}limit=100&offset=0`;
+      const updatedFilter = since ? `&updated_on=%3E%3D${encodeURIComponent(since.replace(/\.\d+Z$/, 'Z'))}` : '';
+      const query = `issues.json?project_id=${project.id}&subproject_id=%21%2A&status_id=${since ? '*' : 'open'}&${updatedFilter ? `${updatedFilter.slice(1)}&` : ''}limit=100&offset=0`;
       const [rawIssues, rawVersions, membershipResponse] = await Promise.all([
         this.readPaged<RedmineIssue>(query, 'issues'),
         this.readPaged<RedmineVersion>(`projects/${encodeURIComponent(String(project.id))}/versions.json`, 'versions').catch(() => {
@@ -80,6 +80,14 @@ export class RedmineAdapter {
           warnings.push(`Список учасників проєкту ${project.name} недоступний для цього токена.`); return undefined;
         }),
       ]);
+      // Initial boards need open work and every task in active releases, not years of archived history.
+      if (!since) {
+        const releaseIssues = await mapLimit(rawVersions.filter(version => version.status !== 'closed' && (!version.project || version.project.id === project.id)), 2,
+          version => this.readPaged<RedmineIssue>(`issues.json?project_id=${project.id}&subproject_id=%21%2A&status_id=closed&fixed_version_id=${version.id}`, 'issues'));
+        const uniqueIssues = new Map(rawIssues.map(issue => [issue.id, issue]));
+        for (const issue of releaseIssues.flat()) uniqueIssues.set(issue.id, issue);
+        rawIssues.splice(0, rawIssues.length, ...uniqueIssues.values());
+      }
       const rawMemberships = membershipResponse ?? [];
       const projectPeople = new Set<number>([me.id]);
       const projectMemberIds: number[] = [];
@@ -97,7 +105,16 @@ export class RedmineAdapter {
         projectMembershipIds[String(project.id)] = [...new Set(projectMemberIds)];
         projectMembershipRoles[String(project.id)] = membershipRoles;
       }
-      const hydratedIssues = await mapLimit(rawIssues, 4, async (listIssue) => {
+      if (!hydrateDetails) {
+        const watched = await this.readPaged<RedmineIssue>(`${query}&watcher_id=me`, 'issues');
+        const watchedReleaseIssues = await mapLimit(rawVersions.filter(version => version.status !== 'closed' && (!version.project || version.project.id === project.id)), 2,
+          version => this.readPaged<RedmineIssue>(`issues.json?project_id=${project.id}&subproject_id=%21%2A&status_id=closed&fixed_version_id=${version.id}&watcher_id=me`, 'issues'));
+        const watchedIds = new Set([...watched, ...watchedReleaseIssues.flat()].map(issue => issue.id));
+        for (const raw of rawIssues) {
+          if (watchedIds.has(raw.id)) raw.watchers = [...(raw.watchers ?? []).filter(user => user.id !== me.id), { id: me.id, name: me.name }];
+        }
+      }
+      const hydratedIssues = !hydrateDetails ? rawIssues : await mapLimit(rawIssues, 4, async (listIssue) => {
         const detail = await this.transport.request<{ issue: RedmineIssue }>(
           `issues/${listIssue.id}.json?include=journals%2Cwatchers%2Cattachments%2Callowed_statuses`);
         if (!detail.issue) throw new RedmineRequestError(`Redmine не повернув задачу ${listIssue.id}.`);
@@ -135,6 +152,22 @@ export class RedmineAdapter {
       journals: allJournals, branchFieldId, labelsFieldId, warnings };
   }
 
+  async releaseIssues(versionId: number, projectId: number): Promise<Issue[]> {
+    const raw = await this.readPaged<RedmineIssue>(`issues.json?project_id=${projectId}&subproject_id=%21%2A&status_id=*&fixed_version_id=${versionId}`, 'issues');
+    return raw.map(issue => mapIssue(issue, projectId));
+  }
+
+  async issueDetail(issueId: number): Promise<{ issue: Issue; journals: Journal[]; people: Person[] }> {
+    const detail = await this.transport.request<{ issue: RedmineIssue }>(`issues/${issueId}.json?include=journals%2Cwatchers%2Cattachments%2Callowed_statuses`);
+    if (!detail.issue || !detail.issue.project) throw new RedmineRequestError(`Redmine не повернув задачу ${issueId}.`);
+    const raw = detail.issue;
+    const fieldNames = new Map((raw.custom_fields ?? []).map(field => [field.id, field.name]));
+    const journals = (raw.journals ?? []).map(journal => mapJournal(journal, fieldNames));
+    const people = [raw.author, raw.assigned_to, ...(raw.watchers ?? []), ...(raw.journals ?? []).map(journal => journal.user)]
+      .filter((user): user is RedmineUser => Boolean(user)).map(person);
+    return { issue: mapIssue(raw, raw.project!.id), journals, people };
+  }
+
   private async readPaged<T>(initialPath: string, collection: string): Promise<T[]> {
     const question = initialPath.indexOf('?');
     const pathname = question < 0 ? initialPath : initialPath.slice(0, question);
@@ -150,11 +183,12 @@ export class RedmineAdapter {
       const rows = response[collection];
       if (!Array.isArray(rows)) throw new RedmineRequestError(`Redmine не повернув список ${collection}.`);
       result.push(...rows as T[]);
-      const limit = Number(response.limit) || 100;
+      const reportedLimit = Number(response.limit);
+      const limit = Number.isSafeInteger(reportedLimit) && reportedLimit > 0 ? reportedLimit : rows.length;
       total = Number.isFinite(Number(response.total_count)) ? Number(response.total_count) : result.length;
-      if (rows.length === 0) break;
+      // Some endpoints return the entire collection with only total_count, without limit/offset.
+      if (rows.length === 0 || response.total_count === undefined || result.length >= total) break;
       offset += limit;
-      if (response.total_count === undefined && rows.length < limit) break;
     }
     return result;
   }

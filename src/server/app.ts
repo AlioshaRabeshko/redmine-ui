@@ -4,14 +4,14 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Bootstrap, BoardData, Command, IssueDetail, PeopleField, Person, PersonRole, RedmineRole, ReleaseDetail } from '../shared/types.js';
+import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, PeopleField, Person, PersonRole, RedmineRole, ReleaseDetail } from '../shared/types.js';
 import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
 import { applyMigrations } from './db/migrate.js';
 import { WorkspaceStore, type ProjectBackgroundContentType } from './db/store.js';
 import { RedmineAdapter } from './redmine/adapter.js';
-import type { FetchLike } from './redmine/transport.js';
+import { RedmineRequestError, type FetchLike } from './redmine/transport.js';
 import { BackgroundWorker, SyncService, type EventHub } from './sync/service.js';
 
 export interface BackendRuntime {
@@ -93,6 +93,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
 
   app.addHook('preHandler', async (request) => assertLocalOrigin(request));
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof RedmineRequestError && error.statusCode === 404) return reply.code(404).send({ code: 'NOT_FOUND', message: 'Об’єкт не знайдено в Redmine.' });
+    if (error instanceof RedmineRequestError && [401, 403].includes(error.statusCode ?? 0)) return reply.code(error.statusCode!).send({ code: 'FORBIDDEN', message: 'Redmine відхилив доступ до цього об’єкта.' });
     if (error instanceof ApiFault) return reply.code(error.statusCode).send({ code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) });
     const validation = error as Error & { validation?: unknown; statusCode?: number };
     if (validation.validation) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Перевірте формат запиту.' });
@@ -197,10 +199,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
   app.get<{ Params: { id: string } }>('/api/issues/:id', async (request): Promise<IssueDetail> => {
     await sync.bootstrapRead();
     const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
+    let remoteJournals: Journal[] | undefined;
+    if (config.mode === 'redmine' && adapter) {
+      const detail = await adapter.issueDetail(issueId);
+      remoteJournals = detail.journals;
+      if (!(await store.getProjects()).some(project => project.id === detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
+      const cached = await store.getIssue(issueId);
+      await store.saveIssue({ ...detail.issue, developerId: cached?.developerId, qaId: cached?.qaId });
+      for (const journal of detail.journals) await store.saveJournal(issueId, journal);
+      const people = new Map((await store.getValue<Person[]>('people') ?? []).map(person => [person.id, person]));
+      for (const person of detail.people) people.set(person.id, person);
+      await store.setValue('people', [...people.values()]);
+    }
     const issue = await store.getIssue(issueId);
     if (!issue) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
     const [people, me, storedJournals] = await Promise.all([
-      store.getValue<Person[]>('people'), store.getValue<Person>('me'), store.getJournals(issueId),
+      store.getValue<Person[]>('people'), store.getValue<Person>('me'), remoteJournals ?? store.getJournals(issueId),
     ]);
     const currentUser = me ?? { id: 0, name: 'Підключення Redmine' };
     const journals = storedJournals.map(journal => {
@@ -219,6 +233,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const versionId = positiveId(request.params.id, 'VERSION_NOT_FOUND');
     const version = await store.getVersion(versionId);
     if (!version) throw new ApiFault(404, 'VERSION_NOT_FOUND', 'Реліз не знайдено.');
+    if (config.mode === 'redmine' && adapter) {
+      const remoteIssues = await adapter.releaseIssues(versionId, version.projectId);
+      const cachedIssues = new Map((await store.getIssues(version.projectId)).map(issue => [issue.id, issue]));
+      const issues: Issue[] = [];
+      for (const issue of remoteIssues) {
+        const cached = cachedIssues.get(issue.id);
+        const merged = { ...issue, watcherIds: cached?.watcherIds ?? issue.watcherIds, developerId: cached?.developerId, qaId: cached?.qaId };
+        await store.saveIssue(merged);
+        issues.push(merged);
+      }
+      return { version, issues };
+    }
     const issues = (await store.getIssues(version.projectId)).filter(issue => issue.fixedVersionId === version.id);
     return { version, issues };
   });

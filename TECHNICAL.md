@@ -240,3 +240,13 @@ Quote дописує рядки з `>` та автора/дату/посилан
 Спільний `src/shared/shortcuts.ts` визначає `toggleSidebar` (Mod+B), `openInbox` (Shift+I), `openSettings` (Shift+P) та нормалізацію комбінацій для matcher і перевірки конфліктів міграції. Навігаційні дії викликають наявний `openScreen`, очищують transient форми й підтримують native History без command/read запитів. Повторний keydown при утриманні sidebar shortcut ігнорується. Зберігаються safeguards editable targets / popovers.
 
 `settingsSchemaVersion=2` одноразово додає відсутні дії зі збереженням власних keys/enabled і унікальними IDs. Зайнята enabled-комбінація залишає додану дію disabled; Cmd/Ctrl/Mod та порядок модифікаторів нормалізуються спільним helper. Після міграції видалення нової дії не спричиняє її повторне додавання.
+
+### Читання реального архіву на вимогу
+
+`readPaged` використовує явний позитивний limit відповіді або фактичну кількість rows і завершується, якщо отримано total_count або endpoint не має pagination metadata. Це підтримує Versions, які можуть повернути понад 100 записів одразу з одним total_count.
+
+Baseline snapshot без since запитує status_id=open та status_id=closed для кожної активної Version свого проєкту, дедуплікує IDs. Перша baseline не читає історію кожної картки: watcher_id=me дає потрібні IDs для подання «Спостерігаю», а картка отримує всі watchers/журнали при відкритті. Наступні snapshots гідрують змінені задачі. Incremental snapshot із since продовжує запитувати status_id=* і updated_on, тому бачить зміни після закриття. `first-baseline` зберігає початкову часову межу; історичні журнали до неї тихо відмічаються побаченими.
+
+Real GET `/api/issues/:id` читає свіжі detail/journals/watchers/attachments через GET transport, перевіряє accessible project, оновлює scoped cache й people, зберігає локальні developer/qa. Повертає фактичні remote journals, щоб видалений поза застосунком коментар не залишався в UI через кеш. Real GET `/api/releases/:id` читає status_id=* із fixed_version_id для своєї Version, повертає фактичний повний склад релізу; закритий архів не потребує попереднього завантаження всіх задач проєкту. Remote 404/401/403 мають безпечні локальні помилки. Transport і command guards залишають усі зовнішні записи заблокованими.
+
+Перед формуванням updated_on дробові секунди UTC timestamp прибираються: конкретний сервер повертає 422 для .123Z та 200 для Z без дробової частини. Межа округлюється вниз; п'ятихвилинне перекриття й source event IDs зберігають захист від пропусків та дублів.

@@ -49,6 +49,18 @@ describe('background notification ingestion', () => {
     expect(await store.getNotifications(true)).toHaveLength(1);
   });
 
+  it('does not notify old archived history discovered after baseline, but does notify new comments', async () => {
+    await service.sync();
+    snapshot.issues.push({ ...snapshot.issues[0], id: 9001 });
+    snapshot.journals = [
+      { issueId: 9001, journal: { ...journal(9901, 2, 'old archive'), createdOn: '2001-01-01T00:00:00.000Z' } },
+      { issueId: 9001, journal: { ...journal(9902, 2, 'new comment'), createdOn: new Date(Date.now() + 1000).toISOString() } },
+    ];
+    await service.sync();
+    expect((await store.getNotifications()).map(item => item.journalId)).toEqual([9902]);
+    expect(await store.hasSeenSourceEvent('journal:9901')).toBe(true);
+  });
+
   it('hides own events but always follows assigned tasks and assignment away', async () => {
     await service.sync();
     const settings = await store.getSettings();
