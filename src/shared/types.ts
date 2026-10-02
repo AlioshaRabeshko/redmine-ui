@@ -28,14 +28,16 @@ export interface Subscription { enabled: boolean; events: string[] }
 export interface AppSettings {
   locale: Locale; theme: 'light' | 'dark' | 'system'; palette: 'blue' | 'violet' | 'green' | 'amber';
   projectQa: Record<string, number>; subscriptions: Record<string, Subscription>;
+  projectBackgrounds: Record<string, string>;
   personRoleOverrides: Record<string, Record<string, PersonRole[]>>;
   shortcuts: Shortcut[]; savedViews: SavedView[];
   sort: { field: 'priority' | 'updated' | 'created' | 'id' | 'subject'; direction: 'asc' | 'desc' };
   automationEnabled: boolean; pollIntervalSeconds: number;
 }
-export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptions' | 'personRoleOverrides'>> & {
+export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptions' | 'projectBackgrounds' | 'personRoleOverrides'>> & {
   projectQa?: Record<string, number | null>;
   subscriptions?: Record<string, Subscription | null>;
+  projectBackgrounds?: Record<string, string | null>;
   personRoleOverrides?: Record<string, Record<string, PersonRole[] | null> | null>;
 };
 export interface Capabilities { canWrite: boolean; branchFieldId?: number; labelsFieldId?: number; warnings: string[] }

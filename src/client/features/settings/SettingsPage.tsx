@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BellRing, Check, Command, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, UserRound, Workflow } from 'lucide-react';
+import { BellRing, Check, Command, Image as ImageIcon, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, Upload, UserRound, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AppSettings, Locale, PeopleField, Person, PersonRole, Project, Shortcut, SettingsPatch, Status } from '../../../shared/types';
 import { defaultShortcuts, normalizeShortcutKeys } from '../../lib/shortcuts';
@@ -7,6 +7,7 @@ import { enqueueFieldWrite, useWorkspaceFormSave } from '../../lib/serialFieldWr
 import { Button, Field, Notice } from '../../components/ui';
 import { Picker, PeoplePicker } from '../../components/pickers';
 import { api } from '../../lib/api';
+import { readProjectBackgroundDataUrl, validateProjectBackgroundFile } from '../../lib/projectBackgroundUpload';
 
 type SettingsSaveState = { state: 'pending' | 'saved' | 'error'; error?: string };
 const roles: PersonRole[] = ['qa', 'support', 'developer'];
@@ -37,6 +38,10 @@ function mergePatch(settings: AppSettings, patch: SettingsPatch): AppSettings {
     next.subscriptions = { ...settings.subscriptions };
     for (const [key, value] of Object.entries(patch.subscriptions)) { if (value === null) delete next.subscriptions[key]; else next.subscriptions[key] = value; }
   }
+  if (patch.projectBackgrounds) {
+    next.projectBackgrounds = { ...(settings.projectBackgrounds || {}) };
+    for (const [key, value] of Object.entries(patch.projectBackgrounds)) { if (value === null) delete next.projectBackgrounds[key]; else next.projectBackgrounds[key] = value; }
+  }
   if (patch.personRoleOverrides) {
     next.personRoleOverrides = { ...(settings.personRoleOverrides || {}) };
     for (const [projectId, overrides] of Object.entries(patch.personRoleOverrides)) {
@@ -61,6 +66,12 @@ function restoreSettingsField(current: AppSettings, confirmed: AppSettings, key:
     const projectQa = { ...current.projectQa };
     if (confirmed.projectQa[projectId] === undefined) delete projectQa[projectId]; else projectQa[projectId] = confirmed.projectQa[projectId];
     return { ...current, projectQa };
+  }
+  if (key === `projectBackground:${projectId}`) {
+    const projectBackgrounds = { ...(current.projectBackgrounds || {}) };
+    const confirmedUrl = confirmed.projectBackgrounds?.[projectId];
+    if (confirmedUrl === undefined) delete projectBackgrounds[projectId]; else projectBackgrounds[projectId] = confirmedUrl;
+    return { ...current, projectBackgrounds };
   }
   if (key === `subscription:${projectId}`) {
     const subscriptions = { ...current.subscriptions };
@@ -90,6 +101,17 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const [saveStates, setSaveStates] = useState<Record<string, SettingsSaveState>>({});
   const [error, setError] = useState('');
   const projectKey = String(project.id);
+  const [backgroundPhase, setBackgroundPhase] = useState<'idle' | 'reading' | 'uploading' | 'saving'>('idle');
+  const [backgroundReadProgress, setBackgroundReadProgress] = useState(0);
+  const [backgroundError, setBackgroundError] = useState('');
+  const [unavailableBackgroundUrl, setUnavailableBackgroundUrl] = useState('');
+  const backgroundFileInputRef = useRef<HTMLInputElement>(null);
+  const backgroundUrl = draft.projectBackgrounds?.[projectKey];
+  const backgroundSaveKey = `projectBackground:${projectKey}`;
+  const backgroundBusy = backgroundPhase !== 'idle' || saveStates[backgroundSaveKey]?.state === 'pending';
+  const previewUnavailable = !!backgroundUrl && unavailableBackgroundUrl === backgroundUrl;
+
+  useEffect(() => { setUnavailableBackgroundUrl(''); }, [backgroundUrl]);
   const subscription = draft.subscriptions[projectKey] || { enabled: false, events: ['comment'] };
   const [pollValue, setPollValue] = useState(String(settings.pollIntervalSeconds));
   const [shortcutDraft, setShortcutDraft] = useState<Shortcut[]>(() => savedShortcuts(settings));
@@ -179,6 +201,44 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   };
   const updateRoleOverride = (personId: number, nextRoles: PersonRole[] | undefined) => {
     void persistPatch(`personRoleOverrides:${projectKey}`, { personRoleOverrides: { [projectKey]: { [String(personId)]: nextRoles ?? null } } });
+  };
+
+  const uploadProjectBackground = async (file: File) => {
+    const validationError = validateProjectBackgroundFile(file);
+    if (validationError) { setBackgroundError(t(validationError)); return; }
+    setBackgroundError('');
+    setUnavailableBackgroundUrl('');
+    setBackgroundReadProgress(0);
+    let phase: 'reading' | 'uploading' | 'saving' = 'reading';
+    setBackgroundPhase(phase);
+    try {
+      const dataUrl = await readProjectBackgroundDataUrl(file, setBackgroundReadProgress);
+      phase = 'uploading';
+      setBackgroundPhase(phase);
+      const response = await api.put<{ url?: string }>(`/api/projects/${project.id}/background`, { dataUrl });
+      if (typeof response?.url !== 'string' || !response.url.trim()) throw new Error('Invalid background upload response');
+      phase = 'saving';
+      setBackgroundPhase(phase);
+      const saved = await persistPatch(backgroundSaveKey, { projectBackgrounds: { [projectKey]: response.url } });
+      if (!saved) setBackgroundError(t('projectBackgroundSaveFailed'));
+    } catch {
+      setBackgroundError(t(phase === 'reading' ? 'projectBackgroundReadFailed' : 'projectBackgroundUploadFailed'));
+    } finally {
+      setBackgroundPhase('idle');
+      setBackgroundReadProgress(0);
+    }
+  };
+
+  const removeProjectBackground = async () => {
+    if (!backgroundUrl || backgroundBusy) return;
+    setBackgroundError('');
+    setBackgroundPhase('saving');
+    try {
+      const saved = await persistPatch(backgroundSaveKey, { projectBackgrounds: { [projectKey]: null } });
+      if (!saved) setBackgroundError(t('projectBackgroundSaveFailed'));
+    } finally {
+      setBackgroundPhase('idle');
+    }
   };
 
   const shortcuts = shortcutDraft;
@@ -272,6 +332,35 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
         <div className="settings-card-divider" />
         <div className="settings-card-title"><Workflow size={18} /><div><h2>{t('automation')}</h2><p>{t('polling')} · {draft.pollIntervalSeconds} {t('seconds')}</p></div></div>
         <label className="switch-row"><span><strong>{t('automationEnabled')}</strong><small>{readOnly ? t('readOnlyBadge') : t('automation')}</small></span><input type="checkbox" checked={draft.automationEnabled} onChange={(e) => persistPatch('automationEnabled', { automationEnabled: e.target.checked })} /><i /></label>
+      </section>
+
+      <section className="settings-card project-background-card">
+        <div className="settings-card-title"><ImageIcon size={18} /><div><h2>{t('projectBackground')}</h2><p>{t('projectBackgroundHint')}</p></div></div>
+        {backgroundUrl && !previewUnavailable
+          ? <img className="project-background-preview" src={backgroundUrl} alt={`${project.name} — ${t('projectBackgroundPreview')}`} onError={() => setUnavailableBackgroundUrl(backgroundUrl)} />
+          : <div className="project-background-placeholder" role="img" aria-label={backgroundUrl ? t('projectBackgroundUnavailable') : t('projectBackgroundEmpty')}>{backgroundUrl ? t('projectBackgroundUnavailable') : t('projectBackgroundEmpty')}</div>}
+        <input
+          ref={backgroundFileInputRef}
+          className="sr-only"
+          type="file"
+          accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+          aria-label={t('uploadProjectBackground')}
+          data-testid="project-background-upload"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (file) void uploadProjectBackground(file);
+          }}
+        />
+        <div className="project-background-actions">
+          <Button variant="outline" disabled={backgroundBusy} onClick={() => backgroundFileInputRef.current?.click()}><Upload size={14} />{backgroundUrl ? t('replaceProjectBackground') : t('uploadProjectBackground')}</Button>
+          {backgroundUrl && <Button variant="danger" disabled={backgroundBusy} onClick={() => void removeProjectBackground()}><Trash2 size={14} />{t('removeProjectBackground')}</Button>}
+        </div>
+        {backgroundPhase !== 'idle' && <div className="settings-note" role="status" aria-live="polite">
+          {t(backgroundPhase === 'reading' ? 'projectBackgroundReading' : backgroundPhase === 'uploading' ? 'projectBackgroundUploading' : 'projectBackgroundSaving')}
+          {backgroundPhase === 'reading' && <> · {backgroundReadProgress}%<progress max={100} value={backgroundReadProgress} aria-label={t('projectBackgroundReadProgress')} /></>}
+        </div>}
+        {backgroundError && <Notice tone="error">{backgroundError}</Notice>}
       </section>
 
       <section className="settings-card">

@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -8,7 +9,7 @@ import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
 import { applyMigrations } from './db/migrate.js';
-import { WorkspaceStore } from './db/store.js';
+import { WorkspaceStore, type ProjectBackgroundContentType } from './db/store.js';
 import { RedmineAdapter } from './redmine/adapter.js';
 import type { FetchLike } from './redmine/transport.js';
 import { BackgroundWorker, SyncService, type EventHub } from './sync/service.js';
@@ -63,6 +64,9 @@ const commandSchema = z.object({
   operationId: z.string().min(1).max(200).optional(),
   input: z.record(z.string(), z.unknown()).default({}),
 });
+const projectBackgroundLimit = 5 * 1024 * 1024;
+const projectBackgroundVersionPattern = /^\/api\/projects\/([1-9]\d*)\/background\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const projectBackgroundUploadSchema = z.object({ dataUrl: z.string().min(1).max(8 * 1024 * 1024) }).strict();
 
 export async function createApp(options: CreateAppOptions = {}): Promise<WorkspaceApp> {
   let config = options.config ?? createConfig(options.env ?? process.env);
@@ -93,6 +97,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const validation = error as Error & { validation?: unknown; statusCode?: number };
     if (validation.validation) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Перевірте формат запиту.' });
     if (error instanceof z.ZodError) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Перевірте формат запиту.' });
+    if (validation.statusCode === 413) return reply.code(413).send({ code: 'PAYLOAD_TOO_LARGE', message: 'Розмір запиту перевищує дозволені 8 MiB.' });
     if (validation.statusCode === 400) return reply.code(400).send({ code: 'INVALID_JSON', message: 'Тіло запиту має некоректний JSON.' });
     requestLogSafe(error);
     return reply.code(500).send({ code: 'INTERNAL_ERROR', message: 'Внутрішня помилка сервера.' });
@@ -100,6 +105,40 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
 
   app.get('/api/health', async () => ({ ok: true, mode: config.mode, connected: sync.isConnected,
     readOnly: config.mode === 'redmine', ...(sync.connectionError ? { connectionError: sync.connectionError } : {}) }));
+
+  app.put<{ Params: { id: string } }>('/api/projects/:id/background', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
+    const projectId = positiveId(request.params.id, 'PROJECT_NOT_FOUND');
+    if (!(await store.getProjects()).some(project => project.id === projectId)) {
+      throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    }
+    const parsed = projectBackgroundUploadSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_BACKGROUND', message: 'Очікується data URL зображення JPEG, PNG або WebP.' });
+    const decoded = decodeProjectBackground(parsed.data.dataUrl);
+    if (!decoded) return reply.code(400).send({ code: 'INVALID_BACKGROUND', message: 'Файл має бути справжнім JPEG, PNG або WebP до 5 MiB.' });
+
+    const currentUrl = (await store.getSettings()).projectBackgrounds[String(projectId)];
+    const keepVersion = currentUrl?.match(projectBackgroundVersionPattern)?.[2];
+    const version = randomUUID();
+    await store.saveProjectBackground(projectId, version, decoded.contentType, decoded.data, keepVersion);
+    return { url: `/api/projects/${projectId}/background?v=${version}` };
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { v?: string } }>('/api/projects/:id/background', async (request, reply) => {
+    const projectId = positiveId(request.params.id, 'PROJECT_NOT_FOUND');
+    if (!(await store.getProjects()).some(project => project.id === projectId)) {
+      throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    }
+    const requestedVersion = request.query.v;
+    if (requestedVersion !== undefined && !isProjectBackgroundVersion(requestedVersion)) {
+      return reply.code(404).send({ code: 'BACKGROUND_NOT_FOUND', message: 'Зображення не знайдено.' });
+    }
+    const background = await store.getProjectBackground(projectId, requestedVersion);
+    if (!background) return reply.code(404).send({ code: 'BACKGROUND_NOT_FOUND', message: 'Зображення не знайдено.' });
+    return reply.header('Content-Type', background.contentType)
+      .header('Cache-Control', 'no-cache')
+      .header('X-Content-Type-Options', 'nosniff')
+      .send(background.data);
+  });
 
   app.get('/api/bootstrap', async (): Promise<Bootstrap> => {
     await sync.bootstrapRead();
@@ -267,6 +306,30 @@ function positiveId(value: string, code: string): number {
   const id = Number(value);
   if (!Number.isSafeInteger(id) || id <= 0) throw new ApiFault(404, code, 'Ресурс не знайдено.');
   return id;
+}
+
+function isProjectBackgroundVersion(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function decodeProjectBackground(dataUrl: string): { contentType: ProjectBackgroundContentType; data: Buffer } | undefined {
+  const maxEncodedLength = Math.ceil(projectBackgroundLimit / 3) * 4;
+  if (dataUrl.length > maxEncodedLength + 64) return undefined;
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(dataUrl);
+  if (!match) return undefined;
+  const contentType = match[1]!.toLowerCase() as ProjectBackgroundContentType;
+  const base64 = match[2]!;
+  if (base64.length > maxEncodedLength || base64.length % 4 !== 0) return undefined;
+  const data = Buffer.from(base64, 'base64');
+  if (data.length === 0 || data.length > projectBackgroundLimit || data.toString('base64') !== base64) return undefined;
+  const hasJpegSignature = contentType === 'image/jpeg' && data.length >= 3
+    && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+  const hasPngSignature = contentType === 'image/png' && data.length >= 8
+    && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const hasWebpSignature = contentType === 'image/webp' && data.length >= 12
+    && data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP';
+  if (!hasJpegSignature && !hasPngSignature && !hasWebpSignature) return undefined;
+  return { contentType, data };
 }
 
 function personRolesFromRedmine(redmineRoles: RedmineRole[]): PersonRole[] {

@@ -211,3 +211,13 @@ Lane передає optional create defaults: статусна колонка �
 App читає URL після popstate, заново отримує актуальну задачу, перевіряє її фактичний проєкт і завантажує metadata дошки. Лічильник/cleanup не дозволяє пізній відповіді відкрити вже закриту картку; конкурентні кліки сповіщень враховують останній запит. Зміна мови не перезапускає завантаження/монтування картки. Параметри release/create перевіряються за metadata; edit/assign закритого релізу не монтуються. У read-only прямі форми залишаються заблокованими. Асинхронне завершення команди не змінює новий екран, якщо користувач уже перейшов далі.
 
 Release forms керуються props `form/onFormChange`; їхні create/edit/assign чернетки ізольовані localStorage ключем instance/user/project/form/version. Вони відновлюються після history/reload та очищаються лише після успіху. Навігаційні ефекти не запускають command POST або notification/read. Прямий URL коментаря лише фокусує журнал; явний клік сповіщення окремо архівує його.
+
+### Фонові зображення проєктів і компактний toolbar
+
+`AppSettings.projectBackgrounds` містить map project ID → локальний `/api/projects/:id/background?v=<uuid>`; PATCH merge підтримує `null` для прибирання. Старі settings отримують порожній map без міграції чи заміни задач. App/SettingsPage optimistic merge та rollback обробляють map окремо від shortcut draft та інших проєктних налаштувань.
+
+`PUT /api/projects/:id/background` приймає JSON `{dataUrl}` з route bodyLimit 8 МіБ; decoded image ≤5 МіБ. JPEG/PNG/WebP перевіряються за MIME, коректним base64 та signature. GET повертає binary image з Content-Type, no-cache та nosniff; UUID у URL вибирає конкретну версію. Доступ обмежено проєктами локального accessible cache. Сервер не викликає зовнішній write API. Image payload зберігається окремо від settings у scoped SQLite key_values; bootstrap не містить base64.
+
+Upload передує settings PATCH. Сховище утримує нову й поточну налаштовану версію (до двох images/project), щоб невдалий PATCH міг чесно повернути стару картинку. Наступний upload прибирає інші версії. Прибирання фону видаляє map entry; image storage лишається обмеженим двома версіями. UI показує читання/завантаження/збереження та помилки, перевіряє MIME/розмір до upload, очищує file input для повторного вибору того самого файла. Контролі й повідомлення перекладені uk/pl/es/en.
+
+BoardPage має один flex toolbar зі швидкими/збереженими фільтрами й діями. Великі mode/banner та title rows прибрано; режим видно в topbar/sidebar. Локальна CSS background image застосовується лише до поточної дошки, cover/center, з непрозорим toolbar, hint та картками й майже непрозорими колонками. Звичайна дошка без фону зберігає палітру теми.

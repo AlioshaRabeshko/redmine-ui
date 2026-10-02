@@ -118,6 +118,39 @@ Object.assign(es, {
   noRelease: 'Sin versión', sortField: 'Campo', sortDirection: 'Dirección', deleteShortcut: 'Eliminar atajo', enableShortcut: 'Activar atajo', boardViews: 'Filtros del tablero', activeFilters: 'Filtros', closed: 'Cerrada', textChanges: 'Cambios de texto', editPeopleRoles: 'Roles mostrados', inheritedRoles: 'De Redmine', noRole: 'Sin rol',
 });
 
+Object.assign(en, {
+  projectBackground: 'Project background', projectBackgroundHint: 'Choose a local image for this project. PNG, JPEG, or WebP, up to 5 MiB.',
+  projectBackgroundPreview: 'background preview', projectBackgroundEmpty: 'No image selected', projectBackgroundUnavailable: 'Preview unavailable',
+  uploadProjectBackground: 'Upload image', replaceProjectBackground: 'Replace image', removeProjectBackground: 'Remove image',
+  projectBackgroundReading: 'Preparing image', projectBackgroundReadProgress: 'Image preparation progress', projectBackgroundUploading: 'Uploading image…', projectBackgroundSaving: 'Saving project setting…',
+  projectBackgroundTooLarge: 'Choose an image no larger than 5 MiB.', projectBackgroundUnsupportedType: 'Choose a PNG, JPEG, or WebP image.',
+  projectBackgroundReadFailed: 'The image could not be read.', projectBackgroundUploadFailed: 'The image could not be uploaded.', projectBackgroundSaveFailed: 'The project setting could not be saved.',
+});
+Object.assign(uk, {
+  projectBackground: 'Фон проєкту', projectBackgroundHint: 'Виберіть локальне зображення для цього проєкту. PNG, JPEG або WebP, до 5 МіБ.',
+  projectBackgroundPreview: 'попередній перегляд фону', projectBackgroundEmpty: 'Зображення ще не вибрано', projectBackgroundUnavailable: 'Попередній перегляд недоступний',
+  uploadProjectBackground: 'Завантажити зображення', replaceProjectBackground: 'Замінити зображення', removeProjectBackground: 'Видалити зображення',
+  projectBackgroundReading: 'Підготовка зображення', projectBackgroundReadProgress: 'Прогрес підготовки зображення', projectBackgroundUploading: 'Завантаження зображення…', projectBackgroundSaving: 'Збереження налаштування проєкту…',
+  projectBackgroundTooLarge: 'Виберіть зображення розміром до 5 МіБ.', projectBackgroundUnsupportedType: 'Виберіть зображення PNG, JPEG або WebP.',
+  projectBackgroundReadFailed: 'Не вдалося прочитати зображення.', projectBackgroundUploadFailed: 'Не вдалося завантажити зображення.', projectBackgroundSaveFailed: 'Не вдалося зберегти налаштування проєкту.',
+});
+Object.assign(pl, {
+  projectBackground: 'Tło projektu', projectBackgroundHint: 'Wybierz lokalny obraz dla tego projektu. PNG, JPEG lub WebP, do 5 MiB.',
+  projectBackgroundPreview: 'podgląd tła', projectBackgroundEmpty: 'Nie wybrano obrazu', projectBackgroundUnavailable: 'Podgląd jest niedostępny',
+  uploadProjectBackground: 'Prześlij obraz', replaceProjectBackground: 'Zastąp obraz', removeProjectBackground: 'Usuń obraz',
+  projectBackgroundReading: 'Przygotowywanie obrazu', projectBackgroundReadProgress: 'Postęp przygotowania obrazu', projectBackgroundUploading: 'Przesyłanie obrazu…', projectBackgroundSaving: 'Zapisywanie ustawienia projektu…',
+  projectBackgroundTooLarge: 'Wybierz obraz o rozmiarze do 5 MiB.', projectBackgroundUnsupportedType: 'Wybierz obraz PNG, JPEG lub WebP.',
+  projectBackgroundReadFailed: 'Nie udało się odczytać obrazu.', projectBackgroundUploadFailed: 'Nie udało się przesłać obrazu.', projectBackgroundSaveFailed: 'Nie udało się zapisać ustawienia projektu.',
+});
+Object.assign(es, {
+  projectBackground: 'Fondo del proyecto', projectBackgroundHint: 'Elige una imagen local para este proyecto. PNG, JPEG o WebP, hasta 5 MiB.',
+  projectBackgroundPreview: 'vista previa del fondo', projectBackgroundEmpty: 'No se ha elegido ninguna imagen', projectBackgroundUnavailable: 'Vista previa no disponible',
+  uploadProjectBackground: 'Subir imagen', replaceProjectBackground: 'Cambiar imagen', removeProjectBackground: 'Eliminar imagen',
+  projectBackgroundReading: 'Preparando imagen', projectBackgroundReadProgress: 'Progreso de preparación de la imagen', projectBackgroundUploading: 'Subiendo imagen…', projectBackgroundSaving: 'Guardando ajuste del proyecto…',
+  projectBackgroundTooLarge: 'Elige una imagen de hasta 5 MiB.', projectBackgroundUnsupportedType: 'Elige una imagen PNG, JPEG o WebP.',
+  projectBackgroundReadFailed: 'No se pudo leer la imagen.', projectBackgroundUploadFailed: 'No se pudo subir la imagen.', projectBackgroundSaveFailed: 'No se pudo guardar el ajuste del proyecto.',
+});
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },

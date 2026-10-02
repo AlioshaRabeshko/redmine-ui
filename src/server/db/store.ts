@@ -17,6 +17,9 @@ export interface PersonSelectionRecord {
   personId: number;
   field: PeopleField;
 }
+export type ProjectBackgroundContentType = 'image/jpeg' | 'image/png' | 'image/webp';
+interface ProjectBackgroundRecord { version: string; contentType: ProjectBackgroundContentType; base64: string }
+export interface StoredProjectBackground { version: string; contentType: ProjectBackgroundContentType; data: Buffer }
 
 const encode = (value: unknown) => JSON.stringify(value);
 const decode = <T>(value: string): T => JSON.parse(value) as T;
@@ -90,6 +93,23 @@ export class WorkspaceStore {
       .onConflictDoUpdate({ target: [keyValues.scope, keyValues.key], set: { value: encode(value) } });
   }
 
+  async saveProjectBackground(projectId: number, version: string, contentType: ProjectBackgroundContentType,
+    data: Uint8Array, keepVersion?: string): Promise<void> {
+    const key = `projectBackground:${projectId}`;
+    const existing = await this.getValue<ProjectBackgroundRecord[]>(key) ?? [];
+    const previous = keepVersion ? existing.find(item => item.version === keepVersion) : undefined;
+    const records: ProjectBackgroundRecord[] = [{ version, contentType, base64: Buffer.from(data).toString('base64') }];
+    if (previous && previous.version !== version) records.push(previous);
+    await this.setValue(key, records);
+  }
+
+  async getProjectBackground(projectId: number, version?: string): Promise<StoredProjectBackground | undefined> {
+    const records = await this.getValue<ProjectBackgroundRecord[]>(`projectBackground:${projectId}`) ?? [];
+    const selected = version === undefined ? records[0] : records.find(item => item.version === version);
+    if (!selected || !['image/jpeg', 'image/png', 'image/webp'].includes(selected.contentType)) return undefined;
+    return { version: selected.version, contentType: selected.contentType, data: Buffer.from(selected.base64, 'base64') };
+  }
+
   async getSettings(): Promise<AppSettings> {
     const settings = await this.getValue<AppSettings>('settings');
     if (!settings) {
@@ -101,6 +121,7 @@ export class WorkspaceStore {
     let compatible: AppSettings = {
       ...structuredClone(defaultSettings), ...settings,
       projectQa: settings.projectQa ?? {}, subscriptions: settings.subscriptions ?? {},
+      projectBackgrounds: settings.projectBackgrounds ?? {},
       personRoleOverrides: settings.personRoleOverrides ?? {},
       shortcuts: settings.shortcuts ?? structuredClone(defaultSettings.shortcuts), savedViews: settings.savedViews ?? [],
       sort: { ...defaultSettings.sort, ...settings.sort },

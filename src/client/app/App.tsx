@@ -15,8 +15,14 @@ import { ReleasesPage } from '../features/releases/ReleasesPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 
 function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
-  const { projectQa, subscriptions, personRoleOverrides, ...simpleFields } = patch;
+  const { projectQa, subscriptions, personRoleOverrides, projectBackgrounds, ...simpleFields } = patch;
   const next: AppSettings = { ...current, ...simpleFields };
+  if (projectBackgrounds) {
+    next.projectBackgrounds = { ...current.projectBackgrounds };
+    for (const [projectId, url] of Object.entries(projectBackgrounds)) {
+      if (url === null) delete next.projectBackgrounds[projectId]; else next.projectBackgrounds[projectId] = url;
+    }
+  }
   if (projectQa) {
     next.projectQa = { ...current.projectQa };
     for (const [projectId, personId] of Object.entries(projectQa)) {
@@ -45,7 +51,7 @@ function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSett
 
 function restoreSettingsPatch(current: AppSettings, confirmed: AppSettings, optimistic: AppSettings, patch: SettingsPatch): AppSettings {
   const restored = { ...current };
-  const mapFields = new Set(['projectQa', 'subscriptions', 'personRoleOverrides']);
+  const mapFields = new Set(['projectQa', 'subscriptions', 'personRoleOverrides', 'projectBackgrounds']);
   for (const key of Object.keys(patch) as (keyof AppSettings)[]) {
     if (mapFields.has(key)) continue;
     if (current[key] === optimistic[key]) Object.assign(restored, { [key]: confirmed[key] });
@@ -55,6 +61,13 @@ function restoreSettingsPatch(current: AppSettings, confirmed: AppSettings, opti
       const values = { ...restored.projectQa };
       if (confirmed.projectQa[projectId] === undefined) delete values[projectId]; else values[projectId] = confirmed.projectQa[projectId];
       restored.projectQa = values;
+    }
+  }
+  for (const projectId of Object.keys(patch.projectBackgrounds || {})) {
+    if (current.projectBackgrounds[projectId] === optimistic.projectBackgrounds[projectId]) {
+      const values = { ...restored.projectBackgrounds };
+      if (confirmed.projectBackgrounds[projectId] === undefined) delete values[projectId]; else values[projectId] = confirmed.projectBackgrounds[projectId];
+      restored.projectBackgrounds = values;
     }
   }
   for (const projectId of Object.keys(patch.subscriptions || {})) {
@@ -529,7 +542,6 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
           <Button variant="quiet" size="sm" onClick={manualSync} disabled={busySync}>{busySync ? <Spinner /> : <Sparkles size={15} />}{t('sync')}</Button>
         </div>
       </header>
-      <div className="mode-banner"><span className={`mode-banner-mark ${bootstrap.mode === 'demo' ? 'is-demo' : 'is-readonly'}`}>{bootstrap.mode === 'demo' ? <Sparkles size={14} /> : <ShieldCheck size={14} />}</span><span><strong>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</strong><small>{bootstrap.mode === 'demo' ? t('demoNote') : t('readOnlyNote')}</small></span>{bootstrap.mode === 'redmine' && <span className="mode-banner-trailing">{t('readOnlyBadge')}</span>}</div>
       <div className="content-scroll" ref={contentScrollRef} onScroll={(event) => { scrollPositionsRef.current[`${selectedProjectId}:${screen}`] = event.currentTarget.scrollTop; }}>
         {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={selectView} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onCreateIssue={openCreateIssue} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
         {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => navigate({ archived: !archived })} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}

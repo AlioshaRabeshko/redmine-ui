@@ -5,6 +5,16 @@ export type { SettingsPatch } from '../shared/types.js';
 const idKey = z.string().regex(/^[1-9]\d*$/);
 const personRoleSchema = z.enum(['qa', 'support', 'developer']);
 const subscriptionSchema = z.object({ enabled: z.boolean(), events: z.array(z.string()) });
+const backgroundUrlPattern = /^\/api\/projects\/([1-9]\d*)\/background\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+function validateProjectBackgroundMap(backgrounds: Record<string, string | null>, context: z.RefinementCtx): void {
+  for (const [projectId, url] of Object.entries(backgrounds)) {
+    if (url === null) continue;
+    const urlProjectId = url.match(backgroundUrlPattern)?.[1];
+    if (urlProjectId !== projectId) context.addIssue({ code: 'custom', path: [projectId], message: 'Background URL must belong to the same project.' });
+  }
+}
+const projectBackgroundsSchema = z.record(idKey, z.string().regex(backgroundUrlPattern)).superRefine(validateProjectBackgroundMap);
+const projectBackgroundsPatchSchema = z.record(idKey, z.string().regex(backgroundUrlPattern).nullable()).superRefine(validateProjectBackgroundMap);
 const filtersSchema = z.object({
   search: z.string().optional(), assigneeId: z.number().int().optional(), assignedToMe: z.boolean().optional(),
   label: z.string().optional(), labels: z.array(z.string()).optional(),
@@ -22,6 +32,7 @@ const settingsSchema = z.object({
   palette: z.enum(['blue', 'violet', 'green', 'amber']),
   projectQa: z.record(idKey, z.number().int().positive()),
   subscriptions: z.record(idKey, subscriptionSchema),
+  projectBackgrounds: projectBackgroundsSchema,
   personRoleOverrides: z.record(idKey, z.record(idKey, z.array(personRoleSchema))),
   shortcuts: z.array(shortcutSchema),
   savedViews: z.array(savedViewSchema),
@@ -36,6 +47,7 @@ const settingsPatchSchema = z.object({
   palette: settingsSchema.shape.palette.optional(),
   projectQa: z.record(idKey, z.number().int().positive().nullable()).optional(),
   subscriptions: z.record(idKey, subscriptionSchema.nullable()).optional(),
+  projectBackgrounds: projectBackgroundsPatchSchema.optional(),
   personRoleOverrides: z.record(idKey, z.record(idKey, z.array(personRoleSchema).nullable()).nullable()).optional(),
   shortcuts: settingsSchema.shape.shortcuts.optional(),
   savedViews: settingsSchema.shape.savedViews.optional(),
@@ -50,6 +62,7 @@ export const defaultSettings: AppSettings = {
   palette: 'blue',
   projectQa: {},
   subscriptions: {},
+  projectBackgrounds: {},
   personRoleOverrides: {},
   shortcuts: [
     { id: 'mine', keys: 'Q', action: 'view', value: 'mine', enabled: true },
@@ -77,7 +90,7 @@ export function parseSettingsPatch(value: unknown): SettingsPatch {
 }
 
 export function applySettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
-  const { projectQa, subscriptions, personRoleOverrides, ...shallowFields } = patch;
+  const { projectQa, subscriptions, projectBackgrounds, personRoleOverrides, ...shallowFields } = patch;
   const next: AppSettings = { ...current, ...shallowFields };
 
   if (projectQa) {
@@ -92,6 +105,13 @@ export function applySettingsPatch(current: AppSettings, patch: SettingsPatch): 
     for (const [projectId, subscription] of Object.entries(subscriptions)) {
       if (subscription === null) delete next.subscriptions[projectId];
       else next.subscriptions[projectId] = subscription;
+    }
+  }
+  if (projectBackgrounds) {
+    next.projectBackgrounds = { ...current.projectBackgrounds };
+    for (const [projectId, url] of Object.entries(projectBackgrounds)) {
+      if (url === null) delete next.projectBackgrounds[projectId];
+      else next.projectBackgrounds[projectId] = url;
     }
   }
   if (personRoleOverrides) {

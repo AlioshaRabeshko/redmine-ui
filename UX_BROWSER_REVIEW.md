@@ -207,3 +207,13 @@
 Integration review виправив конкурентні кліки сповіщень, повторний Back до popstate та збережений запис завершеної форми. Додатково усунуто повторне монтування IssueDialog через зміну translation function: воно могло втратити текст, дописаний під час Save. Regression з pending text save пройшов у повному наборі. Для прямого issue URL потрібні detail та metadata дошки; при їхньому збої показується помилка з Retry/Close, а форма запису не відкривається з неповними даними.
 
 Локальне Docker-прев’ю оновлено на 127.0.0.1:3010, demo з порожнім токеном; volume збережений. Мобільний UX залишається відкладеним. Реальні Redmine/Trello мутації не виконувалися.
+
+### Доповнення: компактний toolbar та фони проєктів
+
+Виконано позначки зі скриншота користувача: прибрано великий mode banner і дубльований заголовок дошки; фільтри/сортування/New issue стоять у рядку зі стандартними та збереженими фільтрами. Режим підключення лишається у topbar/sidebar, read-only кнопки лишаються заблокованими. Desktop Chrome підтвердив однакову висоту кнопок цього рядка та початок колонок вище 180 px при viewport 1600×1000. Скриншоти звичайної дошки та дошки з тестовим фоном оглянуті primary agent.
+
+У налаштуваннях проєкту є upload/preview/replace/remove локального зображення. Browser-тести перевіряють точний binary image GET, image decode у preview, autosave, reload, незалежність проєктів, прибирання й fallback після помилки PATCH. Невалідний SVG відхиляється до upload; попередня версія картинки доступна після невдалого settings PATCH. Mock read-only режим дозволяє локальне налаштування фону й блокує Redmine command buttons; команд запису при налаштуванні немає.
+
+API-тести додатково перевіряють формат/MIME mismatch, inaccessible project, decoded limit 5 МіБ включно та відмову для більшого файла, restart SQLite persistence, інший instance scope, merge/null removal і сумісність старих settings. Виявлений під час інтеграції regex stack overflow на великих data URL виправлено обмеженням довжини перед парсингом та простим regex без повторюваних груп. API-тест граничного розміру пройшов.
+
+Повна перевірка: **92 unit/server tests і 42 Chrome E2E пройшли**, typecheck/production build/Docker build успішні. Після остаточного виправлення декодування повторно пройшли чотири background browser сценарії; окремо підтверджено image decode у preview. Docker-прев’ю на 3010 перевірене в Chrome: компактний toolbar і нова settings card доступні, command POST не викликався. Це desktop coverage; мобільний UX лишається відкладеним. Зовнішніх Redmine/Trello мутацій і читання токена не було.

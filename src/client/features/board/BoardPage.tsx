@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { AlertTriangle, CalendarDays, Check, ChevronDown, CircleDot, Clock3, Plus, Search, SlidersHorizontal, X } from 'lucide-react';
@@ -177,9 +177,19 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     label: `${t(field === 'id' ? 'issueId' : field === 'subject' ? 'subject' : field)} · ${t(direction)}`,
   })));
   const viewLabelKeys: Record<View, string> = { all: 'viewAll', mine: 'viewMine', watching: 'viewWatching', backlog: 'viewBacklog' };
-  return <main className="page board-page" data-testid="board">
-    <div className="page-heading board-title-row">
-      <div><div className="eyebrow">{project.identifier}</div><h1>{view === 'backlog' ? t('backlog') : t('board')}</h1><p className="page-subtitle">{project.description || t('workspace')} <span className="inline-separator">·</span> {t('issueCount', { count: data.total })}</p></div>
+  const background = settings.projectBackgrounds?.[project.id];
+  const backgroundStyle = background ? { '--project-background': `url("${background}")` } as CSSProperties : undefined;
+  return <main className={`page board-page${background ? ' has-project-background' : ''}`} style={backgroundStyle} data-testid="board">
+    <h1 className="sr-only">{view === 'backlog' ? t('backlog') : t('board')} · {project.name}</h1>
+    <div className="board-toolbar">
+      <nav className="board-view-switcher" aria-label={t('boardViews')}>
+        {(['all', 'mine', 'watching', 'backlog'] as const).map(item => {
+          const active = item === 'mine' ? mineActive : item === 'all' ? view === 'all' && !mineActive : item === 'backlog' ? view === 'backlog' : item === view;
+          return <button key={item} type="button" className={`board-view-button${active ? ' is-active' : ''}`} aria-pressed={active} onClick={() => changeView(item)}>{t(viewLabelKeys[item])}</button>;
+        })}
+        {savedViews.length > 0 && <span className="board-view-divider" aria-hidden="true" />}
+        {savedViews.map(saved => <span className="saved-filter-item" key={saved.id}><button type="button" className={`saved-filter-button${activeSaved(saved) ? ' is-active' : ''}`} aria-pressed={activeSaved(saved)} onClick={() => onSelectSavedView(saved)}>{saved.name}</button><IconButton label={`${t('deleteView')}: ${saved.name}`} className="saved-filter-remove" onClick={() => onDeleteSavedView(saved)}><X size={13} /></IconButton></span>)}
+      </nav>
       <div className="heading-actions">
         <Popover trigger={<button type="button" className={`filter-toggle${showFilters || hasFilters ? ' is-active' : ''}`} aria-haspopup="dialog" aria-expanded={showFilters}><SlidersHorizontal size={16} />{t('filters')}{hasFilters && <span className="filter-dot" />}</button>} label={t('filters')} open={showFilters} onOpenChange={setShowFilters} className="board-filter-popover">
           <div className="board-filter-panel">
@@ -200,15 +210,6 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
         <Button variant="primary" onClick={() => onCreateIssue()} disabled={!canWrite} data-testid="new-issue"><Plus size={16} />{t('create')}</Button>
       </div>
     </div>
-
-    <nav className="board-view-switcher" aria-label={t('boardViews')}>
-      {(['all', 'mine', 'watching', 'backlog'] as const).map(item => {
-        const active = item === 'mine' ? mineActive : item === 'all' ? view === 'all' && !mineActive : item === 'backlog' ? view === 'backlog' : item === view;
-        return <button key={item} type="button" className={`board-view-button${active ? ' is-active' : ''}`} aria-pressed={active} onClick={() => changeView(item)}>{t(viewLabelKeys[item])}</button>;
-      })}
-      {savedViews.length > 0 && <span className="board-view-divider" aria-hidden="true" />}
-      {savedViews.map(saved => <span className="saved-filter-item" key={saved.id}><button type="button" className={`saved-filter-button${activeSaved(saved) ? ' is-active' : ''}`} aria-pressed={activeSaved(saved)} onClick={() => onSelectSavedView(saved)}>{saved.name}</button><IconButton label={`${t('deleteView')}: ${saved.name}`} className="saved-filter-remove" onClick={() => onDeleteSavedView(saved)}><X size={13} /></IconButton></span>)}
-    </nav>
 
     {activeChips.length > 0 && <div className="board-active-filters" aria-label={t('activeFilters')}><span className="active-filter-label">{t('activeFilters')}:</span>{activeChips.map(chip => <button key={chip.key} type="button" className="filter-chip" onClick={chip.remove} aria-label={`${t('clear')} · ${chip.label}`} title={`${t('clear')} · ${chip.label}`}>{chip.label}<X size={12} /></button>)}<Button size="sm" variant="quiet" onClick={clearFilters}>{t('clear')}</Button></div>}
 
