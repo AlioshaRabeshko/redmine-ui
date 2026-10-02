@@ -207,7 +207,7 @@ describe('durable workspace commands using isolated SQLite', () => {
 
   it('rejects every external write command before touching the local issue', async () => {
     const real = new CommandService(createConfig({ APP_MODE: 'redmine', REDMINE_API_TOKEN: 'fake-test-key', REDMINE_URL: 'https://example.invalid' }), store);
-    const types: Command['type'][] = ['createIssue', 'updateIssue', 'moveIssue', 'handoffToQA', 'returnToDeveloper', 'comment', 'createRelease', 'updateRelease', 'assignRelease', 'finishRelease', 'runAutomation'];
+    const types: Command['type'][] = ['createIssue', 'updateIssue', 'moveIssue', 'handoffToQA', 'returnToDeveloper', 'comment', 'editJournal', 'deleteJournal', 'setJournalLike', 'createRelease', 'updateRelease', 'assignRelease', 'finishRelease', 'runAutomation'];
     const before: Issue[] = await store.getIssues();
     for (const type of types) await expect(real.execute({ type, issueId: 1001, projectId: 10, versionId: 100, input: {} })).rejects.toMatchObject({ statusCode: 403, code: 'READ_ONLY' });
     expect(await store.getIssues()).toEqual(before);

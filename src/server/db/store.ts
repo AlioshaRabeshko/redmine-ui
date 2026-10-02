@@ -252,6 +252,68 @@ export class WorkspaceStore {
       .onConflictDoUpdate({ target: [journals.scope, journals.id], set: { issueId, createdOn: journal.createdOn, payload: encode(journal) } });
   }
 
+  allocateJournalId(): number {
+    return this.db.$client.transaction(() => {
+      const stored = this.db.$client.prepare('SELECT value FROM key_values WHERE scope = ? AND key = ?')
+        .get(this.scope, 'journalIdSequence') as { value: string } | undefined;
+      const maxRow = this.db.$client.prepare('SELECT MAX(id) AS maxId FROM journals WHERE scope = ?')
+        .get(this.scope) as { maxId: number | null };
+      const sequence = stored ? Number(decode<number>(stored.value)) : 0;
+      const next = Math.max(Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0, maxRow.maxId ?? 0) + 1;
+      if (!Number.isSafeInteger(next)) throw new Error('Journal ID sequence exceeded the safe integer range.');
+      this.db.$client.prepare(`INSERT INTO key_values (scope, key, value) VALUES (?, ?, ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`).run(this.scope, 'journalIdSequence', encode(next));
+      return next;
+    })();
+  }
+
+  getJournalLikeState(journalId: number, userId: number): { count: number; likedByMe: boolean } {
+    const row = this.db.$client.prepare('SELECT value FROM key_values WHERE scope = ? AND key = ?')
+      .get(this.scope, `journalLikes:${journalId}`) as { value: string } | undefined;
+    const userIds = row ? decode<number[]>(row.value) : [];
+    return { count: userIds.length, likedByMe: userIds.includes(userId) };
+  }
+
+  setJournalLike(journalId: number, userId: number, liked: boolean): { count: number; likedByMe: boolean } {
+    return this.db.$client.transaction(() => {
+      const key = `journalLikes:${journalId}`;
+      const row = this.db.$client.prepare('SELECT value FROM key_values WHERE scope = ? AND key = ?')
+        .get(this.scope, key) as { value: string } | undefined;
+      const userIds: number[] = row ? decode<number[]>(row.value) : [];
+      const index = userIds.indexOf(userId);
+      if (liked && index < 0) userIds.push(userId);
+      else if (!liked && index >= 0) userIds.splice(index, 1);
+      if (userIds.length) {
+        this.db.$client.prepare(`INSERT INTO key_values (scope, key, value) VALUES (?, ?, ?)
+          ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`).run(this.scope, key, encode(userIds));
+      } else {
+        this.db.$client.prepare('DELETE FROM key_values WHERE scope = ? AND key = ?').run(this.scope, key);
+      }
+      return { count: userIds.length, likedByMe: userIds.includes(userId) };
+    })();
+  }
+
+  clearJournalLikes(journalId: number): void {
+    this.db.$client.prepare('DELETE FROM key_values WHERE scope = ? AND key = ?')
+      .run(this.scope, `journalLikes:${journalId}`);
+  }
+
+  async deleteJournal(issueId: number, journalId: number): Promise<void> {
+    this.db.$client.transaction(() => {
+      // An older demo database may not have a sequence yet. Retain IDs before deleting its newest note.
+      const stored = this.db.$client.prepare('SELECT value FROM key_values WHERE scope = ? AND key = ?')
+        .get(this.scope, 'journalIdSequence') as { value: string } | undefined;
+      const sequence = stored ? Number(decode<number>(stored.value)) : 0;
+      const retained = Math.max(Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0, journalId);
+      this.db.$client.prepare(`INSERT INTO key_values (scope, key, value) VALUES (?, ?, ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`).run(this.scope, 'journalIdSequence', encode(retained));
+      this.db.$client.prepare('DELETE FROM journals WHERE scope = ? AND issue_id = ? AND id = ?')
+        .run(this.scope, issueId, journalId);
+      this.db.$client.prepare('DELETE FROM key_values WHERE scope = ? AND key = ?')
+        .run(this.scope, `journalLikes:${journalId}`);
+    })();
+  }
+
   async getNotifications(archived = false): Promise<Notification[]> {
     return (await this.db.select({ payload: notifications.payload, createdOn: notifications.createdOn })
       .from(notifications).where(and(eq(notifications.scope, this.scope), archived ? isNotNull(notifications.readAt) : isNull(notifications.readAt)))

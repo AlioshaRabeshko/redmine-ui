@@ -74,6 +74,9 @@ export class CommandService {
         case 'handoffToQA': await this.handoffToQA(record, command); break;
         case 'returnToDeveloper': await this.returnToDeveloper(record, command); break;
         case 'comment': await this.comment(record, command); break;
+        case 'editJournal': await this.editJournal(record, command); break;
+        case 'deleteJournal': await this.deleteJournal(record, command); break;
+        case 'setJournalLike': await this.setJournalLike(record, command); break;
         case 'createRelease': await this.createRelease(record, command); break;
         case 'updateRelease': await this.updateRelease(record, command); break;
         case 'assignRelease': await this.assignRelease(record, command); break;
@@ -456,9 +459,8 @@ export class CommandService {
     const issue = await this.requireIssue(command.issueId);
     const notes = stringField(command.input, 'notes')?.trim();
     if (!notes) throw new ApiFault(400, 'COMMENT_REQUIRED', 'Введіть текст коментаря.');
-    const journals = await this.store.getJournals(issue.id);
     const me = await this.store.getValue<{ id: number; name: string }>('me') ?? { id: 1, name: 'Користувач' };
-    const journal: Journal = { id: Math.max(0, ...journals.map(item => item.id)) + 1, user: me, notes,
+    const journal: Journal = { id: this.store.allocateJournalId(), user: me, notes,
       createdOn: now(), changes: [] };
     await this.store.saveJournal(issue.id, journal);
     record.issue = issue;
@@ -466,6 +468,71 @@ export class CommandService {
     record.operation.steps = [{ name: 'Додати коментар у деморежимі', status: 'done' }];
     await this.finishRecord(record);
     this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId });
+  }
+
+  private async editJournal(record: OperationRecord, command: Command): Promise<void> {
+    const issue = await this.requireIssue(command.issueId);
+    const journal = await this.requireJournal(issue.id, command.input);
+    await this.assertJournalAuthorOrAdmin(journal);
+    assertExpectedJournalNotes(journal, command.input);
+    const notes = stringField(command.input, 'notes')?.trim();
+    if (!notes) throw new ApiFault(400, 'COMMENT_REQUIRED', 'Введіть текст коментаря або скористайтеся видаленням.');
+    await this.store.saveJournal(issue.id, { ...journal, notes });
+    record.issue = issue;
+    record.operation.status = 'done';
+    record.operation.steps = [{ name: 'Зберегти зміни коментаря в деморежимі', status: 'done' }];
+    await this.finishRecord(record);
+    this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId });
+  }
+
+  private async deleteJournal(record: OperationRecord, command: Command): Promise<void> {
+    const issue = await this.requireIssue(command.issueId);
+    const journal = await this.requireJournal(issue.id, command.input);
+    await this.assertJournalAuthorOrAdmin(journal);
+    assertExpectedJournalNotes(journal, command.input);
+    if (!journal.notes.trim()) throw new ApiFault(404, 'JOURNAL_NOT_FOUND', 'Коментар уже видалено.');
+    // Redmine removes a journal only when it contains notes alone. Keep status and field changes intact.
+    if (journal.changes.length) {
+      await this.store.saveJournal(issue.id, { ...journal, notes: '' });
+      this.store.clearJournalLikes(journal.id);
+    } else {
+      await this.store.deleteJournal(issue.id, journal.id);
+    }
+    record.issue = issue;
+    record.operation.status = 'done';
+    record.operation.steps = [{ name: 'Видалити текст коментаря в деморежимі', status: 'done' }];
+    await this.finishRecord(record);
+    this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId });
+  }
+
+  private async setJournalLike(record: OperationRecord, command: Command): Promise<void> {
+    const issue = await this.requireIssue(command.issueId);
+    const journal = await this.requireJournal(issue.id, command.input);
+    if (!journal.notes.trim()) throw new ApiFault(404, 'JOURNAL_NOT_FOUND', 'Коментар не знайдено.');
+    const liked = command.input.liked;
+    if (typeof liked !== 'boolean') throw new ApiFault(400, 'LIKE_STATE_REQUIRED', 'Вкажіть, чи вподобано коментар.');
+    const me = await this.store.getValue<{ id: number; name: string }>('me') ?? { id: 1, name: 'Користувач' };
+    this.store.setJournalLike(journal.id, me.id, liked);
+    record.issue = issue;
+    record.operation.status = 'done';
+    record.operation.steps = [{ name: 'Зберегти вподобання коментаря в деморежимі', status: 'done' }];
+    await this.finishRecord(record);
+    this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId });
+  }
+
+  private async requireJournal(issueId: number, input: Record<string, unknown>): Promise<Journal> {
+    const journalId = numberField(input, 'journalId');
+    if (!journalId || journalId <= 0) throw new ApiFault(400, 'JOURNAL_REQUIRED', 'Не вказано коментар.');
+    const journal = (await this.store.getJournals(issueId)).find(item => item.id === journalId);
+    if (!journal) throw new ApiFault(404, 'JOURNAL_NOT_FOUND', 'Коментар не знайдено.');
+    return journal;
+  }
+
+  private async assertJournalAuthorOrAdmin(journal: Journal): Promise<void> {
+    const me = await this.store.getValue<{ id: number; name: string; isAdmin?: boolean }>('me') ?? { id: 0, name: 'Користувач' };
+    if (journal.user.id !== me.id && !me.isAdmin) {
+      throw new ApiFault(403, 'JOURNAL_FORBIDDEN', 'Редагувати або видаляти чужий коментар може лише адміністратор.');
+    }
   }
 
   private async createRelease(record: OperationRecord, command: Command): Promise<void> {
@@ -737,6 +804,14 @@ function assertExpectedUpdatedOn(issue: Issue, input: Record<string, unknown>): 
     throw new ApiFault(409, 'STALE', 'Картка змінилася. Оновіть її перед збереженням.', {
       expectedUpdatedOn: input.expectedUpdatedOn, actualUpdatedOn: issue.updatedOn,
     });
+  }
+}
+function assertExpectedJournalNotes(journal: Journal, input: Record<string, unknown>): void {
+  if (typeof input.expectedNotes !== 'string') {
+    throw new ApiFault(400, 'EXPECTED_NOTES_REQUIRED', 'Оновіть коментар і повторіть дію.');
+  }
+  if (input.expectedNotes !== journal.notes) {
+    throw new ApiFault(409, 'STALE', 'Коментар змінився. Оновіть його перед збереженням.', { journalId: journal.id });
   }
 }
 function knownTrackers(issues: Issue[]): Map<number, string> {

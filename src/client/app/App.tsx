@@ -390,6 +390,33 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     return updated;
   };
   const commentIssue = async (issue: Issue, notes: string) => { const result = await runCommand({ type: 'comment', issueId: issue.id, input: { notes } }); if (result.operation.status !== 'done') throw new Error(t('operationRunning')); };
+  const editJournal = async (issue: Issue, journalId: number, notes: string, expectedNotes: string, operationId: string) => {
+    try {
+      const result = await runCommand({ type: 'editJournal', issueId: issue.id, operationId, input: { journalId, notes, expectedNotes } });
+      if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
+    } catch (error) {
+      await queryClient.invalidateQueries({ queryKey: ['issue', issue.id] });
+      throw error;
+    }
+  };
+  const deleteJournal = async (issue: Issue, journalId: number, expectedNotes: string, operationId: string) => {
+    try {
+      const result = await runCommand({ type: 'deleteJournal', issueId: issue.id, operationId, input: { journalId, expectedNotes } });
+      if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
+    } catch (error) {
+      await queryClient.invalidateQueries({ queryKey: ['issue', issue.id] });
+      throw error;
+    }
+  };
+  const setJournalLike = async (issue: Issue, journalId: number, liked: boolean, operationId: string) => {
+    try {
+      const result = await runCommand({ type: 'setJournalLike', issueId: issue.id, operationId, input: { journalId, liked } });
+      if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
+    } finally {
+      // A transport error can follow a committed desired-state update. Re-read before the next click.
+      await queryClient.invalidateQueries({ queryKey: ['issue', issue.id] });
+    }
+  };
   const createIssue = async (input: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; assignedToId?: number; fixedVersionId?: number }, operationId?: string) => {
     const fromUrl = window.location.href;
     const result = await runCommand({ type: 'createIssue', projectId: selectedProjectId, operationId, input });
@@ -551,7 +578,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       </div>
     </div>
 
-    {issueOpen && issueId && issueDetail && freshIssueDetailId === issueId && <IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onToast={notify} />}
+    {issueOpen && issueId && issueDetail && freshIssueDetailId === issueId && <IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onEditJournal={editJournal} onDeleteJournal={deleteJournal} onSetJournalLike={setJournalLike} onToast={notify} />}
     {issueOpen && issueId && (freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading">{issueLoadError ? <><Notice tone="error">{issueLoadError}</Notice><Button size="sm" onClick={() => setIssueLoadAttempt(attempt => attempt + 1)}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
     {createIssueDefaults && board && <CreateIssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} project={project} board={board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} canWrite={canWrite} defaults={createIssueDefaults} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} onClose={closeCreateIssue} onCreate={createIssue} />}
     {createIssueDefaults && !board && <Modal title={t('createIssue')} onClose={closeCreateIssue} size="sm"><div className="center-loading">{boardQuery.isError ? <><Notice tone="error">{friendlyError(boardQuery.error, t)}</Notice><Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}

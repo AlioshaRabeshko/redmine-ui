@@ -56,7 +56,7 @@ class LocalEventHub implements EventHub {
 }
 
 const commandSchema = z.object({
-  type: z.enum(['createIssue', 'updateIssue', 'moveIssue', 'handoffToQA', 'returnToDeveloper', 'comment', 'generateBranch',
+  type: z.enum(['createIssue', 'updateIssue', 'moveIssue', 'handoffToQA', 'returnToDeveloper', 'comment', 'editJournal', 'deleteJournal', 'setJournalLike', 'generateBranch',
     'createRelease', 'updateRelease', 'assignRelease', 'finishRelease', 'runAutomation']),
   issueId: z.number().int().positive().optional(),
   projectId: z.number().int().positive().optional(),
@@ -155,7 +155,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       mode: config.mode, readOnly: config.mode === 'redmine', connected: sync.isConnected,
       redmineUrl: config.redmineUrl, me: me ?? { id: 0, name: 'Підключення Redmine' }, projects,
       statuses: statuses ?? [], priorities: priorities ?? [], settings,
-      capabilities: { canWrite: config.mode === 'demo', ...(capabilities?.branchFieldId ? { branchFieldId: capabilities.branchFieldId } : {}),
+      capabilities: { canWrite: config.mode === 'demo', journalEditing: config.mode === 'demo', journalDeleting: config.mode === 'demo', journalLikes: config.mode === 'demo',
+        ...(capabilities?.branchFieldId ? { branchFieldId: capabilities.branchFieldId } : {}),
         ...(capabilities?.labelsFieldId ? { labelsFieldId: capabilities.labelsFieldId } : {}), warnings },
     };
   });
@@ -198,8 +199,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
     const issue = await store.getIssue(issueId);
     if (!issue) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
-    const people = await store.getValue<Person[]>('people') ?? [];
-    return { issue, journals: await store.getJournals(issueId), watchers: issue.watcherIds.map(id => people.find(person => person.id === id)).filter((person): person is Person => Boolean(person)) };
+    const [people, me, storedJournals] = await Promise.all([
+      store.getValue<Person[]>('people'), store.getValue<Person>('me'), store.getJournals(issueId),
+    ]);
+    const currentUser = me ?? { id: 0, name: 'Підключення Redmine' };
+    const journals = storedJournals.map(journal => {
+      const hasNotes = journal.notes.trim().length > 0;
+      const mayManage = config.mode === 'demo' && hasNotes && (journal.user.id === currentUser.id || currentUser.isAdmin === true);
+      const { likes: _likes, likedByMe: _likedByMe, canLike: _canLike, canEdit: _canEdit, canDelete: _canDelete, ...publicJournal } = journal;
+      const reactions = config.mode === 'demo' && hasNotes ? store.getJournalLikeState(journal.id, currentUser.id) : undefined;
+      return { ...publicJournal, canEdit: mayManage, canDelete: mayManage, canLike: config.mode === 'demo' && hasNotes,
+        ...(reactions ? { likes: reactions.count, likedByMe: reactions.likedByMe } : {}) };
+    });
+    return { issue, journals, watchers: issue.watcherIds.map(id => people?.find(person => person.id === id)).filter((person): person is Person => Boolean(person)) };
   });
 
   app.get<{ Params: { id: string } }>('/api/releases/:id', async (request): Promise<ReleaseDetail> => {

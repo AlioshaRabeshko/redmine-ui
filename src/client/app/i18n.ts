@@ -150,6 +150,37 @@ Object.assign(es, {
   projectBackgroundTooLarge: 'Elige una imagen de hasta 5 MiB.', projectBackgroundUnsupportedType: 'Elige una imagen PNG, JPEG o WebP.',
   projectBackgroundReadFailed: 'No se pudo leer la imagen.', projectBackgroundUploadFailed: 'No se pudo subir la imagen.', projectBackgroundSaveFailed: 'No se pudo guardar el ajuste del proyecto.',
 });
+Object.assign(en, {
+  commentLinkLabel: 'Link', commentActions: 'Comment actions', quoteComment: 'Quote', copyCommentLink: 'Copy comment link', editComment: 'Edit comment', editingComment: 'Editing', deleteComment: 'Delete',
+  saveCommentEdit: 'Save comment', cancelCommentEdit: 'Cancel edit', commentEditUnavailable: 'You cannot edit this comment.', commentDeleteUnavailable: 'You cannot delete this comment.',
+  commentEditConflict: 'This comment changed after your draft was saved. Review the latest text and choose how to continue.', latestComment: 'Latest comment', commentDeletedElsewhere: 'The comment was deleted elsewhere.',
+  continueWithDraft: 'Keep my draft and continue', useLatest: 'Use latest text', likesUnavailableShort: 'Unavailable',
+  likeComment: 'Like', unlikeComment: 'Unlike', deleteCommentTitle: 'Delete comment?', deleteCommentMessage: 'The comment text will be removed. Any issue history changes in this entry will remain.', likesUnavailable: 'Support for likes through this Redmine API has not been confirmed.',
+});
+Object.assign(uk, {
+  commentLinkLabel: 'Посилання', commentActions: 'Дії з коментарем', quoteComment: 'Цитувати', copyCommentLink: 'Копіювати посилання на коментар', editComment: 'Редагувати коментар', editingComment: 'Редагування', deleteComment: 'Видалити',
+  saveCommentEdit: 'Зберегти коментар', cancelCommentEdit: 'Скасувати редагування', commentEditUnavailable: 'У вас немає права редагувати цей коментар.', commentDeleteUnavailable: 'У вас немає права видалити цей коментар.',
+  commentEditConflict: 'Коментар змінився після збереження чернетки. Перегляньте актуальний текст і виберіть, як продовжити.', latestComment: 'Актуальний коментар', commentDeletedElsewhere: 'Коментар видалено в іншому місці.',
+  continueWithDraft: 'Залишити мою чернетку й продовжити', useLatest: 'Використати актуальний текст', likesUnavailableShort: 'Недоступно',
+  likeComment: 'Подобається', unlikeComment: 'Не подобається', deleteCommentTitle: 'Видалити коментар?', deleteCommentMessage: 'Текст коментаря буде прибрано. Зміни задачі в цьому записі історії залишаться.',
+  likesUnavailable: 'Підтримку вподобань через API цього Redmine ще не підтверджено.',
+});
+Object.assign(pl, {
+  commentLinkLabel: 'Link', commentActions: 'Działania dotyczące komentarza', quoteComment: 'Cytuj', copyCommentLink: 'Kopiuj link do komentarza', editComment: 'Edytuj komentarz', editingComment: 'Edycja', deleteComment: 'Usuń',
+  saveCommentEdit: 'Zapisz komentarz', cancelCommentEdit: 'Anuluj edycję', commentEditUnavailable: 'Nie możesz edytować tego komentarza.', commentDeleteUnavailable: 'Nie możesz usunąć tego komentarza.',
+  commentEditConflict: 'Ten komentarz zmienił się po zapisaniu wersji roboczej. Sprawdź najnowszy tekst i wybierz, jak kontynuować.', latestComment: 'Najnowszy komentarz', commentDeletedElsewhere: 'Komentarz został usunięty w innym miejscu.',
+  continueWithDraft: 'Zachowaj moją wersję roboczą i kontynuuj', useLatest: 'Użyj najnowszego tekstu', likesUnavailableShort: 'Niedostępne',
+  likeComment: 'Lubię to', unlikeComment: 'Nie lubię', deleteCommentTitle: 'Usunąć komentarz?', deleteCommentMessage: 'Tekst komentarza zostanie usunięty. Zmiany zadania zapisane w tym wpisie historii pozostaną.',
+  likesUnavailable: 'Obsługa polubień przez API tej instancji Redmine nie została jeszcze potwierdzona.',
+});
+Object.assign(es, {
+  commentLinkLabel: 'Enlace', commentActions: 'Acciones del comentario', quoteComment: 'Citar', copyCommentLink: 'Copiar enlace del comentario', editComment: 'Editar comentario', editingComment: 'Editando', deleteComment: 'Eliminar',
+  saveCommentEdit: 'Guardar comentario', cancelCommentEdit: 'Cancelar edición', commentEditUnavailable: 'No puedes editar este comentario.', commentDeleteUnavailable: 'No puedes eliminar este comentario.',
+  commentEditConflict: 'Este comentario cambió después de guardar el borrador. Revisa el texto más reciente y elige cómo continuar.', latestComment: 'Comentario más reciente', commentDeletedElsewhere: 'El comentario se eliminó en otro lugar.',
+  continueWithDraft: 'Conservar mi borrador y continuar', useLatest: 'Usar el texto más reciente', likesUnavailableShort: 'No disponible',
+  likeComment: 'Me gusta', unlikeComment: 'Ya no me gusta', deleteCommentTitle: '¿Eliminar comentario?', deleteCommentMessage: 'Se eliminará el texto del comentario. Los cambios de la tarea incluidos en esta entrada del historial se conservarán.',
+  likesUnavailable: 'Aún no se ha confirmado que la API de esta instancia de Redmine admita reacciones.',
+});
 
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },

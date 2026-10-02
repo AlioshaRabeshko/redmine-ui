@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, History, MessageSquare, Paperclip, Save, Send, UserRound, Users, WandSparkles } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, Heart, History, Link, MessageSquare, Paperclip, Pencil, Quote, Save, Send, Trash2, UserRound, Users, WandSparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BoardData, Issue, IssueDetail, PeopleField, Person, Priority, Project, Status, Version } from '../../../shared/types';
 import { branchForIssue } from '../../../shared/domain';
@@ -10,6 +10,7 @@ import { api, issueUrl } from '../../lib/api';
 import { createIssueTextDraftKey, enqueueFieldWrite, issueTextDraftKey, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
 
 type IssueText = { subject: string; description: string; branch: string; dueDate: string };
+type JournalEditDraft = { notes: string; expectedNotes: string; operationId?: string };
 type AutoField = 'statusId' | 'priorityId' | 'trackerId' | 'assignedToId' | 'developerId' | 'qaId' | 'fixedVersionId' | 'labels';
 type AutoValues = Pick<Issue, 'statusId' | 'priorityId' | 'trackerId' | 'assignedToId' | 'developerId' | 'qaId' | 'fixedVersionId' | 'labels'>;
 type FieldSaveState = { state: 'pending' | 'saved' | 'error'; error?: string };
@@ -30,6 +31,21 @@ function readDraft(key: string, fallback: string): string {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
 }
 
+function journalEditDraftKey(scope: string, projectId: number, issueId: number, journalId: number): string {
+  return ['redmine-workspace', 'journal-draft', scope, String(projectId), String(issueId), String(journalId)]
+    .map((part) => encodeURIComponent(part)).join(':');
+}
+
+function readJournalEditDraft(key: string, notes: string): JournalEditDraft {
+  try {
+    const draft = JSON.parse(localStorage.getItem(key) || 'null') as Partial<JournalEditDraft> | null;
+    if (draft && typeof draft.notes === 'string' && typeof draft.expectedNotes === 'string') {
+      return { notes: draft.notes, expectedNotes: draft.expectedNotes, ...(typeof draft.operationId === 'string' ? { operationId: draft.operationId } : {}) };
+    }
+  } catch { /* Ignore malformed or unavailable local drafts. */ }
+  return { notes, expectedNotes: notes };
+}
+
 function personFrom(members: Person[], id?: number) { return members.find((person) => person.id === id); }
 
 function suggestedAssignees(members: Person[], selectedId?: number, recommendations: number[] = []) {
@@ -46,11 +62,15 @@ function suggestedAssignees(members: Person[], selectedId?: number, recommendati
   return candidates;
 }
 
-export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, canWrite, onClose, onSave, onComment, onSaveRoles, onToast }: {
+export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, canWrite, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
   detail: IssueDetail; board: BoardData; statuses: Status[]; priorities: Priority[]; redmineUrl: string; canWrite: boolean; onClose: () => void;
   draftScope: string; initialJournalId?: number;
   onSave: (issue: Issue, patch: IssueEditPatch, operationId?: string) => Promise<Issue | void>; onComment: (issue: Issue, notes: string) => Promise<void>;
-  onSaveRoles: (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }, operationId?: string) => Promise<Issue | void>; onToast: (text: string) => void; initialComment?: boolean;
+  onSaveRoles: (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }, operationId?: string) => Promise<Issue | void>;
+  onEditJournal: (issue: Issue, journalId: number, notes: string, expectedNotes: string, operationId: string) => Promise<void>;
+  onDeleteJournal: (issue: Issue, journalId: number, expectedNotes: string, operationId: string) => Promise<void>;
+  onSetJournalLike: (issue: Issue, journalId: number, liked: boolean, operationId: string) => Promise<void>;
+  onToast: (text: string) => void; initialComment?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const issue = detail.issue;
@@ -98,8 +118,36 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const commentRef = useRef(comment);
   const [commentError, setCommentError] = useState('');
   const [sendingComment, setSendingComment] = useState(false);
+  const [editingJournalId, setEditingJournalId] = useState<number>();
+  const [journalEditDraft, setJournalEditDraft] = useState<JournalEditDraft>();
+  const journalEditDraftRef = useRef<JournalEditDraft | undefined>(undefined);
+  const [journalEditError, setJournalEditError] = useState('');
+  const [savingJournalEdit, setSavingJournalEdit] = useState(false);
+  const [deleteJournal, setDeleteJournal] = useState<{ journalId: number; expectedNotes: string }>();
+  const [deleteJournalError, setDeleteJournalError] = useState('');
+  const [deletingJournal, setDeletingJournal] = useState(false);
+  const [likingJournalIds, setLikingJournalIds] = useState<Set<number>>(() => new Set());
+  const [journalLikeErrors, setJournalLikeErrors] = useState<Record<number, string>>({});
   const [preview, setPreview] = useState(false);
   const textFormRef = useWorkspaceFormSave<HTMLFormElement>();
+  const commentFormRef = useWorkspaceFormSave<HTMLFormElement>();
+  const journalEditFormRef = useRef<HTMLFormElement>(null);
+  const journalEditorTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const journalEditButtonRefs = useRef(new Map<number, HTMLButtonElement>());
+  const activityHeadingRef = useRef<HTMLHeadingElement>(null);
+  const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const form = journalEditFormRef.current;
+    if (!form) return;
+    const onSaveRequest = (event: Event) => {
+      if (event.target !== form) return;
+      event.preventDefault();
+      form.requestSubmit();
+    };
+    form.addEventListener('workspace:save-form', onSaveRequest);
+    return () => form.removeEventListener('workspace:save-form', onSaveRequest);
+  }, [editingJournalId]);
 
   const activeVersions = board.versions.filter((version) => version.projectId === issue.projectId && version.status !== 'closed');
   const trackers = useMemo(() => board.trackers
@@ -292,6 +340,137 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     finally { setSendingComment(false); }
   };
 
+  const storeJournalEditDraft = (journalId: number, next: JournalEditDraft) => {
+    journalEditDraftRef.current = next;
+    setJournalEditDraft(next);
+    const key = journalEditDraftKey(draftScope, issue.projectId, issue.id, journalId);
+    try {
+      if (next.notes === next.expectedNotes && !next.operationId) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify(next));
+    } catch { /* Inline editing stays available when browser storage is unavailable. */ }
+  };
+
+  const beginJournalEdit = (journal: IssueDetail['journals'][number]) => {
+    const key = journalEditDraftKey(draftScope, issue.projectId, issue.id, journal.id);
+    const draft = readJournalEditDraft(key, journal.notes);
+    journalEditDraftRef.current = draft;
+    setJournalEditDraft(draft);
+    setEditingJournalId(journal.id);
+    setJournalEditError('');
+    requestAnimationFrame(() => journalEditorTextareaRef.current?.focus());
+  };
+
+  const cancelJournalEdit = (journalId: number) => {
+    try { localStorage.removeItem(journalEditDraftKey(draftScope, issue.projectId, issue.id, journalId)); } catch { /* Cancel is still available when storage is unavailable. */ }
+    journalEditDraftRef.current = undefined;
+    setJournalEditDraft(undefined);
+    setJournalEditError('');
+    setEditingJournalId(undefined);
+    requestAnimationFrame(() => journalEditButtonRefs.current.get(journalId)?.focus());
+  };
+
+  const changeJournalEditText = (value: string, journalId: number) => {
+    const current = journalEditDraftRef.current;
+    if (!current) return;
+    storeJournalEditDraft(journalId, { notes: value, expectedNotes: current.expectedNotes });
+    setJournalEditError('');
+  };
+
+  const saveJournalEdit = async (event: React.FormEvent<HTMLFormElement>, journal: IssueDetail['journals'][number]) => {
+    event.preventDefault();
+    const draft = journalEditDraftRef.current;
+    if (!canWrite || !draft || savingJournalEdit || !draft.notes.trim() || draft.notes === draft.expectedNotes || draft.expectedNotes !== journal.notes) return;
+    const operationId = draft.operationId || crypto.randomUUID();
+    const savedNotes = draft.notes.trim();
+    const submitted = { ...draft, operationId };
+    storeJournalEditDraft(journal.id, submitted);
+    setJournalEditError('');
+    setSavingJournalEdit(true);
+    try {
+      await onEditJournal(issue, journal.id, savedNotes, submitted.expectedNotes, operationId);
+      const latestDraft = journalEditDraftRef.current;
+      if (latestDraft?.notes === submitted.notes) {
+        cancelJournalEdit(journal.id);
+      } else if (latestDraft) {
+        storeJournalEditDraft(journal.id, { notes: latestDraft.notes, expectedNotes: savedNotes });
+      }
+      onToast(t('saved'));
+    } catch (error) {
+      setJournalEditError(error instanceof Error ? error.message : t('error'));
+    } finally { setSavingJournalEdit(false); }
+  };
+
+  const resolveJournalConflict = (journal: IssueDetail['journals'][number], keepDraft: boolean) => {
+    const draft = journalEditDraftRef.current;
+    if (!draft) return;
+    storeJournalEditDraft(journal.id, keepDraft
+      ? { notes: draft.notes, expectedNotes: journal.notes }
+      : { notes: journal.notes, expectedNotes: journal.notes });
+    setJournalEditError('');
+  };
+
+  const deletionAttemptRef = useRef<{ journalId: number; expectedNotes: string; operationId: string } | undefined>(undefined);
+  const openJournalDelete = (journal: IssueDetail['journals'][number]) => {
+    setDeleteJournal({ journalId: journal.id, expectedNotes: journal.notes });
+    setDeleteJournalError('');
+  };
+  const confirmJournalDelete = async () => {
+    const journalId = deleteJournal?.journalId;
+    const expectedNotes = deleteJournal?.expectedNotes;
+    const journal = detail.journals.find((item) => item.id === journalId);
+    if (!canWrite || journalId === undefined || expectedNotes === undefined || !journal || deletingJournal) return;
+    const previous = deletionAttemptRef.current;
+    const operationId = previous?.journalId === journalId && previous.expectedNotes === expectedNotes
+      ? previous.operationId : crypto.randomUUID();
+    deletionAttemptRef.current = { journalId, expectedNotes, operationId };
+    setDeletingJournal(true);
+    setDeleteJournalError('');
+    try {
+      await onDeleteJournal(issue, journalId, expectedNotes, operationId);
+      try { localStorage.removeItem(journalEditDraftKey(draftScope, issue.projectId, issue.id, journalId)); } catch { /* The deleted note is already confirmed by the server. */ }
+      if (editingJournalId === journalId) {
+        journalEditDraftRef.current = undefined;
+        setJournalEditDraft(undefined);
+        setEditingJournalId(undefined);
+      }
+      deletionAttemptRef.current = undefined;
+      setDeleteJournal(undefined);
+      onToast(t('saved'));
+      requestAnimationFrame(() => activityHeadingRef.current?.focus());
+    } catch (error) {
+      setDeleteJournalError(error instanceof Error ? error.message : t('error'));
+    } finally { setDeletingJournal(false); }
+  };
+
+  const toggleJournalLike = async (journal: IssueDetail['journals'][number]) => {
+    if (!canWrite || journal.canLike !== true || likingJournalIds.has(journal.id)) return;
+    const liked = !journal.likedByMe;
+    setLikingJournalIds((current) => new Set(current).add(journal.id));
+    setJournalLikeErrors((current) => ({ ...current, [journal.id]: '' }));
+    try { await onSetJournalLike(issue, journal.id, liked, crypto.randomUUID()); onToast(t('saved')); }
+    catch (error) { setJournalLikeErrors((current) => ({ ...current, [journal.id]: error instanceof Error ? error.message : t('error') })); }
+    finally { setLikingJournalIds((current) => { const next = new Set(current); next.delete(journal.id); return next; }); }
+  };
+
+  const journalPermalink = (journalId: number) => `${issueUrl(redmineUrl, issue.id)}#change-${journalId}`;
+  const copyJournalPermalink = async (journalId: number) => {
+    try { await navigator.clipboard.writeText(journalPermalink(journalId)); onToast(t('copied')); }
+    catch { onToast(t('error')); }
+  };
+
+  const quoteJournal = (journal: IssueDetail['journals'][number]) => {
+    if (!journal.notes) return;
+    const quoteLines = journal.notes.split('\n').map((line) => line ? `> ${line}` : '>').join('\n');
+    const attribution = `> — ${journal.user.name} · ${new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}\n> ${journalPermalink(journal.id)}`;
+    const quoteText = `${quoteLines}\n${attribution}`;
+    const separator = !comment ? '' : comment.endsWith('\n\n') ? '' : comment.endsWith('\n') ? '\n' : '\n\n';
+    const next = `${comment}${separator}${quoteText}`;
+    commentRef.current = next;
+    setComment(next);
+    setCommentError('');
+    requestAnimationFrame(() => commentTextareaRef.current?.focus());
+  };
+
   const onCopyUrl = async () => { try { await navigator.clipboard.writeText(issueUrl(redmineUrl, issue.id)); onToast(t('copied')); } catch { onToast(t('error')); } };
   const onGenerateBranch = () => setTextValue('branch', branchForIssue(issue.id, textDraft.subject));
   const statusOptions: PickerOption[] = statuses.map((entry) => ({ value: String(entry.id), label: entry.name }));
@@ -333,17 +512,54 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
             {textError && <Notice tone="error" className="text-save-error">{textError}</Notice>}
             {anyTextDirty && <div className="text-save-row"><span>{t('textChanges')}</span><Button type="submit" variant="primary" disabled={!canWrite || textSaving || !textDraft.subject.trim()}>{textSaving ? <Spinner /> : <Save size={15} />}{t('saveChanges')}</Button></div>}
           </form>
-          <div className="section-title"><History size={15} /><h3>{t('activity')}</h3><span>{detail.journals.length}</span></div>
+          <div className="section-title"><History size={15} /><h3 ref={activityHeadingRef} tabIndex={-1}>{t('activity')}</h3><span>{detail.journals.length}</span></div>
           <div className="activity-list">
             {detail.journals.length === 0 && <div className="activity-empty"><History size={15} />{t('noActivity')}</div>}
-            {detail.journals.map((journal) => <article className="activity-item" key={journal.id} id={`journal-${journal.id}`} tabIndex={-1}><Avatar person={journal.user} size="sm" /><div className="activity-body"><div className="activity-heading"><strong>{journal.user.name}</strong><time>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}</time></div>
-              {!!journal.notes && <p>{journal.notes}</p>}
-              {!!journal.changes.length && <ul>{journal.changes.map((change, index) => <li key={`${journal.id}-${index}`}><strong>{change.field}</strong>{change.oldValue && <span>{change.oldValue}</span>}<span className="change-arrow">→</span>{change.newValue || t('unknown')}</li>)}</ul>}
-            </div></article>)}
+            {detail.journals.map((journal) => {
+              const isEditing = editingJournalId === journal.id;
+              const isEditConflict = isEditing && journalEditDraft?.expectedNotes !== journal.notes;
+              const hasNote = Boolean(journal.notes);
+              const editAllowed = canWrite && journal.canEdit === true;
+              const deleteAllowed = canWrite && journal.canDelete === true;
+              const likeSupported = journal.canLike === true;
+              return <article className="activity-item" key={journal.id} id={`journal-${journal.id}`} tabIndex={-1} data-testid={`journal-item-${journal.id}`}>
+                <Avatar person={journal.user} size="sm" />
+                <div className="activity-body">
+                  <div className="activity-heading"><strong>{journal.user.name}</strong><time>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}</time></div>
+                  {hasNote && (isEditing ? <form ref={journalEditFormRef} className="journal-editor" data-testid={`journal-editor-${journal.id}`} data-workspace-save onSubmit={(event) => { void saveJournalEdit(event, journal); }}>
+                    <textarea ref={journalEditorTextareaRef} className="text-area journal-editor-area" aria-label={t('editComment')} data-testid={`journal-editor-textarea-${journal.id}`} value={journalEditDraft?.notes ?? ''} onChange={(event) => changeJournalEditText(event.target.value, journal.id)} />
+                    {isEditConflict && <div className="journal-edit-conflict" role="alert" data-testid={`journal-edit-conflict-${journal.id}`}>
+                      <p>{t('commentEditConflict')}</p>
+                      <details><summary>{t('latestComment')}</summary><pre>{journal.notes || t('commentDeletedElsewhere')}</pre></details>
+                      <div className="journal-conflict-actions">
+                        <Button size="sm" variant="outline" type="button" data-testid={`journal-keep-draft-${journal.id}`} onClick={() => resolveJournalConflict(journal, true)}>{t('continueWithDraft')}</Button>
+                        <Button size="sm" type="button" data-testid={`journal-use-latest-${journal.id}`} onClick={() => resolveJournalConflict(journal, false)}>{t('useLatest')}</Button>
+                      </div>
+                    </div>}
+                    {journalEditError && <div className="journal-edit-error" role="alert">{journalEditError}</div>}
+                    <div className="journal-editor-footer"><span><kbd>⌘/Ctrl+S</kbd> {t('saveCommentEdit')}</span><div>
+                      <Button size="sm" type="button" data-testid={`journal-cancel-${journal.id}`} disabled={savingJournalEdit} onClick={() => cancelJournalEdit(journal.id)}>{t('cancelCommentEdit')}</Button>
+                      <Button size="sm" variant="primary" type="submit" data-testid={`journal-save-${journal.id}`} disabled={!canWrite || savingJournalEdit || isEditConflict || !journalEditDraft?.notes.trim() || journalEditDraft.notes === journalEditDraft.expectedNotes}>{savingJournalEdit ? <Spinner /> : <Save size={14} />}{t('saveCommentEdit')}</Button>
+                    </div></div>
+                  </form> : <p>{journal.notes}</p>)}
+                  {!!journal.changes.length && <ul>{journal.changes.map((change, index) => <li key={`${journal.id}-${index}`}><strong>{change.field}</strong>{change.oldValue && <span>{change.oldValue}</span>}<span className="change-arrow">→</span>{change.newValue || t('unknown')}</li>)}</ul>}
+                  {hasNote && <div className="journal-actions" role="group" aria-label={t('commentActions')}>
+                    <button type="button" className="journal-action-button" data-testid={`journal-quote-${journal.id}`} aria-label={t('quoteComment')} title={t('quoteComment')} onClick={() => quoteJournal(journal)}><Quote size={13} /><span>{t('quoteComment')}</span></button>
+                    <button type="button" className="journal-action-button" data-testid={`journal-permalink-${journal.id}`} aria-label={t('copyCommentLink')} title={t('copyCommentLink')} onClick={() => { void copyJournalPermalink(journal.id); }}><Link size={13} /><span>{t('commentLinkLabel')}</span></button>
+                    <button ref={(element) => { if (element) journalEditButtonRefs.current.set(journal.id, element); else journalEditButtonRefs.current.delete(journal.id); }} type="button" className="journal-action-button" data-testid={`journal-edit-${journal.id}`} aria-label={t('editComment')} title={editAllowed ? t('editComment') : canWrite ? t('commentEditUnavailable') : t('saveBlocked')} disabled={!editAllowed || savingJournalEdit || (editingJournalId !== undefined && editingJournalId !== journal.id)} onClick={() => beginJournalEdit(journal)}>{isEditing ? <Check size={13} /> : <Pencil size={13} />}<span>{isEditing ? t('editingComment') : t('edit')}</span></button>
+                    <button type="button" className="journal-action-button journal-action-danger" data-testid={`journal-delete-${journal.id}`} aria-label={t('deleteComment')} title={deleteAllowed ? t('deleteComment') : canWrite ? t('commentDeleteUnavailable') : t('saveBlocked')} disabled={!deleteAllowed || deletingJournal || savingJournalEdit} onClick={() => openJournalDelete(journal)}><Trash2 size={13} /><span>{t('deleteComment')}</span></button>
+                    <button type="button" className="journal-action-button" data-testid={`journal-like-${journal.id}`} aria-label={likeSupported ? `${journal.likedByMe ? t('unlikeComment') : t('likeComment')} (${journal.likes ?? 0})` : t('likesUnavailable')} title={likeSupported ? canWrite ? t('likeComment') : t('saveBlocked') : t('likesUnavailable')} aria-pressed={Boolean(journal.likedByMe)} disabled={!likeSupported || !canWrite || likingJournalIds.has(journal.id)} onClick={() => { void toggleJournalLike(journal); }}>
+                      <Heart size={13} fill={journal.likedByMe ? 'currentColor' : 'none'} /><span>{likeSupported ? journal.likedByMe ? t('unlikeComment') : t('likeComment') : t('likesUnavailableShort')}</span>{journal.likes !== undefined && <span className="journal-like-count">{journal.likes}</span>}
+                    </button>
+                    {journalLikeErrors[journal.id] && <span className="journal-like-error" role="alert">{journalLikeErrors[journal.id]}</span>}
+                  </div>}
+                </div>
+              </article>;
+            })}
           </div>
-          <form className="comment-composer" onSubmit={sendComment}>
+          <form ref={commentFormRef} className="comment-composer" data-workspace-save onSubmit={sendComment}>
             <div className="section-title"><MessageSquare size={15} /><h3>{t('comments')}</h3></div>
-            <textarea className="text-area comment-area" aria-label={t('comments')} value={comment} onChange={(e) => { commentRef.current = e.target.value; setComment(e.target.value); setCommentError(''); }} placeholder={t('commentPlaceholder')} />
+            <textarea ref={commentTextareaRef} className="text-area comment-area" aria-label={t('comments')} data-testid="comment-composer" value={comment} onChange={(e) => { commentRef.current = e.target.value; setComment(e.target.value); setCommentError(''); }} placeholder={t('commentPlaceholder')} />
             {commentError && <Notice tone="error" className="comment-save-error">{commentError}</Notice>}
             <div className="comment-footer"><span>{!canWrite ? t('readOnlyBadge') : ''}</span><Button type="submit" size="sm" variant="primary" disabled={!canWrite || !comment.trim() || sendingComment}>{sendingComment ? <Spinner /> : <Send size={14} />}{t('addComment')}</Button></div>
           </form>
@@ -375,6 +591,13 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
       </div>
     </div>
     <div className="issue-dialog-footer"><span>{anyTextDirty ? t('draftSaved') : `${t('actualStatus')}: ${status?.name || t('unknown')}`}</span><div>{!canWrite && anyTextDirty && <span className="readonly-inline"><AlertTriangle size={14} />{t('readOnlyBadge')}</span>}<Button onClick={onClose}>{t('close')}</Button></div></div>
+    {deleteJournal && <Modal title={t('deleteCommentTitle')} onClose={() => { if (!deletingJournal) { setDeleteJournal(undefined); setDeleteJournalError(''); } }} size="sm" testId="journal-delete-confirmation" className="journal-delete-dialog">
+      <div className="journal-delete-content">
+        <p>{t('deleteCommentMessage')}</p>
+        {deleteJournalError && <div className="journal-delete-error" role="alert">{deleteJournalError}</div>}
+        <div className="modal-footer"><Button type="button" data-testid="journal-delete-cancel" disabled={deletingJournal} onClick={() => { setDeleteJournal(undefined); setDeleteJournalError(''); }}>{t('cancel')}</Button><Button type="button" variant="danger" data-testid="journal-delete-confirm" disabled={!canWrite || deletingJournal} onClick={() => { void confirmJournalDelete(); }}>{deletingJournal ? <Spinner /> : <Trash2 size={14} />}{t('deleteComment')}</Button></div>
+      </div>
+    </Modal>}
   </Modal>;
 }
 

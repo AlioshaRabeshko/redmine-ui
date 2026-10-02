@@ -4,14 +4,18 @@ export type StatusKey = 'suspended' | 'todo' | 'progress' | 'review' | 'qa' | 'd
 export type PersonRole = 'qa' | 'support' | 'developer';
 export type PeopleField = 'assignee' | 'developer' | 'qa';
 export interface RedmineRole { id: number; name: string }
-export interface Person { id: number; name: string; avatar?: string; roles?: PersonRole[]; redmineRoles?: RedmineRole[] }
+export interface Person { id: number; name: string; avatar?: string; roles?: PersonRole[]; redmineRoles?: RedmineRole[]; isAdmin?: boolean }
 export interface ProjectTracker { id: number; name: string }
 export interface Project { id: number; name: string; identifier: string; description?: string; trackers?: ProjectTracker[] }
 export interface Status { id: number; name: string; key: StatusKey; isClosed: boolean }
 export interface Priority { id: number; name: string; rank: number }
 export interface Version { id: number; projectId: number; name: string; status: 'open' | 'locked' | 'closed'; dueDate?: string; description?: string }
 export interface Attachment { id: number; filename: string; url: string; size: number }
-export interface Journal { id: number; user: Person; notes: string; createdOn: string; changes: { field: string; oldValue?: string; newValue?: string }[] }
+export interface Journal {
+  id: number; user: Person; notes: string; createdOn: string;
+  changes: { field: string; oldValue?: string; newValue?: string }[];
+  likes?: number; likedByMe?: boolean; canLike?: boolean; canEdit?: boolean; canDelete?: boolean;
+}
 export interface Issue {
   id: number; projectId: number; subject: string; description: string;
   statusId: number; priorityId: number; trackerId: number; trackerName: string;
@@ -40,7 +44,10 @@ export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptio
   projectBackgrounds?: Record<string, string | null>;
   personRoleOverrides?: Record<string, Record<string, PersonRole[] | null> | null>;
 };
-export interface Capabilities { canWrite: boolean; branchFieldId?: number; labelsFieldId?: number; warnings: string[] }
+export interface Capabilities {
+  canWrite: boolean; journalEditing: boolean; journalDeleting: boolean; journalLikes: boolean;
+  branchFieldId?: number; labelsFieldId?: number; warnings: string[];
+}
 export interface Bootstrap {
   mode: Mode; readOnly: boolean; connected: boolean; redmineUrl: string;
   me: Person; projects: Project[]; statuses: Status[]; priorities: Priority[];
@@ -56,6 +63,6 @@ export interface ReleaseDetail { version: Version; issues: Issue[] }
 export interface Notification { id: string; projectId: number; issueId: number; journalId?: number; actor: Person; kind: string; text: string; createdOn: string; readAt?: string }
 export interface OperationStep { name: string; status: 'pending' | 'done' | 'failed' | 'skipped' | 'blocked'; error?: string }
 export interface Operation { id: string; type: string; issueId?: number; versionId?: number; status: 'pending' | 'running' | 'done' | 'failed' | 'blocked'; steps: OperationStep[]; createdOn: string; error?: string; errorCode?: string }
-export interface Command { type: 'createIssue' | 'updateIssue' | 'moveIssue' | 'handoffToQA' | 'returnToDeveloper' | 'comment' | 'generateBranch' | 'createRelease' | 'updateRelease' | 'assignRelease' | 'finishRelease' | 'runAutomation'; issueId?: number; projectId?: number; versionId?: number; operationId?: string; input: Record<string, unknown> }
+export interface Command { type: 'createIssue' | 'updateIssue' | 'moveIssue' | 'handoffToQA' | 'returnToDeveloper' | 'comment' | 'editJournal' | 'deleteJournal' | 'setJournalLike' | 'generateBranch' | 'createRelease' | 'updateRelease' | 'assignRelease' | 'finishRelease' | 'runAutomation'; issueId?: number; projectId?: number; versionId?: number; operationId?: string; input: Record<string, unknown> }
 export interface CommandResult { operation: Operation; issue?: Issue; version?: Version }
 export interface ApiError { code: string; message: string; details?: unknown }

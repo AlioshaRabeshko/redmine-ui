@@ -30,7 +30,7 @@ describe('HTTP contract and development safety', () => {
   it('blocks real mutation commands before any outbound request while allowing local preferences', async () => {
     const fetcher = vi.fn();
     app = await createApp({ env: { APP_MODE: 'redmine', REDMINE_URL: 'https://example.invalid', REDMINE_API_TOKEN: 'secret-canary-test' }, databasePath: ':memory:', startWorker: false, fetcher });
-    for (const type of ['createIssue', 'updateIssue', 'moveIssue', 'handoffToQA', 'returnToDeveloper', 'comment', 'createRelease', 'updateRelease', 'assignRelease', 'finishRelease', 'runAutomation']) {
+    for (const type of ['createIssue', 'updateIssue', 'moveIssue', 'handoffToQA', 'returnToDeveloper', 'comment', 'editJournal', 'deleteJournal', 'setJournalLike', 'createRelease', 'updateRelease', 'assignRelease', 'finishRelease', 'runAutomation']) {
       const response = await app.inject({ method: 'POST', url: '/api/commands', payload: { type, issueId: 1, projectId: 1, versionId: 1, input: {} } });
       expect(response.statusCode).toBe(403);
       expect(response.json().code).toBe('READ_ONLY');
