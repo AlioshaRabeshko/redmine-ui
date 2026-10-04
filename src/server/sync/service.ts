@@ -1,11 +1,12 @@
 import type { AppConfig } from '../config.js';
-import type { Issue, Notification, Operation, OperationStep, Person, Status, Version } from '../../shared/types.js';
+import type { Issue, LabelOption, Notification, Operation, OperationStep, Person, Status, Version } from '../../shared/types.js';
 import { RedmineAdapter, type RedmineSnapshot } from '../redmine/adapter.js';
 import { RedmineConfigError, RedmineRequestError } from '../redmine/transport.js';
 import { WorkspaceStore } from '../db/store.js';
 
 export interface SyncResult { syncedAt: string; issuesUpdated: number; notificationsAdded: number; warnings: string[] }
 export interface EventHub { publish(event: string, data?: unknown): void }
+const deployReadRevision = 1;
 
 export class SyncService {
   private activeSync?: Promise<SyncResult>;
@@ -53,8 +54,11 @@ export class SyncService {
       const firstBaseline = storedFirstBaseline ?? initialCursor;
       const lastFullSync = await this.store.getCursor('full-sync');
       const fullSync = !lastFullSync || Date.now() - Date.parse(lastFullSync) > 6 * 60 * 60_000;
+      const storedDeployRevision = await this.store.getValue<number>('deployReadRevision') ?? 0;
+      const refreshClosedDeploy = storedDeployRevision < deployReadRevision;
+      const oldLabelOptions = await this.store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {};
       const since = !fullSync && initialCursor ? new Date(Date.parse(initialCursor) - 5 * 60_000).toISOString() : undefined;
-      const snapshot = await this.adapter.snapshot(since, remoteMe, Boolean(initialCursor));
+      const snapshot = await this.adapter.snapshot(since, remoteMe, Boolean(initialCursor), refreshClosedDeploy, oldLabelOptions);
       this.lastSnapshot = snapshot;
       const previousIssues = new Map((await this.store.getIssues()).map(issue => [issue.id, issue]));
       for (const project of snapshot.projects) await this.store.saveProject(project);
@@ -96,6 +100,8 @@ export class SyncService {
       }
       await this.store.setValue('projectMembershipIds', membershipIds);
       await this.store.setValue('projectMembershipRoles', membershipRoles);
+      const labelOptions = mergeCatalogByProject(oldLabelOptions, snapshot.labelOptions ?? {});
+      await this.store.setValue('labelOptions', labelOptions);
       const previousCapabilities = await this.store.getValue<{ branchFieldId?: number; labelsFieldId?: number; warnings?: string[] }>('capabilities');
       await this.store.setValue('capabilities', { canWrite: false,
         branchFieldId: snapshot.branchFieldId ?? previousCapabilities?.branchFieldId,
@@ -107,6 +113,14 @@ export class SyncService {
       let notificationsAdded = 0;
       const ciTransitions = new Set<number>();
       const automationEnabled = (await this.store.getSettings()).automationEnabled;
+      const refreshedIds = new Set(snapshot.issues.map(issue => issue.id));
+      for (const issue of previousIssues.values()) {
+        if (refreshedIds.has(issue.id)) continue;
+        const labels = remapCachedLabelsByCatalog(issue.labels, labelOptions[String(issue.projectId)] ?? []);
+        if (labels.some((label, index) => label !== issue.labels[index]) || labels.length !== issue.labels.length) {
+          await this.store.saveIssue({ ...issue, labels });
+        }
+      }
       for (const issue of snapshot.issues) {
         const previous = previousIssues.get(issue.id);
         await this.store.saveIssue({ ...issue, developerId: previous?.developerId, qaId: previous?.qaId });
@@ -143,6 +157,7 @@ export class SyncService {
       const syncedAt = new Date().toISOString();
       if (!storedFirstBaseline) await this.store.setCursor('first-baseline', firstBaseline ?? syncStartedAt);
       if (fullSync) await this.store.setCursor('full-sync', syncStartedAt);
+      if (refreshClosedDeploy) await this.store.setValue('deployReadRevision', deployReadRevision);
       await this.store.setCursor('baseline', syncStartedAt);
       this.connected = true;
       this.lastError = undefined;
@@ -202,6 +217,33 @@ export class SyncService {
       createdOn: new Date().toISOString(), error: 'Автоматизацію зафіксовано, але тимчасове обмеження розробки блокує запис у Redmine.', errorCode: 'READ_ONLY' };
     await this.store.saveOperationRecord({ operation, context: { triggerId } });
   }
+}
+
+function mergeCatalogByProject(previous: Record<string, LabelOption[]>, incoming: Record<string, LabelOption[]>): Record<string, LabelOption[]> {
+  const result = { ...previous };
+  for (const [projectId, fresh] of Object.entries(incoming)) {
+    if (!fresh.length) continue; // Preserve a previously readable dictionary after a restricted/empty metadata response.
+    const old = new Map((previous[projectId] ?? []).map(option => [`${option.fieldId ?? ''}:${option.id}`, option]));
+    result[projectId] = fresh.map(option => {
+      const cached = old.get(`${option.fieldId ?? ''}:${option.id}`);
+      return cached && cached.name !== cached.id && option.name === option.id ? cached : option;
+    });
+  }
+  return result;
+}
+
+function remapCachedLabelsByCatalog(labels: string[], catalog: LabelOption[]): string[] {
+  const namesById = new Map<string, Set<string>>();
+  for (const option of catalog) {
+    const names = namesById.get(option.id) ?? new Set<string>();
+    names.add(option.name);
+    namesById.set(option.id, names);
+  }
+  return labels.map(label => {
+    if (!/^\d+$/.test(label)) return label;
+    const names = namesById.get(label);
+    return names?.size === 1 ? [...names][0]! : label;
+  });
 }
 
 export class BackgroundWorker {

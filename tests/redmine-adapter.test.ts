@@ -105,6 +105,183 @@ describe('Redmine read-only adapter integration contract', () => {
     expect(fixture.requested.filter(url => url.pathname.endsWith('/issues.json')).every(url => url.searchParams.get('status_id') === 'open')).toBe(true);
   });
 
+  it('loads closed Deploy issues on the first board, deduplicates release overlap, and marks watched Deploy in fast baseline', async () => {
+    const fixture = fixtureFetch();
+    const requested: URL[] = [];
+    const deploy = {
+      id: 104, project: { id: 10 }, subject: 'Deploy item', description: 'Body',
+      status: { id: 910, name: 'Deploy', is_closed: true }, priority: { id: 88 },
+      author: { id: 2, name: 'Developer' }, assigned_to: { id: 2, name: 'Developer' },
+      tracker: { id: 1, name: 'Task' }, fixed_version: { id: 99 },
+      created_on: '2026-09-20T10:00:00Z', updated_on: '2026-09-21T10:00:00Z', custom_fields: [],
+    };
+    const fetcher = async (input: string | URL | Request) => {
+      const url = new URL(String(input)); requested.push(url);
+      if (url.pathname.endsWith('/issue_statuses.json')) return new Response(JSON.stringify({ issue_statuses: [
+        { id: 903, name: 'Review', is_closed: false }, { id: 910, name: 'Deploy', is_closed: true },
+      ] }), { headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname.endsWith('/issues.json') && url.searchParams.get('status_id') === 'closed'
+        && url.searchParams.get('fixed_version_id') === '99') {
+        return new Response(JSON.stringify({ issues: [deploy], total_count: 1, limit: 100 }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.pathname.endsWith('/issues.json') && url.searchParams.get('status_id') === '910') {
+        return new Response(JSON.stringify({ issues: [deploy], total_count: 1, limit: 100 }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return fixture.fetcher(input);
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+    const baseline = await adapter.snapshot(undefined, undefined, false);
+    const discovered = baseline.issues.filter(issue => issue.id === 104);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({ statusId: 910, fixedVersionId: 99, watcherIds: [1] });
+    expect(requested.some(url => url.pathname.endsWith('/issues.json') && url.searchParams.get('status_id') === '910'
+      && url.searchParams.get('watcher_id') === 'me')).toBe(true);
+  });
+
+  it('uses accessible issue edit options to map Labels and Tags IDs without conflating fields', async () => {
+    const fixture = fixtureFetch();
+    const html = [
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-605" value="605"><label for="labels-605">Build: Running</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-606" value="606"><label for="labels-606">Build: Succeeded</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-601" value="601"><label for="labels-601">Example Label A</label>',
+      '<input type="checkbox" name="issue[custom_field_values][42][]" id="tags-606" value="606"><label for="tags-606">Tag Six</label>',
+    ].join('');
+    const rewriteIssue = (raw: Record<string, unknown>) => ({ ...raw,
+      custom_fields: [{ id: 41, name: 'Labels', value: ['606'] }, { id: 42, name: 'Tags', value: ['606'] }, { id: 24, name: 'Branch', value: 'sample-branch' }],
+      journals: [{ id: 9001, user: { id: 2, name: 'Developer' }, notes: '', created_on: '2026-10-02T10:00:00Z',
+        details: [{ property: 'cf', name: '41', old_value: '605', new_value: '606' }] }],
+    });
+    const fetcher = async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/custom_fields.json')) return new Response('', { status: 403 });
+      if (/\/issues\/\d+\/edit$/.test(url.pathname)) return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+      const response = await fixture.fetcher(input);
+      if (url.pathname.endsWith('/issues.json')) {
+        const body = await response.json();
+        body.issues = body.issues.map((issue: Record<string, unknown>) => rewriteIssue(issue));
+        return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (/\/issues\/\d+\.json$/.test(url.pathname)) {
+        const body = await response.json();
+        body.issue = rewriteIssue(body.issue);
+        return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return response;
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+    const baseline = await adapter.snapshot(undefined, undefined, false);
+    expect(baseline.labelOptions?.['10']).toEqual(expect.arrayContaining([
+      { id: '601', name: 'Example Label A', fieldId: 41 }, { id: '605', name: 'Build: Running', fieldId: 41 },
+      { id: '606', name: 'Build: Succeeded', fieldId: 41 }, { id: '606', name: 'Tag Six', fieldId: 42 },
+    ]));
+    const detail = await adapter.issueDetail(101, baseline.labelOptions ?? {});
+    expect(detail.issue.labels).toEqual(['Build: Succeeded', 'Tag Six']);
+    expect(detail.journals[0]?.changes[0]).toMatchObject({ field: 'Labels', oldValue: 'Build: Running', newValue: 'Build: Succeeded' });
+    expect(detail.people.some(person => person.id === 2)).toBe(true);
+  });
+
+  it('falls back to Labels and Tags choices on the issue page when the edit page requires a login', async () => {
+    const fixture = fixtureFetch();
+    const methods: string[] = [];
+    const html = [
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-601" value="601"><label for="labels-601">Example Label A</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-602" value="602"><label for="labels-602">Example Label B</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-603" value="603"><label for="labels-603">Example Label C</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-604" value="604"><label for="labels-604">Example Label D</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-605" value="605"><label for="labels-605">Build: Running</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-606" value="606"><label for="labels-606">Build: Succeeded</label>',
+      '<input type="checkbox" name="issue[custom_field_values][41][]" id="labels-607" value="607"><label for="labels-607">Build: Failed</label>',
+      '<input type="checkbox" name="issue[custom_field_values][42][]" id="tags-606" value="606"><label for="tags-606">Tag Six</label>',
+    ].join('');
+    const rewriteIssue = (raw: Record<string, unknown>) => ({ ...raw,
+      custom_fields: [{ id: 41, name: 'Labels', value: ['607'] }, { id: 42, name: 'Tags', value: ['606'] }],
+    });
+    const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      methods.push(String(init?.method ?? 'GET').toUpperCase());
+      if (url.pathname.endsWith('/custom_fields.json')) return new Response('', { status: 403 });
+      if (/\/issues\/\d+\/edit$/.test(url.pathname)) return new Response(null, { status: 302, headers: { Location: '/login' } });
+      if (url.pathname.endsWith('/login')) return new Response('<form action="/login">Sign in</form>', { headers: { 'Content-Type': 'text/html' } });
+      if (/\/issues\/\d+$/.test(url.pathname)) return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+      const response = await fixture.fetcher(input);
+      if (url.pathname.endsWith('/issues.json')) {
+        const body = await response.json();
+        body.issues = body.issues.map((issue: Record<string, unknown>) => rewriteIssue(issue));
+        return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return response;
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+    const snapshot = await adapter.snapshot(undefined, undefined, false);
+    expect(snapshot.labelOptions?.['10']).toHaveLength(8);
+    expect(snapshot.labelOptions?.['10']).toContainEqual({ id: '607', name: 'Build: Failed', fieldId: 41 });
+    expect(snapshot.labelOptions?.['10']).toContainEqual({ id: '606', name: 'Tag Six', fieldId: 42 });
+    expect(snapshot.issues[0]?.labels).toEqual(['Build: Failed', 'Tag Six']);
+    expect(snapshot.warnings.some(warning => warning.includes('частину значень показано як ID'))).toBe(false);
+    expect(methods.every(method => method === 'GET')).toBe(true);
+  });
+
+  it('uses the Redmine custom field catalog when it is available, including unused options', async () => {
+    const fixture = fixtureFetch();
+    const requested: URL[] = [];
+    const fetcher = async (input: string | URL | Request) => {
+      const url = new URL(String(input)); requested.push(url);
+      if (url.pathname.endsWith('/custom_fields.json')) return new Response(JSON.stringify({ custom_fields: [
+        { id: 41, name: 'Labels', possible_values: [{ value: '606', label: 'Build: Succeeded' }, { value: '607', label: 'Build: Failed' }, { value: '601', label: 'Unused option' }] },
+      ] }), { headers: { 'Content-Type': 'application/json' } });
+      const response = await fixture.fetcher(input);
+      if (url.pathname.endsWith('/issues.json')) {
+        const body = await response.json();
+        body.issues = body.issues.map((issue: Record<string, unknown>) => ({ ...issue, custom_fields: [{ id: 41, name: 'Labels', value: ['606'] }] }));
+        return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return response;
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+    const snapshot = await adapter.snapshot(undefined, undefined, false);
+    expect(snapshot.labelOptions?.['10']).toEqual(expect.arrayContaining([
+      { id: '606', name: 'Build: Succeeded', fieldId: 41 }, { id: '607', name: 'Build: Failed', fieldId: 41 },
+      { id: '601', name: 'Unused option', fieldId: 41 },
+    ]));
+    expect(snapshot.issues[0]?.labels).toEqual(['Build: Succeeded']);
+    expect(requested.some(url => /\/issues\/\d+\/edit$/.test(url.pathname))).toBe(false);
+  });
+
+  it('uses Redmine native issue search for selected and all projects, including closed results', async () => {
+    const fixture = fixtureFetch();
+    const requested: URL[] = [];
+    const fetcher = async (input: string | URL | Request) => {
+      const url = new URL(String(input)); requested.push(url);
+      if (/\/search\.json$/.test(url.pathname)) {
+        // Match Redmine SearchController's .present? flags: "0" also excludes
+        // this closed issue whose match occurs only in its body.
+        const restricted = Boolean(url.searchParams.get('titles_only') || url.searchParams.get('open_issues'));
+        const results = restricted ? [] : [
+          { id: 700, type: 'issue closed', title: 'Issue #700 (Done): Archived match', description: 'phrase in old body', datetime: '2026-10-01T10:00:00Z' },
+        ];
+        return new Response(JSON.stringify({ results, total_count: results.length,
+          offset: Number(url.searchParams.get('offset')), limit: Number(url.searchParams.get('limit')) }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return fixture.fetcher(input);
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+    const all = await adapter.search('phrase in old body', { offset: 0, limit: 20 });
+    const selected = await adapter.search('phrase in old body', { projectIdentifier: 'project', offset: 0, limit: 20 });
+    expect(all.results[0]).toMatchObject({ id: 700, statusName: 'Done', title: 'Issue #700 (Done): Archived match' });
+    expect(all.total).toBe(1);
+    const globalUrl = requested.find(url => url.pathname.endsWith('/search.json'))!;
+    expect(globalUrl.searchParams.get('scope')).toBe('all');
+    expect(globalUrl.searchParams.get('issues')).toBe('1');
+    expect(globalUrl.searchParams.has('titles_only')).toBe(false);
+    expect(globalUrl.searchParams.has('open_issues')).toBe(false);
+    for (const type of ['news', 'documents', 'changesets', 'wiki_pages', 'messages', 'projects']) {
+      expect(globalUrl.searchParams.has(type)).toBe(false);
+    }
+    const selectedUrl = requested.find(url => url.pathname.endsWith('/projects/project/search.json'))!;
+    expect(selected.results).toHaveLength(1);
+    expect(selectedUrl.searchParams.get('scope')).toBeNull();
+  });
+
   it('reads archived releases and issue details on demand, retaining watchers and journals', async () => {
     const fixture = fixtureFetch();
     const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fixture.fetcher);

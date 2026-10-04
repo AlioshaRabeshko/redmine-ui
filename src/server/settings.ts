@@ -5,6 +5,7 @@ export type { SettingsPatch } from '../shared/types.js';
 
 const idKey = z.string().regex(/^[1-9]\d*$/);
 const personRoleSchema = z.enum(['qa', 'support', 'developer']);
+const activityVisibilitySchema = z.object({ comment: z.boolean(), status: z.boolean(), assignee: z.boolean(), labels: z.boolean(), field: z.boolean() }).strict();
 const subscriptionSchema = z.object({ enabled: z.boolean(), events: z.array(z.string()) });
 const backgroundUrlPattern = /^\/api\/projects\/([1-9]\d*)\/background\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 function validateProjectBackgroundMap(backgrounds: Record<string, string | null>, context: z.RefinementCtx): void {
@@ -33,6 +34,7 @@ const settingsSchema = z.object({
   palette: z.enum(['blue', 'violet', 'green', 'amber']),
   projectQa: z.record(idKey, z.number().int().positive()),
   subscriptions: z.record(idKey, subscriptionSchema),
+  projectActivity: z.record(idKey, activityVisibilitySchema).default({}),
   projectBackgrounds: projectBackgroundsSchema,
   personRoleOverrides: z.record(idKey, z.record(idKey, z.array(personRoleSchema))),
   shortcuts: z.array(shortcutSchema),
@@ -48,6 +50,7 @@ const settingsPatchSchema = z.object({
   palette: settingsSchema.shape.palette.optional(),
   projectQa: z.record(idKey, z.number().int().positive().nullable()).optional(),
   subscriptions: z.record(idKey, subscriptionSchema.nullable()).optional(),
+  projectActivity: z.record(idKey, activityVisibilitySchema.nullable()).optional(),
   projectBackgrounds: projectBackgroundsPatchSchema.optional(),
   personRoleOverrides: z.record(idKey, z.record(idKey, z.array(personRoleSchema).nullable()).nullable()).optional(),
   shortcuts: settingsSchema.shape.shortcuts.optional(),
@@ -63,6 +66,7 @@ export const defaultSettings: AppSettings = {
   palette: 'blue',
   projectQa: {},
   subscriptions: {},
+  projectActivity: {},
   projectBackgrounds: {},
   personRoleOverrides: {},
   shortcuts: [
@@ -92,7 +96,7 @@ export function parseSettingsPatch(value: unknown): SettingsPatch {
 }
 
 export function applySettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
-  const { projectQa, subscriptions, projectBackgrounds, personRoleOverrides, ...shallowFields } = patch;
+  const { projectQa, subscriptions, projectActivity, projectBackgrounds, personRoleOverrides, ...shallowFields } = patch;
   const next: AppSettings = { ...current, ...shallowFields };
 
   if (projectQa) {
@@ -107,6 +111,13 @@ export function applySettingsPatch(current: AppSettings, patch: SettingsPatch): 
     for (const [projectId, subscription] of Object.entries(subscriptions)) {
       if (subscription === null) delete next.subscriptions[projectId];
       else next.subscriptions[projectId] = subscription;
+    }
+  }
+  if (projectActivity) {
+    next.projectActivity = { ...current.projectActivity };
+    for (const [projectId, visibility] of Object.entries(projectActivity)) {
+      if (visibility === null) delete next.projectActivity[projectId];
+      else next.projectActivity[projectId] = visibility;
     }
   }
   if (projectBackgrounds) {

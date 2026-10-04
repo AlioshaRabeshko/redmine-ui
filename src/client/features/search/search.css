@@ -1,0 +1,18 @@
+.workspace-search { position: relative; }
+.full-search-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 70; width: min(520px, calc(100vw - 100px)); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 40px #0003; }
+.full-search-header { padding: 10px 12px 4px; display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.search-scope { display: flex; align-items: center; gap: 6px; padding: 4px 12px; }
+.search-scope .button { white-space: normal; text-align: left; }
+.full-search-hint { padding: 4px 12px 10px; color: var(--muted); font-size: 11px; }
+.full-search-results { max-height: min(450px, calc(100vh - 240px)); overflow-y: auto; overscroll-behavior: contain; }
+.search-result { width: 100%; text-align: left; display: grid; gap: 5px; padding: 11px 12px; color: var(--text); border: 0; border-top: 1px solid var(--line); background: transparent; cursor: pointer; }
+.search-result:hover, .search-result:focus-visible, .search-result-active { background: var(--surface-alt); }
+.search-result:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.search-result-heading { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+.search-result-heading > span { color: var(--accent); white-space: nowrap; }
+.search-result-description { font-size: 11px; line-height: 1.5; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+.search-result-meta { font-size: 10px; color: var(--muted); }
+.search-message { padding: 24px 12px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
+.search-error { color: var(--danger); }
+.full-search-footer { padding: 7px 12px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.full-search-footer > div { display: flex; gap: 6px; }

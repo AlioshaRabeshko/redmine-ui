@@ -4,7 +4,7 @@ import type { Issue, Status, Version } from './types.js';
 
 const statuses: Status[] = [
   { id: 1, name: 'To Do', key: 'todo', isClosed: false },
-  { id: 2, name: 'Deploy', key: 'deploy', isClosed: false },
+  { id: 2, name: 'Deploy', key: 'deploy', isClosed: true },
   { id: 3, name: 'Done', key: 'done', isClosed: true },
   { id: 4, name: 'Rejected', key: 'rejected', isClosed: true },
   { id: 5, name: 'Backlog', key: 'backlog', isClosed: false },
@@ -21,10 +21,24 @@ const issue = (patch: Partial<Issue> = {}): Issue => ({
 });
 
 describe('board and release rules', () => {
-  it('retains actual status while version membership owns the visible lane', () => {
-    const task = issue({ fixedVersionId: 1 });
-    expect(issueColumnId(task, versions)).toBe('version:1');
-    expect(groupBoard([task], statuses, versions).find(c => c.id === 'version:1')?.issues[0].statusId).toBe(1);
+  it('puts only Deploy members of active versions in release lanes', () => {
+    const reviewMember = issue({ id: 1, statusId: 1, fixedVersionId: 1 });
+    const deployedMember = issue({ id: 2, statusId: 2, fixedVersionId: 1 });
+    expect(issueColumnId(reviewMember, versions, statuses)).toBe('status:1');
+    expect(issueColumnId(deployedMember, versions, statuses)).toBe('version:1');
+    const columns = groupBoard([reviewMember, deployedMember], statuses, versions);
+    expect(columns.find(c => c.id === 'status:1')?.issues.map(i => i.id)).toEqual([1]);
+    expect(columns.find(c => c.id === 'version:1')?.issues.map(i => i.id)).toEqual([2]);
+  });
+  it('pins active-version status members before ordinary cards while keeping group order', () => {
+    const issues = [
+      issue({ id: 1, statusId: 1, fixedVersionId: 1 }),
+      issue({ id: 2, statusId: 1 }),
+      issue({ id: 3, statusId: 1, fixedVersionId: 1 }),
+      issue({ id: 4, statusId: 1 }),
+    ];
+    const todo = groupBoard(issues, statuses, versions).find(c => c.id === 'status:1')!;
+    expect(todo.issues.map(i => i.id)).toEqual([1, 3, 2, 4]);
   });
   it('does not lose unfinished work with closed, missing or foreign versions/statuses', () => {
     expect(issueColumnId(issue({ fixedVersionId: 2 }), versions)).toBe('status:1');
@@ -33,11 +47,11 @@ describe('board and release rules', () => {
     expect(columns.flatMap(c => c.issues)).toHaveLength(1);
     expect(columns.some(c => c.id === 'version:2')).toBe(false);
   });
-  it('default hides finished/backlog but explicit status filters can show them', () => {
-    const tasks = [issue(), issue({ id: 2, statusId: 3 }), issue({ id: 3, statusId: 5 })];
-    expect(filterIssues(tasks, statuses, 'all', 1)).toHaveLength(1);
-    expect(filterIssues(tasks, statuses, 'all', 1, { statusIds: [3] }).map(i => i.id)).toEqual([2]);
-    expect(filterIssues(tasks, statuses, 'backlog', 1).map(i => i.id)).toEqual([3]);
+  it('keeps Deploy visible when it is marked closed, hides finished/backlog by default', () => {
+    const tasks = [issue(), issue({ id: 2, statusId: 2 }), issue({ id: 3, statusId: 3 }), issue({ id: 4, statusId: 5 })];
+    expect(filterIssues(tasks, statuses, 'all', 1).map(i => i.id)).toEqual([1, 2]);
+    expect(filterIssues(tasks, statuses, 'all', 1, { statusIds: [3] }).map(i => i.id)).toEqual([3]);
+    expect(filterIssues(tasks, statuses, 'backlog', 1).map(i => i.id)).toEqual([4]);
   });
   it('searches labels and the people connected to an issue', () => {
     const tasks = [

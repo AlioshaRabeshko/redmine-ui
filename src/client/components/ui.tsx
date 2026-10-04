@@ -1,18 +1,21 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { X, CircleHelp, Check, AlertCircle, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { Person } from '../../shared/types';
+import type { Person, PersonRole } from '../../shared/types';
 
 let modalCount = 0;
 
-export function Avatar({ person, size = 'md', muted = false }: { person?: Person; size?: 'xs' | 'sm' | 'md' | 'lg'; muted?: boolean }) {
+export function Avatar({ person, size = 'md', muted = false, role }: { person?: Person; size?: 'xs' | 'sm' | 'md' | 'lg'; muted?: boolean; role?: PersonRole }) {
   const { t } = useTranslation();
   const roles = person?.roles || [];
-  const failedImage = useRef<string | undefined>(undefined);
+  const labelledRoles = [...new Set([...(role ? [role] : []), ...roles])];
+  const frameRole = role || roles[0];
+  const [failedImage, setFailedImage] = useState<string | undefined>(undefined);
+  useEffect(() => { setFailedImage(undefined); }, [person?.id, person?.avatar]);
   const initials = (person?.name || '?').trim().split(/\s+/).slice(0, 2).map((v) => v[0]).join('').toUpperCase();
-  const label = [person?.name, ...roles.map(role => t(`role_${role}`))].filter(Boolean).join(' · ');
-  return <span className={`avatar avatar-${size}${muted ? ' avatar-muted' : ''}${roles.length ? ` avatar-role-${roles[0]}` : ''}${roles.length > 1 ? ' avatar-multiple-roles' : ''}`} title={label} aria-label={label}>
-    <span className="avatar-initials">{initials}</span>{person?.avatar && failedImage.current !== person.avatar && <img src={person.avatar} alt="" onError={(event) => { failedImage.current = person.avatar; event.currentTarget.style.display = 'none'; }} />}
+  const label = [person?.name || t('noAssignee'), ...labelledRoles.map(item => t(`role_${item}`))].join(' · ');
+  return <span className={`avatar avatar-${size}${muted ? ' avatar-muted' : ''}${frameRole ? ` avatar-role-${frameRole}` : ''}${labelledRoles.length > 1 ? ' avatar-multiple-roles' : ''}`} title={label} aria-label={label} role="img">
+    <span className="avatar-initials">{initials}</span>{person?.avatar && failedImage !== person.avatar && <img src={person.avatar} alt="" onError={() => setFailedImage(person.avatar)} />}
   </span>;
 }
 

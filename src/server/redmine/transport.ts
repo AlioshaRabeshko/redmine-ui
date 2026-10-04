@@ -16,6 +16,9 @@ export class RedmineRequestError extends Error {
 }
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type RedmineRasterType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+export interface RedmineBinaryResponse { data: Buffer; contentType: RedmineRasterType }
+const rasterTypes = new Set<RedmineRasterType>(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 export class RedmineTransport {
   private readonly base: URL;
@@ -33,6 +36,57 @@ export class RedmineTransport {
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.read(path, init);
+    if (response.method === 'HEAD') return undefined as T;
+    try {
+      return await response.response.json() as T;
+    } catch {
+      throw new RedmineRequestError('Redmine повернув відповідь у невідомому форматі.', response.response.status);
+    }
+  }
+
+  async requestText(path: string, init: RequestInit = {}, maxBytes = 2 * 1024 * 1024): Promise<string> {
+    let currentPath = path;
+    const visited = new Set<string>();
+    for (let redirectCount = 0; redirectCount <= 3; redirectCount++) {
+      const response = await this.read(currentPath, init, true);
+      if (response.method === 'HEAD') return '';
+      if (response.response.status >= 300 && response.response.status < 400) {
+        const location = response.response.headers.get('location');
+        if (!location || redirectCount === 3) throw new RedmineRequestError('Redmine перенаправив форму поза дозволеною межею.', response.response.status);
+        const target = new URL(location, response.response.url || response.url);
+        if (target.origin !== this.base.origin || !target.pathname.startsWith(this.base.pathname)) {
+          throw new RedmineRequestError('Redmine перенаправив форму на іншу адресу.', 403);
+        }
+        currentPath = `${target.pathname.slice(this.base.pathname.length)}${target.search}`;
+        if (!currentPath || visited.has(currentPath)) throw new RedmineRequestError('Redmine перенаправив форму циклічно.', response.response.status);
+        visited.add(currentPath);
+        continue;
+      }
+      try { return (await readBounded(response.response, maxBytes)).toString('utf8'); }
+      catch (error) { if (error instanceof RedmineRequestError) throw error; throw new RedmineRequestError('Redmine повернув відповідь у невідомому форматі.', response.response.status); }
+    }
+    throw new RedmineRequestError('Redmine перенаправив форму поза дозволеною межею.');
+  }
+
+  async requestRaster(path: string, maxBytes = 8 * 1024 * 1024): Promise<RedmineBinaryResponse> {
+    const { response } = await this.read(path);
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      throw new RedmineRequestError('Зображення Redmine перевищує дозволений розмір.', 413);
+    }
+    const data = await readBounded(response, maxBytes);
+    const contentType = sniffRasterType(data);
+    if (!contentType) throw new RedmineRequestError('Redmine повернув файл, який не є підтримуваним растровим зображенням.', 415);
+    const declaredType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+    if (declaredType && declaredType !== 'application/octet-stream' && rasterTypes.has(declaredType as RedmineRasterType)
+      && declaredType !== contentType) {
+      throw new RedmineRequestError('Тип файлу Redmine не відповідає його вмісту.', 415);
+    }
+    return { data, contentType };
+  }
+
+  private async read(path: string, init: RequestInit = {}, manualRedirect = false): Promise<{ method: string; response: Response; url: URL }> {
     const method = String(init.method ?? 'GET').trim().toUpperCase();
     // This check must remain before URL construction and before any fetch call.
     if ((method !== 'GET' && method !== 'HEAD') || init.body !== undefined && init.body !== null) throw new ReadOnlyError();
@@ -47,19 +101,16 @@ export class RedmineTransport {
         method,
         body: undefined,
         headers,
-        redirect: 'error',
+        redirect: manualRedirect ? 'manual' : 'error',
         signal: init.signal ?? AbortSignal.timeout(20_000),
       });
     } catch {
       throw new RedmineRequestError('Не вдалося підключитися до Redmine. Перевірте адресу та мережеве з’єднання.');
     }
-    if (!response.ok) throw new RedmineRequestError(`Redmine повернув помилку HTTP ${response.status}.`, response.status);
-    if (method === 'HEAD') return undefined as T;
-    try {
-      return await response.json() as T;
-    } catch {
-      throw new RedmineRequestError('Redmine повернув відповідь у невідомому форматі.', response.status);
+    if (!response.ok && !(manualRedirect && response.status >= 300 && response.status < 400)) {
+      throw new RedmineRequestError(`Redmine повернув помилку HTTP ${response.status}.`, response.status);
     }
+    return { method, response, url };
   }
 
   private resolvePath(path: string): URL {
@@ -76,4 +127,41 @@ export class RedmineTransport {
     }
     return url;
   }
+}
+
+async function readBounded(response: Response, maxBytes: number): Promise<Buffer> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError('maxBytes must be a positive safe integer');
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.byteLength > maxBytes) throw new RedmineRequestError('Відповідь Redmine перевищує дозволений розмір.', 413);
+    return data;
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new RedmineRequestError('Відповідь Redmine перевищує дозволений розмір.', 413);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, size);
+}
+
+function sniffRasterType(data: Uint8Array): RedmineRasterType | undefined {
+  if (data.length >= 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+    && data[4] === 0x0d && data[5] === 0x0a && data[6] === 0x1a && data[7] === 0x0a) return 'image/png';
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'image/jpeg';
+  if (data.length >= 6 && String.fromCharCode(...data.subarray(0, 6)).match(/^GIF8[79]a$/)) return 'image/gif';
+  if (data.length >= 12 && String.fromCharCode(...data.subarray(0, 4)) === 'RIFF'
+    && String.fromCharCode(...data.subarray(8, 12)) === 'WEBP') return 'image/webp';
+  return undefined;
 }

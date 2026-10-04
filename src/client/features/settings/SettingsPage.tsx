@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BellRing, Check, Command, Image as ImageIcon, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, Upload, UserRound, Workflow } from 'lucide-react';
+import { BellRing, Check, Command, History, Image as ImageIcon, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, Upload, UserRound, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppSettings, Locale, PeopleField, Person, PersonRole, Project, Shortcut, SettingsPatch, Status } from '../../../shared/types';
+import { defaultActivityVisibility } from '../../../shared/types';
+import type { ActivityKind, AppSettings, Locale, PeopleField, Person, PersonRole, Project, Shortcut, SettingsPatch, Status } from '../../../shared/types';
 import { defaultShortcuts, normalizeShortcutKeys } from '../../lib/shortcuts';
 import { enqueueFieldWrite, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
 import { Button, Field, Notice } from '../../components/ui';
@@ -38,6 +39,10 @@ function mergePatch(settings: AppSettings, patch: SettingsPatch): AppSettings {
     next.subscriptions = { ...settings.subscriptions };
     for (const [key, value] of Object.entries(patch.subscriptions)) { if (value === null) delete next.subscriptions[key]; else next.subscriptions[key] = value; }
   }
+  if (patch.projectActivity) {
+    next.projectActivity = { ...settings.projectActivity };
+    for (const [key, value] of Object.entries(patch.projectActivity)) { if (value === null) delete next.projectActivity[key]; else next.projectActivity[key] = value; }
+  }
   if (patch.projectBackgrounds) {
     next.projectBackgrounds = { ...(settings.projectBackgrounds || {}) };
     for (const [key, value] of Object.entries(patch.projectBackgrounds)) { if (value === null) delete next.projectBackgrounds[key]; else next.projectBackgrounds[key] = value; }
@@ -72,6 +77,11 @@ function restoreSettingsField(current: AppSettings, confirmed: AppSettings, key:
     const confirmedUrl = confirmed.projectBackgrounds?.[projectId];
     if (confirmedUrl === undefined) delete projectBackgrounds[projectId]; else projectBackgrounds[projectId] = confirmedUrl;
     return { ...current, projectBackgrounds };
+  }
+  if (key === `projectActivity:${projectId}`) {
+    const projectActivity = { ...current.projectActivity };
+    if (confirmed.projectActivity[projectId] === undefined) delete projectActivity[projectId]; else projectActivity[projectId] = confirmed.projectActivity[projectId];
+    return { ...current, projectActivity };
   }
   if (key === `subscription:${projectId}`) {
     const subscriptions = { ...current.subscriptions };
@@ -112,6 +122,7 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const previewUnavailable = !!backgroundUrl && unavailableBackgroundUrl === backgroundUrl;
 
   useEffect(() => { setUnavailableBackgroundUrl(''); }, [backgroundUrl]);
+  const activityVisibility = draft.projectActivity[projectKey] ?? defaultActivityVisibility;
   const subscription = draft.subscriptions[projectKey] || { enabled: false, events: ['comment'] };
   const [pollValue, setPollValue] = useState(String(settings.pollIntervalSeconds));
   const [shortcutDraft, setShortcutDraft] = useState<Shortcut[]>(() => savedShortcuts(settings));
@@ -172,6 +183,10 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
     });
   };
 
+  const setActivity = (kind: ActivityKind, checked: boolean) => {
+    const current = settingsRef.current.projectActivity[projectKey] ?? defaultActivityVisibility;
+    void persistPatch(`projectActivity:${projectKey}`, { projectActivity: { [projectKey]: { ...current, [kind]: checked } } });
+  };
   const subscriptionPatch = (next: typeof subscription) => {
     void persistPatch(`subscription:${projectKey}`, { subscriptions: { [projectKey]: next } });
   };
@@ -361,6 +376,12 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
           {backgroundPhase === 'reading' && <> · {backgroundReadProgress}%<progress max={100} value={backgroundReadProgress} aria-label={t('projectBackgroundReadProgress')} /></>}
         </div>}
         {backgroundError && <Notice tone="error">{backgroundError}</Notice>}
+      </section>
+
+      <section className="settings-card" data-testid="project-activity-settings">
+        <div className="settings-card-title"><History size={18} /><div><h2>{t('projectActivity')}</h2><p>{t('projectActivityHint', { project: project.name })}</p></div></div>
+        <div className="event-options">{(['comment', 'status', 'assignee', 'labels', 'field'] as ActivityKind[]).map(kind => <label className="check-row" key={kind}><input type="checkbox" checked={activityVisibility[kind]} onChange={event => setActivity(kind, event.target.checked)} /><span>{t({ comment: 'watchComments', status: 'watchStatus', assignee: 'watchAssignee', labels: 'watchLabels', field: 'activityOtherFields' }[kind])}</span></label>)}</div>
+        <div className="settings-note"><span>{t('projectActivityLocal')}</span><Button size="sm" onClick={() => void persistPatch(`projectActivity:${projectKey}`, { projectActivity: { [projectKey]: null } })}>{t('projectActivityReset')}</Button></div>
       </section>
 
       <section className="settings-card">

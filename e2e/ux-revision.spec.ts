@@ -66,7 +66,9 @@ test('column creation preselects status or roadmap over old property drafts and 
   await dialog.getByTestId('issue-submit').click();
   const roadmapResult = await (await roadmapSave).json() as CommandResult;
   expect(roadmapResult.issue).toMatchObject({ statusId: boot.statuses.find(status => status.key === 'todo')!.id, fixedVersionId: 100 });
-  await expect(page.getByTestId('lane-version:100').getByTestId(`issue-card-${roadmapResult.issue!.id}`)).toBeVisible();
+  await expect(page.getByTestId(`lane-status:${roadmapResult.issue!.statusId}`).getByTestId(`issue-card-${roadmapResult.issue!.id}`)).toBeVisible();
+  await expect(page.getByTestId(`issue-card-${roadmapResult.issue!.id}`)).toContainText('NEXT');
+  await expect(page.getByTestId('lane-version:100').getByTestId(`issue-card-${roadmapResult.issue!.id}`)).toHaveCount(0);
   await page.getByTestId('lane-version:100').locator('.lane-create').click();
   await dialog.getByTestId('issue-title').fill('Draft for the first project');
   await dialog.getByRole('button', { name: 'Скасувати', exact: true }).focus();
@@ -437,9 +439,9 @@ test('all palettes keep compact text readable in light and dark themes', async (
     const samples = await page.evaluate(({ theme, palette }) => {
       document.documentElement.dataset.theme = theme;
       document.documentElement.dataset.palette = palette;
-      const color = (value: string) => (value.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      const color = (value: string) => { const channels = (value.match(/[\d.]+/g) || []).slice(0, 3).map(Number); return value.startsWith('color(srgb ') ? channels.map(channel => channel * 255) : channels; };
       const luminance = (rgb: number[]) => rgb.map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
-      return ['.issue-card h3', '.branch-row > span', '.label-chip', '.nav-item.nav-active', '.heading-actions .button-primary', '.not-ready', '.status-review', '.choice-tile-low', '.choice-tile-normal', '.choice-tile-high', '.choice-tile-urgent', '.choice-tile-bug', '.choice-tile-feature', '.choice-tile-task'].flatMap(selector => {
+      return ['.issue-card h3', '.priority-mark', '.roadmap-pill', '.label-chip', '.nav-item.nav-active', '.heading-actions .button-primary', '.not-ready', '.status-review', '.choice-tile-low', '.choice-tile-normal', '.choice-tile-high', '.choice-tile-urgent', '.choice-tile-bug', '.choice-tile-feature', '.choice-tile-task'].flatMap(selector => {
         const element = document.querySelector<HTMLElement>(selector);
         if (!element) return [];
         const styles = getComputedStyle(element);

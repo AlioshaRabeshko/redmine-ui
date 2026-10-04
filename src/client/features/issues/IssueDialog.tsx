@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, Heart, History, Link, MessageSquare, Paperclip, Pencil, Quote, Save, Send, Trash2, UserRound, Users, WandSparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { BoardData, Issue, IssueDetail, PeopleField, Person, Priority, Project, Status, Version } from '../../../shared/types';
+import { defaultActivityVisibility, type ActivityVisibility, type BoardData, type Issue, type IssueDetail, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
 import { branchForIssue } from '../../../shared/domain';
 import { Avatar, Button, Field, IconButton, Modal, Notice, Spinner } from '../../components/ui';
 import { MultiPicker, Picker, PeoplePicker, type PickerOption } from '../../components/pickers';
 import { ChoiceTiles, type ChoiceTileOption } from '../../components/choiceTiles';
+import { AttachmentPreview, RichContent, attachmentContentPath, isPreviewableImage } from '../../components/RichContent';
 import { api, issueUrl } from '../../lib/api';
 import { createIssueTextDraftKey, enqueueFieldWrite, issueTextDraftKey, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
+import { localizeJournalChange, visibleJournals } from '../../lib/issueActivity';
 
 type IssueText = { subject: string; description: string; branch: string; dueDate: string };
 type JournalEditDraft = { notes: string; expectedNotes: string; operationId?: string };
@@ -62,9 +64,9 @@ function suggestedAssignees(members: Person[], selectedId?: number, recommendati
   return candidates;
 }
 
-export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, canWrite, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
+export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, activityVisibility = defaultActivityVisibility, canWrite, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
   detail: IssueDetail; board: BoardData; statuses: Status[]; priorities: Priority[]; redmineUrl: string; canWrite: boolean; onClose: () => void;
-  draftScope: string; initialJournalId?: number;
+  draftScope: string; initialJournalId?: number; activityVisibility?: ActivityVisibility;
   onSave: (issue: Issue, patch: IssueEditPatch, operationId?: string) => Promise<Issue | void>; onComment: (issue: Issue, notes: string) => Promise<void>;
   onSaveRoles: (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }, operationId?: string) => Promise<Issue | void>;
   onEditJournal: (issue: Issue, journalId: number, notes: string, expectedNotes: string, operationId: string) => Promise<void>;
@@ -128,7 +130,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const [deletingJournal, setDeletingJournal] = useState(false);
   const [likingJournalIds, setLikingJournalIds] = useState<Set<number>>(() => new Set());
   const [journalLikeErrors, setJournalLikeErrors] = useState<Record<number, string>>({});
-  const [preview, setPreview] = useState(false);
+  const [preview, setPreview] = useState(() => !canWrite && !initialDirty.description);
   const textFormRef = useWorkspaceFormSave<HTMLFormElement>();
   const commentFormRef = useWorkspaceFormSave<HTMLFormElement>();
   const journalEditFormRef = useRef<HTMLFormElement>(null);
@@ -150,16 +152,19 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   }, [editingJournalId]);
 
   const activeVersions = board.versions.filter((version) => version.projectId === issue.projectId && version.status !== 'closed');
+  const selectedClosedVersion = board.versions.find((version) => version.id === autoDraft.fixedVersionId && version.projectId === issue.projectId && version.status === 'closed');
+  const issuePeople = [...new Map([...board.members, ...(detail.people || []), ...detail.journals.map((journal) => journal.user)]
+    .map((person) => [person.id, person])).values()];
   const trackers = useMemo(() => board.trackers
     ? [...board.trackers, ...(!board.trackers.some(tracker => tracker.id === issue.trackerId) ? [{ id: issue.trackerId, name: issue.trackerName }] : [])]
     : [...new Map([...board.issues, issue].map(entry => [entry.trackerId, { id: entry.trackerId, name: entry.trackerName }])).values()], [board.trackers, board.issues, issue]);
   const trackerOptions: ChoiceTileOption[] = trackers.map((tracker) => ({ value: String(tracker.id), label: tracker.name }));
   const status = statuses.find((entry) => entry.id === issue.statusId);
   const priority = priorities.find((entry) => entry.id === issue.priorityId);
-  const author = personFrom(board.members, issue.authorId);
-  const assignee = personFrom(board.members, autoDraft.assignedToId);
-  const developer = personFrom(board.members, autoDraft.developerId);
-  const qa = personFrom(board.members, autoDraft.qaId);
+  const author = personFrom(issuePeople, issue.authorId);
+  const assignee = personFrom(issuePeople, autoDraft.assignedToId);
+  const developer = personFrom(issuePeople, autoDraft.developerId);
+  const qa = personFrom(issuePeople, autoDraft.qaId);
   const assigneeCandidates = useMemo(() => suggestedAssignees(board.members, autoDraft.assignedToId, board.peopleRecommendations?.assignee), [board.members, board.peopleRecommendations?.assignee, autoDraft.assignedToId]);
   const anyTextDirty = Object.values(dirtyText).some(Boolean);
   const hasTextConflict = (Object.keys(dirtyText) as (keyof IssueText)[]).some((key) => dirtyText[key] && serverText[key] !== baselineTextRef.current[key]);
@@ -475,8 +480,13 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const onGenerateBranch = () => setTextValue('branch', branchForIssue(issue.id, textDraft.subject));
   const statusOptions: PickerOption[] = statuses.map((entry) => ({ value: String(entry.id), label: entry.name }));
   const priorityOptions: ChoiceTileOption[] = priorities.map((entry) => ({ value: String(entry.id), label: entry.name, rank: entry.rank }));
-  const versionOptions: PickerOption[] = activeVersions.map((version) => ({ value: String(version.id), label: version.name, description: version.dueDate || undefined }));
+  const versionOptions: PickerOption[] = [...activeVersions, ...(selectedClosedVersion ? [selectedClosedVersion] : [])]
+    .map((version) => ({ value: String(version.id), label: version.name,
+      description: version.status === 'closed' ? t('closed') : version.dueDate || undefined,
+      ...(version.status === 'closed' ? { disabled: true } : {}) }));
   const labelOptions: PickerOption[] = [...new Set([...board.labels, ...issue.labels])].sort().map((label) => ({ value: label, label }));
+  const activityItems = visibleJournals(detail.journals, activityVisibility, initialJournalId);
+  const changeLookups = { statuses, people: issuePeople, priorities, versions: board.versions, labels: board.labelOptions || [] };
   const progress = (field: AutoField) => {
     const item = fieldSave[field];
     if (!item) return null;
@@ -505,24 +515,25 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
           <form ref={textFormRef} className="issue-text-form" data-workspace-save onSubmit={saveText}>
             <Field label={t('issueTitle')}><input className="text-input input-title" value={textDraft.subject} onChange={(e) => setTextValue('subject', e.target.value)} /></Field>
             <div className="description-head"><span className="field-label">{t('description')}</span><div className="segmented"><button type="button" className={!preview ? 'selected' : ''} onClick={() => setPreview(false)}>{t('edit')}</button><button type="button" className={preview ? 'selected' : ''} onClick={() => setPreview(true)}>{t('preview')}</button></div></div>
-            {preview ? <div className="description-preview"><div className="raw-preview-label">{t('rawTextPreview')}</div>{textDraft.description || <span className="placeholder-text">{t('noDescription')}</span>}</div> : <Field label=""><textarea className="text-area description-area" aria-label={t('description')} value={textDraft.description} onChange={(e) => setTextValue('description', e.target.value)} placeholder={t('noDescription')} /></Field>}
+            {preview ? <div className="description-preview"><div className="raw-preview-label">{t('preview')}</div>{textDraft.description ? <RichContent source={textDraft.description} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} /> : <span className="placeholder-text">{t('noDescription')}</span>}</div> : <Field label=""><textarea className="text-area description-area" aria-label={t('description')} value={textDraft.description} onChange={(e) => setTextValue('description', e.target.value)} placeholder={t('noDescription')} /></Field>}
             <Field label={t('branch')}><div className="input-with-actions"><GitBranch size={16} /><input className="text-input" value={textDraft.branch} onChange={(e) => setTextValue('branch', e.target.value)} /><Button size="sm" variant="outline" onClick={onGenerateBranch}><WandSparkles size={14} />{t('generate')}</Button><IconButton label={t('copyBranchShortcut')} onClick={async () => { try { await navigator.clipboard.writeText(textDraft.branch); onToast(t('copied')); } catch { onToast(t('error')); } }}><Copy size={15} /></IconButton></div></Field>
             <Field label={t('dueDate')}><div className="input-icon-wrap"><CalendarDays size={15} /><input type="date" className="text-input" value={textDraft.dueDate} onChange={(e) => setTextValue('dueDate', e.target.value)} /></div></Field>
             {hasTextConflict && <Notice tone="warning" className="text-draft-conflict">{t('errorConflict')}</Notice>}
             {textError && <Notice tone="error" className="text-save-error">{textError}</Notice>}
             {anyTextDirty && <div className="text-save-row"><span>{t('textChanges')}</span><Button type="submit" variant="primary" disabled={!canWrite || textSaving || !textDraft.subject.trim()}>{textSaving ? <Spinner /> : <Save size={15} />}{t('saveChanges')}</Button></div>}
           </form>
-          <div className="section-title"><History size={15} /><h3 ref={activityHeadingRef} tabIndex={-1}>{t('activity')}</h3><span>{detail.journals.length}</span></div>
+          <div className="section-title"><History size={15} /><h3 ref={activityHeadingRef} tabIndex={-1}>{t('activity')}</h3><span>{activityItems.length}</span></div>
+          {activityItems.some((item) => item.forcedByPermalink) && <div className="activity-target-override" role="status"><strong>{t('activityTargetOverride')}</strong><span>{t('activityTargetOverrideHint')}</span></div>}
           <div className="activity-list">
-            {detail.journals.length === 0 && <div className="activity-empty"><History size={15} />{t('noActivity')}</div>}
-            {detail.journals.map((journal) => {
+            {activityItems.length === 0 && <div className="activity-empty"><History size={15} />{detail.journals.length === 0 ? t('noActivity') : t('activityFilteredEmpty')}</div>}
+            {activityItems.map(({ journal, showComment, changes, forcedByPermalink }) => {
               const isEditing = editingJournalId === journal.id;
               const isEditConflict = isEditing && journalEditDraft?.expectedNotes !== journal.notes;
-              const hasNote = Boolean(journal.notes);
+              const hasNote = showComment && Boolean(journal.notes);
               const editAllowed = canWrite && journal.canEdit === true;
               const deleteAllowed = canWrite && journal.canDelete === true;
               const likeSupported = journal.canLike === true;
-              return <article className="activity-item" key={journal.id} id={`journal-${journal.id}`} tabIndex={-1} data-testid={`journal-item-${journal.id}`}>
+              return <article className={`activity-item${forcedByPermalink ? ' activity-item-permalink-target' : ''}`} key={journal.id} id={`journal-${journal.id}`} tabIndex={-1} data-testid={`journal-item-${journal.id}`} data-permalink-override={forcedByPermalink || undefined}>
                 <Avatar person={journal.user} size="sm" />
                 <div className="activity-body">
                   <div className="activity-heading"><strong>{journal.user.name}</strong><time>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}</time></div>
@@ -541,8 +552,8 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
                       <Button size="sm" type="button" data-testid={`journal-cancel-${journal.id}`} disabled={savingJournalEdit} onClick={() => cancelJournalEdit(journal.id)}>{t('cancelCommentEdit')}</Button>
                       <Button size="sm" variant="primary" type="submit" data-testid={`journal-save-${journal.id}`} disabled={!canWrite || savingJournalEdit || isEditConflict || !journalEditDraft?.notes.trim() || journalEditDraft.notes === journalEditDraft.expectedNotes}>{savingJournalEdit ? <Spinner /> : <Save size={14} />}{t('saveCommentEdit')}</Button>
                     </div></div>
-                  </form> : <p>{journal.notes}</p>)}
-                  {!!journal.changes.length && <ul>{journal.changes.map((change, index) => <li key={`${journal.id}-${index}`}><strong>{change.field}</strong>{change.oldValue && <span>{change.oldValue}</span>}<span className="change-arrow">→</span>{change.newValue || t('unknown')}</li>)}</ul>}
+                  </form> : <RichContent className="activity-rich-content" source={journal.notes} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} />)}
+                  {!!changes.length && <ul>{changes.map((change, index) => { const display = localizeJournalChange(change, changeLookups, t); return <li key={`${journal.id}-${index}`}><strong>{display.field}</strong><span>{display.oldValue}</span><span className="change-arrow">→</span><span>{display.newValue}</span></li>; })}</ul>}
                   {hasNote && <div className="journal-actions" role="group" aria-label={t('commentActions')}>
                     <button type="button" className="journal-action-button" data-testid={`journal-quote-${journal.id}`} aria-label={t('quoteComment')} title={t('quoteComment')} onClick={() => quoteJournal(journal)}><Quote size={13} /><span>{t('quoteComment')}</span></button>
                     <button type="button" className="journal-action-button" data-testid={`journal-permalink-${journal.id}`} aria-label={t('copyCommentLink')} title={t('copyCommentLink')} onClick={() => { void copyJournalPermalink(journal.id); }}><Link size={13} /><span>{t('commentLinkLabel')}</span></button>
@@ -585,7 +596,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
             <div className="section-title mini-section-title"><h3>{t('assignee')}</h3></div><div className="person-row"><Avatar person={assignee} size="sm" /><span>{assignee?.name || t('noAssignee')}</span></div>
             <div className="section-title mini-section-title"><h3>{t('watchers')}</h3><span>{detail.watchers.length}</span></div><div className="watcher-list">{detail.watchers.slice(0, 8).map((person) => <Avatar key={person.id} person={person} size="xs" />)}{detail.watchers.length > 8 && <span className="watcher-extra">+{detail.watchers.length - 8}</span>}</div>
           </div>
-          <div className="side-section"><div className="section-title"><Paperclip size={15} /><h3>{t('attachments')}</h3><span>{issue.attachments.length}</span></div>{issue.attachments.length === 0 ? <div className="muted-copy">—</div> : <ul className="attachment-list">{issue.attachments.map((attachment) => { const href = safeAttachmentUrl(attachment.url, redmineUrl); return <li key={attachment.id}>{href ? <a href={href} target="_blank" rel="noreferrer"><FileText size={14} /><span>{attachment.filename}</span><ArrowUpRight size={12} /></a> : <span className="attachment-unavailable"><FileText size={14} /><span>{attachment.filename}</span></span>}<small>{formatBytes(attachment.size)}</small></li>; })}</ul>}</div>
+          <div className="side-section"><div className="section-title"><Paperclip size={15} /><h3>{t('attachments')}</h3><span>{issue.attachments.length}</span></div>{issue.attachments.length === 0 ? <div className="muted-copy">—</div> : <ul className="attachment-list">{issue.attachments.map((attachment) => { const href = isPreviewableImage(attachment) ? attachmentContentPath(issue.id, attachment.id) : safeAttachmentUrl(attachment.url, redmineUrl); return <li key={attachment.id}>{isPreviewableImage(attachment) && <AttachmentPreview attachment={attachment} issueId={issue.id} unavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} />}{href ? <a href={href} target="_blank" rel="noreferrer"><FileText size={14} /><span>{attachment.filename}</span><ArrowUpRight size={12} /></a> : <span className="attachment-unavailable"><FileText size={14} /><span>{attachment.filename}</span></span>}<small>{formatBytes(attachment.size)}</small></li>; })}</ul>}</div>
           <div className="issue-dates"><span><CalendarDays size={13} />{new Intl.DateTimeFormat(i18n.language).format(new Date(issue.createdOn))}</span><span><Clock3 size={13} />{new Intl.DateTimeFormat(i18n.language).format(new Date(issue.updatedOn))}</span></div>
         </aside>
       </div>

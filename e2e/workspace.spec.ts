@@ -34,6 +34,8 @@ test('creation fills branch from the actual issue ID and survives refresh', asyn
   expect(result.issue?.branch).toBe(`${result.issue?.id}-browser-verified-branch`);
   const detail = await (await request.get(`/api/issues/${result.issue!.id}`)).json();
   expect(detail.issue.subject).toBe('Browser verified branch');
+  await expect(page.getByTestId('issue-dialog')).not.toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.has('form')).toBe(false);
   await page.reload();
   await expect(page.getByTestId(`issue-card-${result.issue!.id}`)).toBeVisible();
 });
@@ -122,7 +124,8 @@ test('opening a notification selects its project, focuses its comment and archiv
   await page.keyboard.press('Escape');
   await expect(page.locator('.project-selector')).toContainText('Example Project');
   await page.getByRole('button', { name: 'Позначити все прочитаним', exact: true }).click();
-  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/favicon.svg');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('data-unread', '0');
+  expect(decodeURIComponent(await page.locator('link[rel="icon"]').getAttribute('href') || '')).not.toContain('<text');
 });
 
 test('appearance controls save through the UI and system theme responds to the browser', async ({ page, request }) => {

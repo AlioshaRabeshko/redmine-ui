@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, PeopleField, Person, PersonRole, RedmineRole, ReleaseDetail } from '../shared/types.js';
+import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, PeopleField, Person, PersonRole, RedmineRole, ReleaseDetail, SearchResponse, SearchResult } from '../shared/types.js';
 import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
@@ -95,6 +95,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof RedmineRequestError && error.statusCode === 404) return reply.code(404).send({ code: 'NOT_FOUND', message: 'Об’єкт не знайдено в Redmine.' });
     if (error instanceof RedmineRequestError && [401, 403].includes(error.statusCode ?? 0)) return reply.code(error.statusCode!).send({ code: 'FORBIDDEN', message: 'Redmine відхилив доступ до цього об’єкта.' });
+    if (error instanceof RedmineRequestError && error.statusCode === 413) return reply.code(413).send({ code: 'FILE_TOO_LARGE', message: error.message });
+    if (error instanceof RedmineRequestError && error.statusCode === 415) return reply.code(415).send({ code: 'UNSUPPORTED_MEDIA_TYPE', message: error.message });
     if (error instanceof ApiFault) return reply.code(error.statusCode).send({ code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) });
     const validation = error as Error & { validation?: unknown; statusCode?: number };
     if (validation.validation) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Перевірте формат запиту.' });
@@ -191,18 +193,84 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       qa: await store.getPeopleRecommendations(projectId, 'qa'),
     };
     const syncedAt = await store.getCursor('baseline');
-    return { issues, versions, members, labels: [...new Set(issues.flatMap(issue => issue.labels))].sort((a, b) => a.localeCompare(b)),
+    const labelOptions = (await store.getValue<Record<string, LabelOption[]>>('labelOptions'))?.[String(projectId)];
+    return { issues, versions, members, labels: [...new Set([...issues.flatMap(issue => issue.labels), ...(labelOptions ?? []).map(option => option.name)])].sort((a, b) => a.localeCompare(b)),
       ...(project.trackers !== undefined ? { trackers: project.trackers } : {}),
+      ...(labelOptions?.length ? { labelOptions } : {}),
       total: issues.length, peopleRecommendations, ...(syncedAt ? { syncedAt } : {}) };
+  });
+
+  app.get<{ Querystring: { q?: string; projectId?: string; offset?: string; limit?: string } }>('/api/search', async (request): Promise<SearchResponse> => {
+    const parsed = z.object({ q: z.string().trim().min(1).max(300), projectId: z.string().optional(),
+      offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(50).default(20) })
+      .safeParse(request.query);
+    if (!parsed.success) throw new ApiFault(400, 'INVALID_SEARCH', 'Перевірте параметри пошуку.');
+    await sync.bootstrapRead();
+    const projectId = parsed.data.projectId && parsed.data.projectId !== 'all'
+      ? positiveId(parsed.data.projectId, 'PROJECT_NOT_FOUND') : undefined;
+    const projects = await store.getProjects();
+    const project = projectId === undefined ? undefined : projects.find(item => item.id === projectId);
+    if (projectId !== undefined && !project) throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    if (config.mode === 'redmine') {
+      if (!adapter) throw new ApiFault(503, 'REDMINE_UNAVAILABLE', sync.connectionError ?? 'З’єднання з Redmine недоступне.');
+      const exactIssueId = parsed.data.q.match(/^#?([1-9]\d*)$/)?.[1];
+      if (exactIssueId) {
+        const issueId = Number(exactIssueId);
+        if (!Number.isSafeInteger(issueId)) return { results: [], total: 0, offset: parsed.data.offset, limit: parsed.data.limit };
+        let detail;
+        try {
+          detail = await adapter.issueDetail(issueId, await store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {}, false);
+        } catch (error) {
+          if (error instanceof RedmineRequestError && error.statusCode === 404) {
+            return { results: [], total: 0, offset: parsed.data.offset, limit: parsed.data.limit };
+          }
+          throw error;
+        }
+        const visibleProject = projects.some(item => item.id === detail.issue.projectId);
+        if (!visibleProject || project && detail.issue.projectId !== project.id) {
+          return { results: [], total: 0, offset: parsed.data.offset, limit: parsed.data.limit };
+        }
+        const statuses = await store.getValue<Bootstrap['statuses']>('statuses') ?? [];
+        const result: SearchResult = { id: detail.issue.id, title: detail.issue.subject, description: detail.issue.description,
+          projectId: detail.issue.projectId, statusName: statuses.find(status => status.id === detail.issue.statusId)?.name,
+          url: `${config.redmineUrl.replace(/\/$/, '')}/issues/${detail.issue.id}`, updatedOn: detail.issue.updatedOn };
+        return parsed.data.offset > 0 ? { results: [], total: 1, offset: parsed.data.offset, limit: parsed.data.limit }
+          : { results: [result], total: 1, offset: 0, limit: parsed.data.limit };
+      }
+      const response = await adapter.search(parsed.data.q, { ...(project ? { projectIdentifier: project.identifier } : {}),
+        offset: parsed.data.offset, limit: parsed.data.limit });
+      const cachedProjects = new Map((await store.getIssues()).map(issue => [issue.id, issue.projectId]));
+      const results = response.results.map(item => ({ ...item,
+        ...((item.projectId ?? cachedProjects.get(item.id) ?? project?.id) ? { projectId: item.projectId ?? cachedProjects.get(item.id) ?? project!.id } : {}) }));
+      return { ...response, results };
+    }
+    const candidates = await store.getIssues(projectId);
+    const statuses = await store.getValue<Bootstrap['statuses']>('statuses') ?? [];
+    const results: SearchResult[] = [];
+    const query = parsed.data.q.toLocaleLowerCase();
+    const exactIssueId = query.match(/^#?([1-9]\d*)$/)?.[1];
+    for (const issue of candidates) {
+      const journals = await store.getJournals(issue.id);
+      const searchable = [String(issue.id), issue.subject, issue.description, issue.branch, ...issue.labels,
+        ...journals.flatMap(journal => [journal.notes, ...journal.changes.flatMap(change => [change.field, change.oldValue ?? '', change.newValue ?? ''])])]
+        .join('\n').toLocaleLowerCase();
+      if (exactIssueId ? issue.id !== Number(exactIssueId) : !searchable.includes(query)) continue;
+      results.push({ id: issue.id, title: issue.subject, description: issue.description, projectId: issue.projectId,
+        statusName: statuses.find(status => status.id === issue.statusId)?.name });
+    }
+    return { results: results.slice(parsed.data.offset, parsed.data.offset + parsed.data.limit), total: results.length,
+      offset: parsed.data.offset, limit: parsed.data.limit };
   });
 
   app.get<{ Params: { id: string } }>('/api/issues/:id', async (request): Promise<IssueDetail> => {
     await sync.bootstrapRead();
     const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
     let remoteJournals: Journal[] | undefined;
+    let remotePeople: Person[] | undefined;
     if (config.mode === 'redmine' && adapter) {
-      const detail = await adapter.issueDetail(issueId);
+      const detail = await adapter.issueDetail(issueId, await store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {});
       remoteJournals = detail.journals;
+      remotePeople = detail.people;
       if (!(await store.getProjects()).some(project => project.id === detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
       const cached = await store.getIssue(issueId);
       await store.saveIssue({ ...detail.issue, developerId: cached?.developerId, qaId: cached?.qaId });
@@ -225,7 +293,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       return { ...publicJournal, canEdit: mayManage, canDelete: mayManage, canLike: config.mode === 'demo' && hasNotes,
         ...(reactions ? { likes: reactions.count, likedByMe: reactions.likedByMe } : {}) };
     });
-    return { issue, journals, watchers: issue.watcherIds.map(id => people?.find(person => person.id === id)).filter((person): person is Person => Boolean(person)) };
+    return { issue, journals, watchers: issue.watcherIds.map(id => people?.find(person => person.id === id)).filter((person): person is Person => Boolean(person)),
+      ...(remotePeople ? { people: remotePeople } : {}) };
+  });
+
+  app.get<{ Params: { id: string; attachmentId: string } }>('/api/issues/:id/attachments/:attachmentId/content', async (request, reply) => {
+    await sync.bootstrapRead();
+    const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
+    const attachmentId = positiveId(request.params.attachmentId, 'ATTACHMENT_NOT_FOUND');
+    if (config.mode !== 'redmine' || !adapter) throw new ApiFault(404, 'ATTACHMENT_NOT_FOUND', 'Вкладення не знайдено.');
+    const accessibleProjects = new Set((await store.getProjects()).map(project => project.id));
+    let issue = await store.getIssue(issueId);
+    if (!issue || !accessibleProjects.has(issue.projectId) || !issue.attachments.some(item => item.id === attachmentId)) {
+      const cachedLabels = await store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {};
+      const detail = await adapter.issueDetail(issueId, cachedLabels, false);
+      if (!accessibleProjects.has(detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
+      issue = detail.issue;
+      const cached = await store.getIssue(issueId);
+      await store.saveIssue({ ...issue, developerId: cached?.developerId, qaId: cached?.qaId });
+    }
+    const attachment = issue.attachments.find(item => item.id === attachmentId);
+    if (!attachment) throw new ApiFault(404, 'ATTACHMENT_NOT_FOUND', 'Вкладення не знайдено.');
+    const image = await adapter.attachmentContent(attachmentId);
+    return reply.header('Content-Type', image.contentType).header('X-Content-Type-Options', 'nosniff')
+      .header('Cache-Control', 'private, max-age=300').send(image.data);
   });
 
   app.get<{ Params: { id: string } }>('/api/releases/:id', async (request): Promise<ReleaseDetail> => {
@@ -234,7 +325,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const version = await store.getVersion(versionId);
     if (!version) throw new ApiFault(404, 'VERSION_NOT_FOUND', 'Реліз не знайдено.');
     if (config.mode === 'redmine' && adapter) {
-      const remoteIssues = await adapter.releaseIssues(versionId, version.projectId);
+      const labelOptions = (await store.getValue<Record<string, LabelOption[]>>('labelOptions'))?.[String(version.projectId)] ?? [];
+      const remoteIssues = await adapter.releaseIssues(versionId, version.projectId, labelOptions);
       const cachedIssues = new Map((await store.getIssues(version.projectId)).map(issue => [issue.id, issue]));
       const issues: Issue[] = [];
       for (const issue of remoteIssues) {

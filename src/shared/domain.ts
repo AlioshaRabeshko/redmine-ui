@@ -17,7 +17,7 @@ export function filterIssues(issues: Issue[], statuses: Status[], view: View, me
   return issues.filter(issue => {
     const status = statusById.get(issue.statusId);
     const explicitlyFiltered = Boolean(filters.statusIds?.length);
-    if (!filters.includeClosed && !explicitlyFiltered && (status?.isClosed || status?.key === 'done' || status?.key === 'rejected')) return false;
+    if (!filters.includeClosed && !explicitlyFiltered && status?.key !== 'deploy' && (status?.isClosed || status?.key === 'done' || status?.key === 'rejected')) return false;
     if (view === 'backlog' && status?.key !== 'backlog') return false;
     if (view !== 'backlog' && !explicitlyFiltered && status?.key === 'backlog') return false;
     if (view === 'mine' && issue.assignedToId !== meId) return false;
@@ -68,10 +68,11 @@ export function sortIssues(issues: Issue[], priorities: Priority[], sort: AppSet
 
 export interface BoardColumn { id: string; name: string; status?: Status; version?: Version; issues: Issue[] }
 
-/** Versions only affect presentation; do not derive transition commands from this key. */
-export function issueColumnId(issue: Issue, versions: Version[]): string {
+/** Versions only affect presentation; status still decides whether an issue appears in a release lane. */
+export function issueColumnId(issue: Issue, versions: Version[], statuses: Status[] = []): string {
+  const status = statuses.find(s => s.id === issue.statusId);
   const version = versions.find(v => v.id === issue.fixedVersionId && v.projectId === issue.projectId && v.status !== 'closed');
-  return version ? `version:${version.id}` : `status:${issue.statusId}`;
+  return version && status?.key === 'deploy' ? `version:${version.id}` : `status:${issue.statusId}`;
 }
 
 export function groupBoard(issues: Issue[], statuses: Status[], versions: Version[], view: View = 'all'): BoardColumn[] {
@@ -86,14 +87,25 @@ export function groupBoard(issues: Issue[], statuses: Status[], versions: Versio
   });
   columns.push(...activeVersions.map(version => ({ id: `version:${version.id}`, name: version.name, version, issues: [] as Issue[] })));
   for (const issue of issues) {
-    const id = issueColumnId(issue, activeVersions);
+    const id = issueColumnId(issue, activeVersions, statuses);
     let column = columns.find(c => c.id === id);
     if (!column) {
       const status = statuses.find(s => s.id === issue.statusId);
       column = { id, name: status?.name ?? `#${issue.statusId}`, status, issues: [] };
       columns.push(column);
     }
-    column.issues.push(issue);
+    if (column.version) {
+      column.issues.push(issue);
+      continue;
+    }
+    const hasActiveVersion = activeVersions.some(version => version.id === issue.fixedVersionId && version.projectId === issue.projectId);
+    if (!hasActiveVersion) {
+      column.issues.push(issue);
+      continue;
+    }
+    const firstOrdinaryIssue = column.issues.findIndex(candidate => !activeVersions.some(version => version.id === candidate.fixedVersionId && version.projectId === candidate.projectId));
+    if (firstOrdinaryIssue === -1) column.issues.push(issue);
+    else column.issues.splice(firstOrdinaryIssue, 0, issue);
   }
   return columns;
 }

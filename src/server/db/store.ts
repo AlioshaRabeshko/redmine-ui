@@ -123,6 +123,7 @@ export class WorkspaceStore {
       ...structuredClone(defaultSettings), ...settings,
       projectQa: settings.projectQa ?? {}, subscriptions: settings.subscriptions ?? {},
       projectBackgrounds: settings.projectBackgrounds ?? {},
+      projectActivity: settings.projectActivity ?? {},
       personRoleOverrides: settings.personRoleOverrides ?? {},
       shortcuts: settings.shortcuts ?? structuredClone(defaultSettings.shortcuts), savedViews: settings.savedViews ?? [],
       sort: { ...defaultSettings.sort, ...settings.sort },

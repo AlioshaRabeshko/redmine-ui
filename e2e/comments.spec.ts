@@ -171,7 +171,7 @@ test('delete confirmation cannot remove a comment edited after confirmation open
     input: { journalId: journal.id, expectedNotes: journal.notes, notes: 'New text while confirmation was open' },
   } });
   expect(changed.ok()).toBe(true);
-  await expect(page.getByTestId(`journal-item-${journal.id}`).locator('.activity-body > p')).toHaveText('New text while confirmation was open');
+  await expect(page.getByTestId(`journal-item-${journal.id}`).locator('.activity-rich-content p')).toHaveText('New text while confirmation was open');
   const failed = page.waitForResponse(response => response.url().endsWith('/api/commands') && response.request().postDataJSON()?.type === 'deleteJournal');
   await page.getByTestId('journal-delete-confirm').click();
   expect((await failed).status()).toBe(409);

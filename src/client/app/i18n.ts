@@ -187,6 +187,108 @@ Object.assign(uk, { toggleSidebarShortcut: 'Згорнути / розгорну�
 Object.assign(pl, { toggleSidebarShortcut: 'Zwiń / rozwiń panel boczny', expandSidebar: 'Rozwiń panel boczny', collapseSidebar: 'Zwiń panel boczny', openSettingsShortcut: 'Otwórz ustawienia' });
 Object.assign(es, { toggleSidebarShortcut: 'Contraer / expandir barra lateral', expandSidebar: 'Expandir barra lateral', collapseSidebar: 'Contraer barra lateral', openSettingsShortcut: 'Abrir ajustes' });
 
+Object.assign(en, {
+  "projectActivity": "Issue activity",
+  "projectActivityHint": "Which events to show in issues of {{project}}.",
+  "projectActivityLocal": "Personal display preferences. Notification subscriptions are configured separately.",
+  "projectActivityReset": "Reset to defaults",
+  "activityOtherFields": "Other field changes",
+  "activityFilteredEmpty": "No activity matches your display preferences.",
+  "activityTargetOverride": "Linked activity",
+  "activityTargetOverrideHint": "This entry is shown because you opened a direct link, regardless of your activity preferences.",
+  "cleared": "Cleared",
+  "imageUnavailable": "Image unavailable",
+  "openImageOriginal": "Open original image",
+  "markdownImageAlt": "Issue image",
+  "markdownCodeBlock": "Code block",
+  "fullSearch": "Full issue search",
+  "searchScope": "Search scope",
+  "searchAllProjects": "All projects",
+  "fullSearchHint": "Search Redmine, including completed issues. The board also filters loaded cards as you type.",
+  "fullSearchEmpty": "No matching issues in this search scope.",
+  "searchResultCount": "Results: {{count}}",
+  "searchPrevious": "Previous results",
+  "searchNext": "Next results",
+  "releaseLaneHint": "Only Deploy issues appear in release columns; other release issues stay pinned in their status columns."
+});
+Object.assign(uk, {
+  "projectActivity": "Активність у задачах",
+  "projectActivityHint": "Які події показувати у задачах проєкту {{project}}.",
+  "projectActivityLocal": "Особисті налаштування відображення. Підписка на сповіщення налаштовується окремо.",
+  "projectActivityReset": "Відновити стандартні",
+  "activityOtherFields": "Зміни інших полів",
+  "activityFilteredEmpty": "Немає активності, яка відповідає вашим налаштуванням.",
+  "activityTargetOverride": "Пов’язана подія",
+  "activityTargetOverrideHint": "Цей запис показано за прямим посиланням незалежно від налаштувань активності.",
+  "cleared": "Прибрано",
+  "imageUnavailable": "Зображення недоступне",
+  "openImageOriginal": "Відкрити оригінал зображення",
+  "markdownImageAlt": "Зображення задачі",
+  "markdownCodeBlock": "Блок коду",
+  "fullSearch": "Повний пошук задач",
+  "searchScope": "Область пошуку",
+  "searchAllProjects": "Усі проєкти",
+  "fullSearchHint": "Пошук у Redmine, включно із завершеними задачами. Дошка також фільтрує завантажені картки під час введення.",
+  "fullSearchEmpty": "У вибраній області задач не знайдено.",
+  "searchResultCount": "Результатів: {{count}}",
+  "searchPrevious": "Попередні результати",
+  "searchNext": "Наступні результати",
+  "releaseLaneHint": "У колонках релізів показано лише задачі зі статусом Deploy; решта задач релізу закріплені у своїх статусних колонках."
+});
+Object.assign(pl, {
+  "projectActivity": "Aktywność w zadaniach",
+  "projectActivityHint": "Zdarzenia widoczne w zadaniach projektu {{project}}.",
+  "projectActivityLocal": "Osobiste ustawienia wyświetlania. Subskrypcje powiadomień są konfigurowane osobno.",
+  "projectActivityReset": "Przywróć domyślne",
+  "activityOtherFields": "Zmiany innych pól",
+  "activityFilteredEmpty": "Brak aktywności zgodnej z ustawieniami wyświetlania.",
+  "activityTargetOverride": "Powiązane zdarzenie",
+  "activityTargetOverrideHint": "Ten wpis jest widoczny dzięki bezpośredniemu linkowi, niezależnie od ustawień aktywności.",
+  "cleared": "Usunięto",
+  "imageUnavailable": "Obraz niedostępny",
+  "openImageOriginal": "Otwórz oryginalny obraz",
+  "markdownImageAlt": "Obraz zadania",
+  "markdownCodeBlock": "Blok kodu",
+  "fullSearch": "Pełne wyszukiwanie zadań",
+  "searchScope": "Zakres wyszukiwania",
+  "searchAllProjects": "Wszystkie projekty",
+  "fullSearchHint": "Szukaj w Redmine, również w ukończonych zadaniach. Tablica filtruje także załadowane karty podczas pisania.",
+  "fullSearchEmpty": "Nie znaleziono zadań w wybranym zakresie.",
+  "searchResultCount": "Wyniki: {{count}}",
+  "searchPrevious": "Poprzednie wyniki",
+  "searchNext": "Następne wyniki",
+  "releaseLaneHint": "W kolumnach wydań widoczne są tylko zadania Deploy; pozostałe zadania wydania są przypięte w kolumnach swoich statusów."
+});
+Object.assign(es, {
+  "projectActivity": "Actividad de las tareas",
+  "projectActivityHint": "Eventos visibles en las tareas de {{project}}.",
+  "projectActivityLocal": "Preferencias personales de visualización. Las suscripciones a notificaciones se configuran por separado.",
+  "projectActivityReset": "Restaurar valores predeterminados",
+  "activityOtherFields": "Cambios de otros campos",
+  "activityFilteredEmpty": "No hay actividad que coincida con tus preferencias.",
+  "activityTargetOverride": "Evento vinculado",
+  "activityTargetOverrideHint": "Esta entrada se muestra por un enlace directo, independientemente de las preferencias de actividad.",
+  "cleared": "Eliminado",
+  "imageUnavailable": "Imagen no disponible",
+  "openImageOriginal": "Abrir imagen original",
+  "markdownImageAlt": "Imagen de la tarea",
+  "markdownCodeBlock": "Bloque de código",
+  "fullSearch": "Búsqueda completa de tareas",
+  "searchScope": "Ámbito de búsqueda",
+  "searchAllProjects": "Todos los proyectos",
+  "fullSearchHint": "Busca en Redmine, incluidas las tareas completadas. El tablero también filtra las tarjetas cargadas mientras escribes.",
+  "fullSearchEmpty": "No se encontraron tareas en este ámbito.",
+  "searchResultCount": "Resultados: {{count}}",
+  "searchPrevious": "Resultados anteriores",
+  "searchNext": "Resultados siguientes",
+  "releaseLaneHint": "Las columnas de versiones solo muestran tareas Deploy; las demás tareas de la versión quedan fijadas en sus columnas de estado."
+});
+
+Object.assign(en, { keepRoadmapHint: "Changing status keeps the issue's release membership." });
+Object.assign(uk, { keepRoadmapHint: 'Зміна статусу не змінює належність задачі до релізу.' });
+Object.assign(pl, { keepRoadmapHint: 'Zmiana statusu nie zmienia przypisania zadania do wydania.' });
+Object.assign(es, { keepRoadmapHint: 'Cambiar el estado no cambia la versión asignada a la tarea.' });
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },
