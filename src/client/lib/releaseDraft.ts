@@ -1,3 +1,5 @@
+import { clearDraftStorage, readDraftStorage, writeDraftStorage } from './draftStorage';
+
 export type ReleaseForm = 'new' | 'edit' | 'assign';
 
 export function releaseDraftStorageKey(scope: string, projectId: number, form: ReleaseForm, versionId?: number): string {
@@ -6,19 +8,23 @@ export function releaseDraftStorageKey(scope: string, projectId: number, form: R
 }
 
 export function readReleaseDraft<T extends object>(key: string, fallback: T): T {
+  return readReleaseDraftState(key, fallback).draft;
+}
+
+export function readReleaseDraftState<T extends object>(key: string, fallback: T): { draft: T; durable: boolean } {
+  const stored = readDraftStorage(key);
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback;
-    return { ...fallback, ...parsed } as T;
-  } catch { return fallback; }
+    if (!stored.value) return { draft: fallback, durable: stored.durable };
+    const parsed: unknown = JSON.parse(stored.value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { draft: fallback, durable: stored.durable };
+    return { draft: { ...fallback, ...parsed } as T, durable: stored.durable };
+  } catch { return { draft: fallback, durable: stored.durable }; }
 }
 
-export function writeReleaseDraft(key: string, draft: object): void {
-  try { localStorage.setItem(key, JSON.stringify(draft)); } catch { /* Keep form editing available when browser storage is unavailable. */ }
+export function writeReleaseDraft(key: string, draft: object): boolean {
+  return writeDraftStorage(key, JSON.stringify(draft));
 }
 
-export function clearReleaseDraft(key: string): void {
-  try { localStorage.removeItem(key); } catch { /* A successful save must remain successful if local cleanup fails. */ }
+export function clearReleaseDraft(key: string): boolean {
+  return clearDraftStorage(key);
 }

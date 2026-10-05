@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { navigationShortcuts } from '../shared/shortcuts.js';
-import type { AppSettings, SettingsPatch } from '../shared/types.js';
+import { isSingleEmojiAvatar } from '../shared/types.js';
+import type { AppSettings, PersonAvatarOverride, SettingsPatch } from '../shared/types.js';
 export type { SettingsPatch } from '../shared/types.js';
 
 const idKey = z.string().regex(/^[1-9]\d*$/);
@@ -8,6 +9,7 @@ const personRoleSchema = z.enum(['qa', 'support', 'developer']);
 const activityVisibilitySchema = z.object({ comment: z.boolean(), status: z.boolean(), assignee: z.boolean(), labels: z.boolean(), field: z.boolean() }).strict();
 const subscriptionSchema = z.object({ enabled: z.boolean(), events: z.array(z.string()) });
 const backgroundUrlPattern = /^\/api\/projects\/([1-9]\d*)\/background\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const personAvatarUrlPattern = /^\/api\/people\/([1-9]\d*)\/avatar\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 function validateProjectBackgroundMap(backgrounds: Record<string, string | null>, context: z.RefinementCtx): void {
   for (const [projectId, url] of Object.entries(backgrounds)) {
     if (url === null) continue;
@@ -17,6 +19,20 @@ function validateProjectBackgroundMap(backgrounds: Record<string, string | null>
 }
 const projectBackgroundsSchema = z.record(idKey, z.string().regex(backgroundUrlPattern)).superRefine(validateProjectBackgroundMap);
 const projectBackgroundsPatchSchema = z.record(idKey, z.string().regex(backgroundUrlPattern).nullable()).superRefine(validateProjectBackgroundMap);
+const personAvatarOverrideSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('photo'), url: z.string().regex(personAvatarUrlPattern) }).strict(),
+  z.object({ kind: z.literal('emoji'), emoji: z.string().max(32).refine(isSingleEmojiAvatar) }).strict(),
+]);
+function validatePersonAvatarMap(overrides: Record<string, PersonAvatarOverride | null>, context: z.RefinementCtx): void {
+  for (const [personId, override] of Object.entries(overrides)) {
+    if (override?.kind !== 'photo') continue;
+    if (override.url.match(personAvatarUrlPattern)?.[1] !== personId) {
+      context.addIssue({ code: 'custom', path: [personId], message: 'Avatar URL must belong to the same person.' });
+    }
+  }
+}
+const personAvatarOverridesSchema = z.record(idKey, personAvatarOverrideSchema).superRefine(validatePersonAvatarMap).default({});
+const personAvatarOverridesPatchSchema = z.record(idKey, personAvatarOverrideSchema.nullable()).superRefine(validatePersonAvatarMap);
 const filtersSchema = z.object({
   search: z.string().optional(), assigneeId: z.number().int().optional(), assignedToMe: z.boolean().optional(),
   label: z.string().optional(), labels: z.array(z.string()).optional(),
@@ -37,6 +53,7 @@ const settingsSchema = z.object({
   projectActivity: z.record(idKey, activityVisibilitySchema).default({}),
   projectBackgrounds: projectBackgroundsSchema,
   personRoleOverrides: z.record(idKey, z.record(idKey, z.array(personRoleSchema))),
+  personAvatarOverrides: personAvatarOverridesSchema,
   shortcuts: z.array(shortcutSchema),
   savedViews: z.array(savedViewSchema),
   sort: sortSchema,
@@ -53,6 +70,7 @@ const settingsPatchSchema = z.object({
   projectActivity: z.record(idKey, activityVisibilitySchema.nullable()).optional(),
   projectBackgrounds: projectBackgroundsPatchSchema.optional(),
   personRoleOverrides: z.record(idKey, z.record(idKey, z.array(personRoleSchema).nullable()).nullable()).optional(),
+  personAvatarOverrides: personAvatarOverridesPatchSchema.optional(),
   shortcuts: settingsSchema.shape.shortcuts.optional(),
   savedViews: settingsSchema.shape.savedViews.optional(),
   sort: settingsSchema.shape.sort.optional(),
@@ -69,6 +87,7 @@ export const defaultSettings: AppSettings = {
   projectActivity: {},
   projectBackgrounds: {},
   personRoleOverrides: {},
+  personAvatarOverrides: {},
   shortcuts: [
     { id: 'mine', keys: 'Q', action: 'view', value: 'mine', enabled: true },
     { id: 'project', keys: 'B', action: 'projectPicker', enabled: true },
@@ -96,7 +115,7 @@ export function parseSettingsPatch(value: unknown): SettingsPatch {
 }
 
 export function applySettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
-  const { projectQa, subscriptions, projectActivity, projectBackgrounds, personRoleOverrides, ...shallowFields } = patch;
+  const { projectQa, subscriptions, projectActivity, projectBackgrounds, personRoleOverrides, personAvatarOverrides, ...shallowFields } = patch;
   const next: AppSettings = { ...current, ...shallowFields };
 
   if (projectQa) {
@@ -141,6 +160,13 @@ export function applySettingsPatch(current: AppSettings, patch: SettingsPatch): 
       }
       if (Object.keys(projectOverrides).length) next.personRoleOverrides[projectId] = projectOverrides;
       else delete next.personRoleOverrides[projectId];
+    }
+  }
+  if (personAvatarOverrides) {
+    next.personAvatarOverrides = { ...current.personAvatarOverrides };
+    for (const [personId, override] of Object.entries(personAvatarOverrides)) {
+      if (override === null) delete next.personAvatarOverrides[personId];
+      else next.personAvatarOverrides[personId] = override;
     }
   }
   return settingsSchema.parse(next);

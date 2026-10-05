@@ -48,14 +48,16 @@ test('favicon clears after acknowledged reads, survives a failed read, and retur
   await page.goto(`/?project=${boot.projects[0].id}&tab=inbox`);
   const icon = page.locator('link[rel="icon"]');
   await expect(icon).toHaveAttribute('data-unread', '2');
-  const row = page.locator('.notification-row').filter({ hasText: 'favicon-event-1' });
+  const group = page.getByTestId(`notification-group-${issue.id}`);
+  await group.locator('.notification-group-toggle').click();
+  const row = group.getByTestId('notification-favicon-event-1');
   await row.getByRole('button', { name: 'Прочитати', exact: true }).click();
   await expect(page.locator('.toast')).toBeVisible();
   await expect(icon).toHaveAttribute('data-unread', '2');
   fail = false;
   await row.getByRole('button', { name: 'Прочитати', exact: true }).click();
   await expect(icon).toHaveAttribute('data-unread', '1');
-  await page.locator('.notification-row').filter({ hasText: 'favicon-event-2' }).locator('.notification-open').click();
+  await group.getByTestId('notification-favicon-event-2').locator('.notification-open').click();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
   await expect(icon).toHaveAttribute('data-unread', '0');
   expect(decodeURIComponent(await icon.getAttribute('href') ?? '')).not.toContain('<text');

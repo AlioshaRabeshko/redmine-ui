@@ -5,7 +5,7 @@ import { CalendarDays, ChevronDown, CircleDot, Clock3, Plus, Search, SlidersHori
 import { useTranslation } from 'react-i18next';
 import type { AppSettings, BoardData, Filters, Issue, Person, Priority, Project, SavedView, Status, View } from '../../../shared/types';
 import { filterIssues, groupBoard, sortIssues, toggleAssignedToMe } from '../../../shared/domain';
-import { Avatar, Button, IconButton, Notice } from '../../components/ui';
+import { Avatar, Button, IconButton } from '../../components/ui';
 import { MultiPicker, PeoplePicker, Picker, Popover } from '../../components/pickers';
 
 export interface BoardPageProps {
@@ -229,6 +229,5 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
       </div></div>
       <DragOverlay>{draggedId ? (() => { const issue = data.issues.find((entry) => entry.id === draggedId); return issue ? <BoardCard issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={false} onOpen={onOpenIssue} isDragging /> : null; })() : null}</DragOverlay>
     </DndContext>}
-    {!canWrite && <Notice className="board-readonly-note">{t('readOnlyNote')}</Notice>}
   </main>;
 }

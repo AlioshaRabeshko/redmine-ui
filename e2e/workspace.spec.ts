@@ -109,7 +109,9 @@ test('opening a notification selects its project, focuses its comment and archiv
   const inboxUrl = page.url();
   let readRequests = 0;
   page.on('request', request => { if (request.url().endsWith('/api/notifications/read') && request.method() === 'POST') readRequests++; });
-  await page.locator('.notification-row').filter({ hasText: `#${notification.issueId}` }).locator('.notification-open').click();
+  const notificationGroup = page.getByTestId(`notification-group-${notification.issueId}`);
+  await notificationGroup.locator('.notification-group-toggle').click();
+  await notificationGroup.locator('.notification-row').filter({ hasText: `#${notification.issueId}` }).locator('.notification-open').click();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
   await expect(page.locator(`#journal-${notification.journalId}`)).toBeVisible();
   await expect.poll(async () => (await (await request.get('/api/notifications')).json()).some((item: { id: string }) => item.id === notification.id)).toBe(false);

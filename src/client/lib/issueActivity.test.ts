@@ -50,6 +50,16 @@ describe('issue activity visibility and journal text', () => {
     expect(visibility).toEqual(originalVisibility);
   });
 
+  it('shows journals newest first with descending IDs for equal timestamps without reordering the source', () => {
+    const older: Journal = { ...journal, id: 9, createdOn: '2026-10-03T10:00:00Z' };
+    const newerLowId: Journal = { ...journal, id: 40, createdOn: '2026-10-04T10:00:00Z' };
+    const newerHighId: Journal = { ...journal, id: 41, createdOn: '2026-10-04T10:00:00Z' };
+    const source = [older, newerLowId, newerHighId];
+
+    expect(visibleJournals(source, defaultActivityVisibility).map(({ journal: entry }) => entry.id)).toEqual([41, 40, 9]);
+    expect(source.map(({ id }) => id)).toEqual([9, 40, 41]);
+  });
+
   it('uses known names, explicit ID fallbacks, and cleared labels for missing values', () => {
     const labels: LabelOption[] = [{ id: '606', name: 'Build: Succeeded' }, { id: '607', name: 'Build: Failed' }];
     const lookups = {

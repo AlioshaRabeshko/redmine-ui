@@ -1,18 +1,18 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, CalendarDays, Check, CircleDot, Clock3, Edit2, Plus, Rocket, Search, Trash2, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight, CalendarDays, Check, CircleDot, Clock3, Edit2, Plus, Rocket, Search, Trash2, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BoardData, Issue, Person, Priority, Project, ReleaseDetail, Status, Version } from '../../../shared/types';
 import { releaseReadiness } from '../../../shared/domain';
 import { api } from '../../lib/api';
 import { Avatar, Button, Field, IconButton, Modal, Notice, Spinner } from '../../components/ui';
 import { useWorkspaceFormSave } from '../../lib/serialFieldWrite';
-import { clearReleaseDraft, readReleaseDraft, releaseDraftStorageKey, writeReleaseDraft, type ReleaseForm } from '../../lib/releaseDraft';
+import { clearReleaseDraft, readReleaseDraftState, releaseDraftStorageKey, writeReleaseDraft, type ReleaseForm } from '../../lib/releaseDraft';
 
 type ReleasePatch = Omit<Partial<Version>, 'dueDate'> & { dueDate?: string | null };
 
-export function ReleasesPage({ project, board, statuses, priorities, members, versions, selectedVersionId, form, draftScope, canWrite, onSelectVersion, onFormChange, onOpenIssue, onCreateRelease, onAssign, onUpdateRelease, onFinish, onToast }: {
-  project: Project; board: BoardData; statuses: Status[]; priorities: Priority[]; members: Person[]; versions: Version[]; selectedVersionId?: number; canWrite: boolean;
+export function ReleasesPage({ project, board, statuses, priorities, members, versions, selectedVersionId, form, draftScope, canWrite, readOnlyMode, onSelectVersion, onFormChange, onOpenIssue, onCreateRelease, onAssign, onUpdateRelease, onFinish, onToast }: {
+  project: Project; board: BoardData; statuses: Status[]; priorities: Priority[]; members: Person[]; versions: Version[]; selectedVersionId?: number; canWrite: boolean; readOnlyMode: boolean;
   form?: ReleaseForm; draftScope: string; onFormChange: (form?: ReleaseForm) => void;
   onSelectVersion: (versionId?: number) => void; onOpenIssue: (issue: Issue) => void; onCreateRelease: (input: { name: string; dueDate?: string; description?: string; issueIds?: number[] }) => Promise<void>;
   onAssign: (versionId: number, issueIds: number[], fixedVersionId: number | null) => Promise<void>; onUpdateRelease: (version: Version, patch: ReleasePatch) => Promise<void>; onFinish: (version: Version) => Promise<void>; onToast: (text: string) => void;
@@ -74,9 +74,9 @@ export function ReleasesPage({ project, board, statuses, priorities, members, ve
         </>}
       </section>}
     </div>
-    {form === 'new' && <CreateReleaseDialog key={releaseDraftStorageKey(draftScope, project.id, 'new')} draftKey={releaseDraftStorageKey(draftScope, project.id, 'new')} project={project} board={board} statuses={statuses} versions={versions} canWrite={canWrite} busy={busy} onClose={() => onFormChange(undefined)} onCreate={create} />}
-    {form === 'assign' && selectedVersion && selectedVersion.status !== 'closed' && <AssignIssuesDialog key={releaseDraftStorageKey(draftScope, project.id, 'assign', selectedVersion.id)} draftKey={releaseDraftStorageKey(draftScope, project.id, 'assign', selectedVersion.id)} project={project} issues={eligibleIssues} statuses={statuses} canWrite={canWrite} busy={busy} onClose={() => onFormChange(undefined)} onSave={assign} />}
-    {form === 'edit' && selectedVersion && selectedVersion.status !== 'closed' && <EditReleaseDialog key={releaseDraftStorageKey(draftScope, project.id, 'edit', selectedVersion.id)} draftKey={releaseDraftStorageKey(draftScope, project.id, 'edit', selectedVersion.id)} version={selectedVersion} canWrite={canWrite} busy={busy} onClose={() => onFormChange(undefined)} onSave={saveRelease} />}
+    {form === 'new' && <CreateReleaseDialog key={releaseDraftStorageKey(draftScope, project.id, 'new')} draftKey={releaseDraftStorageKey(draftScope, project.id, 'new')} project={project} board={board} statuses={statuses} versions={versions} canWrite={canWrite} readOnlyMode={readOnlyMode} busy={busy} onClose={() => onFormChange(undefined)} onCreate={create} />}
+    {form === 'assign' && selectedVersion && selectedVersion.status !== 'closed' && <AssignIssuesDialog key={releaseDraftStorageKey(draftScope, project.id, 'assign', selectedVersion.id)} draftKey={releaseDraftStorageKey(draftScope, project.id, 'assign', selectedVersion.id)} project={project} issues={eligibleIssues} statuses={statuses} canWrite={canWrite} readOnlyMode={readOnlyMode} busy={busy} onClose={() => onFormChange(undefined)} onSave={assign} />}
+    {form === 'edit' && selectedVersion && selectedVersion.status !== 'closed' && <EditReleaseDialog key={releaseDraftStorageKey(draftScope, project.id, 'edit', selectedVersion.id)} draftKey={releaseDraftStorageKey(draftScope, project.id, 'edit', selectedVersion.id)} version={selectedVersion} canWrite={canWrite} readOnlyMode={readOnlyMode} busy={busy} onClose={() => onFormChange(undefined)} onSave={saveRelease} />}
   </main>;
 }
 
@@ -87,7 +87,10 @@ type EditReleaseDraft = { name: string; dueDate: string; description: string };
 function safeDraftText(value: unknown, fallback: string): string { return typeof value === 'string' ? value : fallback; }
 function safeDraftIds(value: unknown): number[] { return Array.isArray(value) ? [...new Set(value.filter((id): id is number => Number.isSafeInteger(id) && id > 0))] : []; }
 
-function usePersistReleaseDraft<T extends object>(key: string, draft: T) {
+function usePersistReleaseDraft<T extends object>(key: string, draft: T, initialDurable: boolean) {
+  const [durable, setDurable] = useState(initialDurable);
+  const current = useRef(draft);
+  current.current = draft;
   const lastPersisted = useRef({ key, serialized: JSON.stringify(draft) });
   useLayoutEffect(() => {
     const serialized = JSON.stringify(draft);
@@ -96,19 +99,34 @@ function usePersistReleaseDraft<T extends object>(key: string, draft: T) {
       return;
     }
     if (serialized !== lastPersisted.current.serialized) {
-      writeReleaseDraft(key, draft);
+      setDurable(writeReleaseDraft(key, draft));
       lastPersisted.current = { key, serialized };
     }
   }, [draft, key]);
+  return { durable, current };
 }
 
-function CreateReleaseDialog({ project, board, statuses, versions, draftKey, canWrite, busy, onClose, onCreate }: { project: Project; board: BoardData; statuses: Status[]; versions: Version[]; draftKey: string; canWrite: boolean; busy: boolean; onClose: () => void; onCreate: (input: { name: string; dueDate?: string; description?: string; issueIds?: number[] }) => Promise<void> }) {
+function ReadOnlyDialogStatus() {
   const { t } = useTranslation();
+  return <div className="readonly-dialog-status" role="status"><span className="readonly-dialog-pill" title={t('readOnlyNote')}><AlertTriangle size={14} />{t('readonlyCompact')}</span><span className="readonly-inline-copy">{t('saveBlocked')}</span></div>;
+}
+
+function DraftPersistenceStatus({ meaningful, durable }: { meaningful: boolean; durable: boolean }) {
+  const { t } = useTranslation();
+  if (!meaningful) return null;
+  return durable
+    ? <span className="draft-saved-indicator" role="status"><Check size={13} />{t('draftSaved')}</span>
+    : <span className="readonly-inline" role="status"><AlertTriangle size={14} />{t('draftSessionOnly')}</span>;
+}
+
+function CreateReleaseDialog({ project, board, statuses, versions, draftKey, canWrite, readOnlyMode, busy, onClose, onCreate }: { project: Project; board: BoardData; statuses: Status[]; versions: Version[]; draftKey: string; canWrite: boolean; readOnlyMode: boolean; busy: boolean; onClose: () => void; onCreate: (input: { name: string; dueDate?: string; description?: string; issueIds?: number[] }) => Promise<void> }) {
+  const { t } = useTranslation();
+  const [initialDraft] = useState(() => readReleaseDraftState(draftKey, { name: '', dueDate: '', description: '', selectedIssueIds: [] as number[], query: '' }));
   const [draft, setDraft] = useState<CreateReleaseDraft>(() => {
-    const restored = readReleaseDraft(draftKey, { name: '', dueDate: '', description: '', selectedIssueIds: [], query: '' });
+    const restored = initialDraft.draft;
     return { name: safeDraftText(restored.name, ''), dueDate: safeDraftText(restored.dueDate, ''), description: safeDraftText(restored.description, ''), selectedIssueIds: safeDraftIds(restored.selectedIssueIds), query: safeDraftText(restored.query, '') };
   });
-  usePersistReleaseDraft(draftKey, draft);
+  const draftStorage = usePersistReleaseDraft(draftKey, draft, initialDraft.durable);
   const [error, setError] = useState('');
   const formRef = useWorkspaceFormSave<HTMLFormElement>();
   const statusMap = new Map(statuses.map((status) => [status.id, status]));
@@ -117,31 +135,37 @@ function CreateReleaseDialog({ project, board, statuses, versions, draftKey, can
     event.preventDefault();
     if (!draft.name.trim() || !canWrite || busy) return;
     setError('');
+    const submitted = JSON.stringify(draft);
     try {
       await onCreate({ name: draft.name.trim(), dueDate: draft.dueDate || undefined, description: draft.description.trim() || undefined, issueIds: draft.selectedIssueIds });
-      clearReleaseDraft(draftKey);
+      const latest = draftStorage.current.current;
+      if (JSON.stringify(latest) === submitted) clearReleaseDraft(draftKey);
+      else writeReleaseDraft(draftKey, latest);
     } catch (e) { setError(e instanceof Error ? e.message : t('error')); }
   };
+  const meaningful = Boolean(draft.name.trim() || draft.dueDate || draft.description.trim() || draft.selectedIssueIds.length || draft.query.trim());
   return <Modal title={t('createRelease')} eyebrow={project.name} onClose={onClose} size="md" className="release-modal">
     <form ref={formRef} className="release-form" onSubmit={submit} data-workspace-save><p className="form-intro">{t('createReleaseIntro')}</p>
+      <DraftPersistenceStatus meaningful={meaningful} durable={draftStorage.durable} />
       <Field label={t('releaseName')}><input className="text-input" autoFocus value={draft.name} onChange={(e) => setDraft((current) => ({ ...current, name: e.target.value }))} required /></Field>
       <Field label={t('dueDate')}><input className="text-input" type="date" value={draft.dueDate} onChange={(e) => setDraft((current) => ({ ...current, dueDate: e.target.value }))} /></Field>
       <Field label={t('description')}><textarea className="text-area" value={draft.description} onChange={(e) => setDraft((current) => ({ ...current, description: e.target.value }))} /></Field>
       <div className="assignment-picker"><div className="assignment-picker-head"><strong>{t('selectIssues')}</strong><span>{draft.selectedIssueIds.length}</span></div><div className="search-field compact"><Search size={15} /><input value={draft.query} onChange={(e) => setDraft((current) => ({ ...current, query: e.target.value }))} placeholder={t('searchPlaceholder')} /></div><div className="assignment-options">{available.length === 0 ? <span>{t('emptySearch')}</span> : available.map((issue) => { const checked = draft.selectedIssueIds.includes(issue.id); const status = statusMap.get(issue.statusId); return <label key={issue.id} className="assignment-option"><input type="checkbox" checked={checked} onChange={() => setDraft((current) => ({ ...current, selectedIssueIds: checked ? current.selectedIssueIds.filter((id) => id !== issue.id) : [...current.selectedIssueIds, issue.id] }))} /><span><strong>{issue.subject}</strong><small>#{issue.id} · {issue.trackerName}</small></span><span className="assignment-current-status"><span className={`status-pill status-${status?.key || 'unknown'}`}><span className="status-pill-dot" />{status?.name || t('unknown')}</span></span></label>; })}</div></div>
-      {!canWrite && <Notice tone="warning">{t('saveBlocked')}</Notice>}
+      {readOnlyMode && <ReadOnlyDialogStatus />}
       {error && <Notice tone="error" className="release-modal-error">{error}</Notice>}
       <div className="modal-footer"><Button type="button" onClick={onClose}>{t('cancel')}</Button><Button type="submit" variant="primary" disabled={!canWrite || !draft.name.trim() || busy}>{busy ? <Spinner /> : <Plus size={15} />}{t('createRelease')}</Button></div>
     </form>
   </Modal>;
 }
 
-function AssignIssuesDialog({ project, issues, statuses, draftKey, canWrite, busy, onClose, onSave }: { project: Project; issues: Issue[]; statuses: Status[]; draftKey: string; canWrite: boolean; busy: boolean; onClose: () => void; onSave: (selectedIssueIds: number[]) => Promise<void> }) {
+function AssignIssuesDialog({ project, issues, statuses, draftKey, canWrite, readOnlyMode, busy, onClose, onSave }: { project: Project; issues: Issue[]; statuses: Status[]; draftKey: string; canWrite: boolean; readOnlyMode: boolean; busy: boolean; onClose: () => void; onSave: (selectedIssueIds: number[]) => Promise<void> }) {
   const { t } = useTranslation();
+  const [initialDraft] = useState(() => readReleaseDraftState(draftKey, { selectedIssueIds: [] as number[], query: '' }));
   const [draft, setDraft] = useState<AssignReleaseDraft>(() => {
-    const restored = readReleaseDraft(draftKey, { selectedIssueIds: [], query: '' });
+    const restored = initialDraft.draft;
     return { selectedIssueIds: safeDraftIds(restored.selectedIssueIds), query: safeDraftText(restored.query, '') };
   });
-  usePersistReleaseDraft(draftKey, draft);
+  const draftStorage = usePersistReleaseDraft(draftKey, draft, initialDraft.durable);
   const [error, setError] = useState('');
   const formRef = useWorkspaceFormSave<HTMLFormElement>();
   const filtered = issues.filter((issue) => `${issue.id} ${issue.subject}`.toLowerCase().includes(draft.query.toLowerCase()));
@@ -150,27 +174,41 @@ function AssignIssuesDialog({ project, issues, statuses, draftKey, canWrite, bus
     event.preventDefault();
     if (!canWrite || !draft.selectedIssueIds.length || busy) return;
     setError('');
-    try { await onSave(draft.selectedIssueIds); clearReleaseDraft(draftKey); }
+    const submitted = JSON.stringify(draft);
+    try {
+      await onSave(draft.selectedIssueIds);
+      const latest = draftStorage.current.current;
+      if (JSON.stringify(latest) === submitted) clearReleaseDraft(draftKey);
+      else writeReleaseDraft(draftKey, latest);
+    }
     catch (e) { setError(e instanceof Error ? e.message : t('error')); }
   };
-  return <Modal title={t('addIssues')} eyebrow={project.name} onClose={onClose} className="release-modal"><form ref={formRef} className="release-form" data-workspace-save onSubmit={submit}><p className="form-intro">{t('selectIssues')}</p><div className="search-field compact"><Search size={15} /><input value={draft.query} onChange={(e) => setDraft((current) => ({ ...current, query: e.target.value }))} placeholder={t('searchPlaceholder')} /></div><div className="assignment-options assignment-options-tall">{filtered.length === 0 ? <span>{t('emptySearch')}</span> : filtered.map((issue) => { const checked = draft.selectedIssueIds.includes(issue.id); const status = statusMap.get(issue.statusId); return <label key={issue.id} className="assignment-option"><input type="checkbox" checked={checked} onChange={() => setDraft((current) => ({ ...current, selectedIssueIds: checked ? current.selectedIssueIds.filter((id) => id !== issue.id) : [...current.selectedIssueIds, issue.id] }))} /><span><strong>{issue.subject}</strong><small>#{issue.id} · {issue.trackerName}</small></span><span className="assignment-current-status"><span className={`status-pill status-${status?.key || 'unknown'}`}><span className="status-pill-dot" />{status?.name || t('unknown')}</span></span></label>; })}</div>{error && <Notice tone="error" className="release-modal-error">{error}</Notice>}<div className="modal-footer"><Button type="button" onClick={onClose}>{t('cancel')}</Button><Button type="submit" variant="primary" disabled={!canWrite || draft.selectedIssueIds.length === 0 || busy}>{busy ? <Spinner /> : <Plus size={15} />}{t('addIssues')} · {draft.selectedIssueIds.length}</Button></div></form></Modal>;
+  return <Modal title={t('addIssues')} eyebrow={project.name} onClose={onClose} className="release-modal"><form ref={formRef} className="release-form" data-workspace-save onSubmit={submit}>{readOnlyMode && <ReadOnlyDialogStatus />}<DraftPersistenceStatus meaningful={Boolean(draft.selectedIssueIds.length || draft.query.trim())} durable={draftStorage.durable} /><p className="form-intro">{t('selectIssues')}</p><div className="search-field compact"><Search size={15} /><input value={draft.query} onChange={(e) => setDraft((current) => ({ ...current, query: e.target.value }))} placeholder={t('searchPlaceholder')} /></div><div className="assignment-options assignment-options-tall">{filtered.length === 0 ? <span>{t('emptySearch')}</span> : filtered.map((issue) => { const checked = draft.selectedIssueIds.includes(issue.id); const status = statusMap.get(issue.statusId); return <label key={issue.id} className="assignment-option"><input type="checkbox" checked={checked} onChange={() => setDraft((current) => ({ ...current, selectedIssueIds: checked ? current.selectedIssueIds.filter((id) => id !== issue.id) : [...current.selectedIssueIds, issue.id] }))} /><span><strong>{issue.subject}</strong><small>#{issue.id} · {issue.trackerName}</small></span><span className="assignment-current-status"><span className={`status-pill status-${status?.key || 'unknown'}`}><span className="status-pill-dot" />{status?.name || t('unknown')}</span></span></label>; })}</div>{error && <Notice tone="error" className="release-modal-error">{error}</Notice>}<div className="modal-footer"><Button type="button" onClick={onClose}>{t('cancel')}</Button><Button type="submit" variant="primary" disabled={!canWrite || draft.selectedIssueIds.length === 0 || busy}>{busy ? <Spinner /> : <Plus size={15} />}{t('addIssues')} · {draft.selectedIssueIds.length}</Button></div></form></Modal>;
 }
 
-function EditReleaseDialog({ version, draftKey, canWrite, busy, onClose, onSave }: { version: Version; draftKey: string; canWrite: boolean; busy: boolean; onClose: () => void; onSave: (patch: ReleasePatch) => Promise<void> }) {
+function EditReleaseDialog({ version, draftKey, canWrite, readOnlyMode, busy, onClose, onSave }: { version: Version; draftKey: string; canWrite: boolean; readOnlyMode: boolean; busy: boolean; onClose: () => void; onSave: (patch: ReleasePatch) => Promise<void> }) {
   const { t } = useTranslation();
+  const [initialDraft] = useState(() => readReleaseDraftState(draftKey, { name: version.name, dueDate: version.dueDate || '', description: version.description || '' }));
   const [draft, setDraft] = useState<EditReleaseDraft>(() => {
-    const restored = readReleaseDraft(draftKey, { name: version.name, dueDate: version.dueDate || '', description: version.description || '' });
+    const restored = initialDraft.draft;
     return { name: safeDraftText(restored.name, version.name), dueDate: safeDraftText(restored.dueDate, version.dueDate || ''), description: safeDraftText(restored.description, version.description || '') };
   });
-  usePersistReleaseDraft(draftKey, draft);
+  const draftStorage = usePersistReleaseDraft(draftKey, draft, initialDraft.durable);
   const [error, setError] = useState('');
   const formRef = useWorkspaceFormSave<HTMLFormElement>();
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!draft.name.trim() || !canWrite || busy) return;
     setError('');
-    try { await onSave({ name: draft.name.trim(), dueDate: draft.dueDate || null, description: draft.description }); clearReleaseDraft(draftKey); }
+    const submitted = JSON.stringify(draft);
+    try {
+      await onSave({ name: draft.name.trim(), dueDate: draft.dueDate || null, description: draft.description });
+      const latest = draftStorage.current.current;
+      if (JSON.stringify(latest) === submitted) clearReleaseDraft(draftKey);
+      else writeReleaseDraft(draftKey, latest);
+    }
     catch (e) { setError(e instanceof Error ? e.message : t('error')); }
   };
-  return <Modal title={t('edit')} eyebrow={t('release')} onClose={onClose} className="release-modal"><form ref={formRef} className="release-form" data-workspace-save onSubmit={submit}><Field label={t('releaseName')}><input className="text-input" value={draft.name} onChange={(e) => setDraft((current) => ({ ...current, name: e.target.value }))} required /></Field><Field label={t('dueDate')}><input className="text-input" type="date" value={draft.dueDate} onChange={(e) => setDraft((current) => ({ ...current, dueDate: e.target.value }))} /></Field><Field label={t('description')}><textarea className="text-area" value={draft.description} onChange={(e) => setDraft((current) => ({ ...current, description: e.target.value }))} /></Field>{error && <Notice tone="error" className="release-modal-error">{error}</Notice>}<div className="modal-footer"><Button type="button" onClick={onClose}>{t('cancel')}</Button><Button type="submit" variant="primary" disabled={!canWrite || !draft.name.trim() || busy}>{busy ? <Spinner /> : <Check size={15} />}{t('save')}</Button></div></form></Modal>;
+  const meaningful = draft.name !== version.name || draft.dueDate !== (version.dueDate || '') || draft.description !== (version.description || '');
+  return <Modal title={t('edit')} eyebrow={t('release')} onClose={onClose} className="release-modal"><form ref={formRef} className="release-form" data-workspace-save onSubmit={submit}>{readOnlyMode && <ReadOnlyDialogStatus />}<DraftPersistenceStatus meaningful={meaningful} durable={draftStorage.durable} /><Field label={t('releaseName')}><input className="text-input" value={draft.name} onChange={(e) => setDraft((current) => ({ ...current, name: e.target.value }))} required /></Field><Field label={t('dueDate')}><input className="text-input" type="date" value={draft.dueDate} onChange={(e) => setDraft((current) => ({ ...current, dueDate: e.target.value }))} /></Field><Field label={t('description')}><textarea className="text-area" value={draft.description} onChange={(e) => setDraft((current) => ({ ...current, description: e.target.value }))} /></Field>{error && <Notice tone="error" className="release-modal-error">{error}</Notice>}<div className="modal-footer"><Button type="button" onClick={onClose}>{t('cancel')}</Button><Button type="submit" variant="primary" disabled={!canWrite || !draft.name.trim() || busy}>{busy ? <Spinner /> : <Check size={15} />}{t('save')}</Button></div></form></Modal>;
 }

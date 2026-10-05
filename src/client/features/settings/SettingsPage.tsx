@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BellRing, Check, Command, History, Image as ImageIcon, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, Upload, UserRound, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { defaultActivityVisibility } from '../../../shared/types';
-import type { ActivityKind, AppSettings, Locale, PeopleField, Person, PersonRole, Project, Shortcut, SettingsPatch, Status } from '../../../shared/types';
+import { defaultActivityVisibility, isSingleEmojiAvatar, personAvatarEmojis } from '../../../shared/types';
+import type { ActivityKind, AppSettings, Locale, PeopleField, Person, PersonAvatarOverride, PersonRole, Project, Shortcut, SettingsPatch, Status } from '../../../shared/types';
 import { defaultShortcuts, normalizeShortcutKeys } from '../../lib/shortcuts';
 import { enqueueFieldWrite, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
-import { Button, Field, Notice } from '../../components/ui';
+import { Avatar, Button, Field, Notice } from '../../components/ui';
 import { Picker, PeoplePicker } from '../../components/pickers';
 import { api } from '../../lib/api';
 import { readProjectBackgroundDataUrl, validateProjectBackgroundFile } from '../../lib/projectBackgroundUpload';
@@ -56,6 +56,12 @@ function mergePatch(settings: AppSettings, patch: SettingsPatch): AppSettings {
       if (Object.keys(projectOverrides).length) next.personRoleOverrides[projectId] = projectOverrides; else delete next.personRoleOverrides[projectId];
     }
   }
+  if (patch.personAvatarOverrides) {
+    next.personAvatarOverrides = { ...(settings.personAvatarOverrides || {}) };
+    for (const [personId, override] of Object.entries(patch.personAvatarOverrides)) {
+      if (override === null) delete next.personAvatarOverrides[personId]; else next.personAvatarOverrides[personId] = override;
+    }
+  }
   return next;
 }
 
@@ -92,6 +98,13 @@ function restoreSettingsField(current: AppSettings, confirmed: AppSettings, key:
     const personRoleOverrides = { ...(current.personRoleOverrides || {}) };
     if (confirmed.personRoleOverrides?.[projectId] === undefined) delete personRoleOverrides[projectId]; else personRoleOverrides[projectId] = confirmed.personRoleOverrides[projectId];
     return { ...current, personRoleOverrides };
+  }
+  if (key.startsWith('personAvatar:')) {
+    const personId = key.slice('personAvatar:'.length);
+    const personAvatarOverrides = { ...(current.personAvatarOverrides || {}) };
+    const confirmedOverride = confirmed.personAvatarOverrides?.[personId];
+    if (confirmedOverride === undefined) delete personAvatarOverrides[personId]; else personAvatarOverrides[personId] = confirmedOverride;
+    return { ...current, personAvatarOverrides };
   }
   return current;
 }
@@ -133,7 +146,17 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const [shortcutDirty, setShortcutDirty] = useState(false);
   const [shortcutConflict, setShortcutConflict] = useState(false);
   const [rolePersonId, setRolePersonId] = useState<number | undefined>(() => members[0]?.id);
+  const [personAvatarPhase, setPersonAvatarPhase] = useState<'idle' | 'reading' | 'uploading' | 'saving'>('idle');
+  const [personAvatarTarget, setPersonAvatarTarget] = useState<number | undefined>();
+  const [personAvatarError, setPersonAvatarError] = useState('');
+  const [personAvatarErrorTarget, setPersonAvatarErrorTarget] = useState<number | undefined>();
+  const [emojiDraft, setEmojiDraft] = useState('');
+  const personAvatarFileInputRef = useRef<HTMLInputElement>(null);
   const shortcutFormRef = useWorkspaceFormSave<HTMLFormElement>();
+
+  useEffect(() => {
+    if (rolePersonId === undefined && personAvatarPhase === 'idle' && members.length > 0) setRolePersonId(members[0].id);
+  }, [rolePersonId, personAvatarPhase, members]);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -150,6 +173,16 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
       else { shortcutDraftRef.current = incomingShortcuts; setShortcutDraft(incomingShortcuts); }
     }
   }, [settings]);
+
+  useEffect(() => {
+    const override = rolePersonId === undefined ? undefined : draft.personAvatarOverrides?.[String(rolePersonId)];
+    setEmojiDraft(override?.kind === 'emoji' ? override.emoji : '');
+  }, [rolePersonId, draft.personAvatarOverrides]);
+
+  useEffect(() => {
+    setPersonAvatarError('');
+    setPersonAvatarErrorTarget(undefined);
+  }, [rolePersonId]);
 
   const persistPatch = (key: string, patch: SettingsPatch): Promise<boolean> => {
     const generation = (settingGenerationsRef.current.get(key) || 0) + 1;
@@ -216,6 +249,77 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   };
   const updateRoleOverride = (personId: number, nextRoles: PersonRole[] | undefined) => {
     void persistPatch(`personRoleOverrides:${projectKey}`, { personRoleOverrides: { [projectKey]: { [String(personId)]: nextRoles ?? null } } });
+  };
+
+  const removePersonAvatarBytes = async (personId: number, override?: PersonAvatarOverride) => {
+    if (override?.kind !== 'photo') return;
+    const version = override.url.match(/[?&]v=([0-9a-f-]{36})/i)?.[1];
+    if (version) await api.delete(`/api/people/${personId}/avatar?v=${version}`);
+  };
+
+  const savePersonEmoji = async (personId: number, emoji: string) => {
+    if (!isSingleEmojiAvatar(emoji)) return false;
+    const previous = settingsRef.current.personAvatarOverrides?.[String(personId)];
+    setPersonAvatarTarget(personId);
+    setPersonAvatarPhase('saving');
+    setPersonAvatarError('');
+    try {
+      const saved = await persistPatch(`personAvatar:${personId}`, { personAvatarOverrides: { [String(personId)]: { kind: 'emoji', emoji } } });
+      if (!saved) { setPersonAvatarError(t('personAvatarSaveFailed')); setPersonAvatarErrorTarget(personId); return false; }
+      try { await removePersonAvatarBytes(personId, previous); } catch { /* The local preference is saved; an old version can be replaced later. */ }
+      return true;
+    } finally {
+      setPersonAvatarPhase('idle');
+      setPersonAvatarTarget(undefined);
+    }
+  };
+
+  const uploadPersonAvatar = async (personId: number, file: File) => {
+    const previous = settingsRef.current.personAvatarOverrides?.[String(personId)];
+    if (file.size > 2 * 1024 * 1024) { setPersonAvatarError(t('personAvatarTooLarge')); setPersonAvatarErrorTarget(personId); return; }
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type.toLowerCase())) {
+      setPersonAvatarError(t('personAvatarUnsupportedType')); setPersonAvatarErrorTarget(personId); return;
+    }
+    setPersonAvatarError('');
+    setPersonAvatarErrorTarget(undefined);
+    let phase: 'reading' | 'uploading' | 'saving' = 'reading';
+    setPersonAvatarTarget(personId);
+    setPersonAvatarPhase(phase);
+    try {
+      const dataUrl = await readProjectBackgroundDataUrl(file);
+      phase = 'uploading';
+      setPersonAvatarPhase(phase);
+      const response = await api.put<{ url?: string }>(`/api/people/${personId}/avatar`, { dataUrl });
+      if (typeof response?.url !== 'string' || !response.url.trim()) throw new Error('Invalid local avatar response');
+      phase = 'saving';
+      setPersonAvatarPhase(phase);
+      const saved = await persistPatch(`personAvatar:${personId}`, { personAvatarOverrides: { [String(personId)]: { kind: 'photo', url: response.url } } });
+      if (!saved) { setPersonAvatarError(t('personAvatarSaveFailed')); setPersonAvatarErrorTarget(personId); return; }
+      try { await removePersonAvatarBytes(personId, previous); } catch { /* The new photo is active; a stale previous version can be removed later. */ }
+    } catch {
+      setPersonAvatarError(t(phase === 'reading' ? 'personAvatarReadFailed' : 'personAvatarUploadFailed'));
+      setPersonAvatarErrorTarget(personId);
+    } finally {
+      setPersonAvatarPhase('idle');
+      setPersonAvatarTarget(undefined);
+    }
+  };
+
+  const clearPersonAvatar = async (personId: number) => {
+    const previous = settingsRef.current.personAvatarOverrides?.[String(personId)];
+    setPersonAvatarError('');
+    setPersonAvatarErrorTarget(undefined);
+    setPersonAvatarTarget(personId);
+    setPersonAvatarPhase('saving');
+    try {
+      const saved = await persistPatch(`personAvatar:${personId}`, { personAvatarOverrides: { [String(personId)]: null } });
+      if (!saved) { setPersonAvatarError(t('personAvatarSaveFailed')); setPersonAvatarErrorTarget(personId); return; }
+      try { await removePersonAvatarBytes(personId, previous); } catch { /* The local preference is cleared; an old version can be replaced later. */ }
+      setEmojiDraft('');
+    } finally {
+      setPersonAvatarPhase('idle');
+      setPersonAvatarTarget(undefined);
+    }
   };
 
   const uploadProjectBackground = async (file: File) => {
@@ -310,6 +414,15 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
 
   const selectedOverride = rolePersonId === undefined ? undefined : draft.personRoleOverrides?.[projectKey]?.[String(rolePersonId)];
   const rolePerson = members.find((member) => member.id === rolePersonId);
+  const selectedAvatarOverride = rolePersonId === undefined ? undefined : draft.personAvatarOverrides?.[String(rolePersonId)];
+  const personAvatarBusy = personAvatarPhase !== 'idle';
+  const personAvatarBusyForSelection = personAvatarBusy && personAvatarTarget === rolePersonId;
+  const personAvatarErrorForSelection = personAvatarErrorTarget === rolePersonId ? personAvatarError : '';
+  const avatarPreviewPerson = rolePerson && selectedAvatarOverride?.kind === 'photo'
+    ? { ...rolePerson, avatar: selectedAvatarOverride.url, localEmoji: undefined }
+    : rolePerson && selectedAvatarOverride?.kind === 'emoji'
+      ? { ...rolePerson, avatar: undefined, localEmoji: selectedAvatarOverride.emoji }
+      : rolePerson;
   const inheritedRoles = rolePerson?.redmineRoles?.length ? mapRedmineRoles(rolePerson.redmineRoles.map((role) => role.name)) : rolePerson?.roles ?? [];
   const currentRoles = selectedOverride ?? inheritedRoles;
   const hasRoleOverride = rolePersonId !== undefined && draft.personRoleOverrides?.[projectKey]?.[String(rolePersonId)] !== undefined;
@@ -328,7 +441,6 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const stateMessage = Object.values(saveStates).some((state) => state.state === 'pending') ? t('savingSettings') : Object.values(saveStates).some((state) => state.state === 'saved') ? t('autosaved') : '';
   return <main className="page settings-page" data-testid="settings-page">
     <div className="page-heading"><div><div className="eyebrow"><Settings2 size={13} />{t('workspace')}</div><h1>{t('settingsTitle')}</h1><p className="page-subtitle">{project.name}</p></div></div>
-    {readOnly && <Notice tone="warning">{t('readOnlyNote')}</Notice>}
     {error && <Notice tone="error">{error}</Notice>}
     <div className="settings-grid">
       <section className="settings-card settings-general">
@@ -398,11 +510,49 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
 
       <section className="settings-card settings-role-overrides">
         <div className="settings-card-title"><UserRound size={18} /><div><h2>{t('roleOverrides')}</h2><p>{t('roleOverridesHint')}</p></div></div>
-        <Field label={t('editPeopleRoles')}><PeoplePicker className="settings-picker" members={members} value={rolePersonId} onChange={setRolePersonId} label={t('editPeopleRoles')} placeholder={t('choose')} recommendations={peopleRecommendations?.developer} /></Field>
+        <Field label={t('editPeopleRoles')}><PeoplePicker className="settings-picker" members={members} value={rolePersonId} onChange={setRolePersonId} label={t('editPeopleRoles')} placeholder={t('choose')} recommendations={peopleRecommendations?.developer} disabled={personAvatarBusy} /></Field>
         {rolePerson && <>
           <div className="inherited-role-copy">{t('useRedmineRoles')}: {inheritedRoles.length ? inheritedRoles.map((role) => t(`role_${role}`)).join(' · ') : t('noRole')}</div>
           <div className="people-role-options">{roles.map((role) => <label className="check-row role-override-option" key={role}><input type="checkbox" checked={currentRoles.includes(role)} onChange={(e) => toggleRole(role, e.target.checked)} /><span>{t(`role_${role}`)}</span></label>)}</div>
           <div className="settings-note"><span>{hasRoleOverride ? t('autosaved') : t('inheritedRoles')}</span>{hasRoleOverride && <Button size="sm" onClick={() => rolePersonId !== undefined && updateRoleOverride(rolePersonId, undefined)}>{t('restoreRedmineRoles')}</Button>}</div>
+          <div className="settings-card-divider" />
+          <div className="settings-card-title"><ImageIcon size={18} /><div><h2>{t('personAvatarTitle')}</h2><p>{t('personAvatarHint')}</p></div></div>
+          <div className="settings-note" data-testid="person-avatar-preview"><Avatar person={avatarPreviewPerson} size="md" /><span>{t('personAvatarFor', { person: rolePerson.name })}</span></div>
+          <input
+            ref={personAvatarFileInputRef}
+            className="sr-only"
+            type="file"
+            tabIndex={-1}
+            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            aria-label={t('uploadPersonAvatar')}
+            data-testid="person-avatar-upload"
+            disabled={personAvatarBusy}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = '';
+              if (file && rolePersonId !== undefined) void uploadPersonAvatar(rolePersonId, file);
+            }}
+          />
+          <div className="project-background-actions">
+            <Button variant="outline" disabled={personAvatarBusy} onClick={() => personAvatarFileInputRef.current?.click()}><Upload size={14} />{selectedAvatarOverride?.kind === 'photo' ? t('replacePersonAvatar') : t('uploadPersonAvatar')}</Button>
+            {selectedAvatarOverride && <Button variant="danger" disabled={personAvatarBusy} onClick={() => rolePersonId !== undefined && void clearPersonAvatar(rolePersonId)}><Trash2 size={14} />{t('removePersonAvatar')}</Button>}
+          </div>
+          <Field label={t('personAvatarEmojiInput')} hint={t('personAvatarEmojiHint')}>
+            <input className="text-input" data-testid="person-avatar-emoji" value={emojiDraft} maxLength={32} disabled={personAvatarBusy} onChange={(event) => {
+              const value = event.target.value;
+              setEmojiDraft(value);
+              if (rolePersonId !== undefined && isSingleEmojiAvatar(value)) void savePersonEmoji(rolePersonId, value);
+            }} />
+          </Field>
+          {emojiDraft.length > 0 && !isSingleEmojiAvatar(emojiDraft) && <div className="settings-note" role="status">{t('personAvatarEmojiInvalid')}</div>}
+          <div className="theme-options" role="group" aria-label={t('personAvatarEmojiPresets')}>
+            {personAvatarEmojis.map(emoji => <button type="button" key={emoji} className={`theme-option${selectedAvatarOverride?.kind === 'emoji' && selectedAvatarOverride.emoji === emoji ? ' selected' : ''}`} aria-label={t('usePersonAvatarEmoji', { emoji })} aria-pressed={selectedAvatarOverride?.kind === 'emoji' && selectedAvatarOverride.emoji === emoji} disabled={personAvatarBusy} onClick={() => {
+              setEmojiDraft(emoji);
+              if (rolePersonId !== undefined) void savePersonEmoji(rolePersonId, emoji);
+            }}>{emoji}</button>)}
+          </div>
+          {personAvatarBusyForSelection && <div className="settings-note" role="status" aria-live="polite">{t(personAvatarPhase === 'reading' ? 'personAvatarReading' : personAvatarPhase === 'uploading' ? 'personAvatarUploading' : 'personAvatarSaving')}</div>}
+          {personAvatarErrorForSelection && <Notice tone="error">{personAvatarErrorForSelection}</Notice>}
         </>}
       </section>
 

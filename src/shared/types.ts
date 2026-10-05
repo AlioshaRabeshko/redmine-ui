@@ -4,7 +4,14 @@ export type StatusKey = 'suspended' | 'todo' | 'progress' | 'review' | 'qa' | 'd
 export type PersonRole = 'qa' | 'support' | 'developer';
 export type PeopleField = 'assignee' | 'developer' | 'qa';
 export interface RedmineRole { id: number; name: string }
-export interface Person { id: number; name: string; avatar?: string; roles?: PersonRole[]; redmineRoles?: RedmineRole[]; isAdmin?: boolean }
+export type PersonAvatarOverride = { kind: 'photo'; url: string } | { kind: 'emoji'; emoji: string };
+export const personAvatarEmojis = ['🙂', '😎', '🦊', '🐈', '🐢', '🐙', '🌱', '🌈', '⭐', '🚀', '🎯', '🍀'] as const;
+export function isSingleEmojiAvatar(value: string): boolean {
+  if (!value || value.length > 32 || value.trim() !== value) return false;
+  const segments = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)];
+  return segments.length === 1 && /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20e3]/u.test(value);
+}
+export interface Person { id: number; name: string; avatar?: string; localEmoji?: string; roles?: PersonRole[]; redmineRoles?: RedmineRole[]; isAdmin?: boolean }
 export interface ProjectTracker { id: number; name: string }
 export interface Project { id: number; name: string; identifier: string; description?: string; trackers?: ProjectTracker[] }
 export interface Status { id: number; name: string; key: StatusKey; isClosed: boolean }
@@ -39,16 +46,18 @@ export interface AppSettings {
   projectBackgrounds: Record<string, string>;
   projectActivity: Record<string, ActivityVisibility>;
   personRoleOverrides: Record<string, Record<string, PersonRole[]>>;
+  personAvatarOverrides: Record<string, PersonAvatarOverride>;
   shortcuts: Shortcut[]; savedViews: SavedView[];
   sort: { field: 'priority' | 'updated' | 'created' | 'id' | 'subject'; direction: 'asc' | 'desc' };
   automationEnabled: boolean; pollIntervalSeconds: number;
 }
-export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptions' | 'projectBackgrounds' | 'projectActivity' | 'personRoleOverrides'>> & {
+export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptions' | 'projectBackgrounds' | 'projectActivity' | 'personRoleOverrides' | 'personAvatarOverrides'>> & {
   projectQa?: Record<string, number | null>;
   subscriptions?: Record<string, Subscription | null>;
   projectBackgrounds?: Record<string, string | null>;
   projectActivity?: Record<string, ActivityVisibility | null>;
   personRoleOverrides?: Record<string, Record<string, PersonRole[] | null> | null>;
+  personAvatarOverrides?: Record<string, PersonAvatarOverride | null>;
 };
 export interface Capabilities {
   canWrite: boolean; journalEditing: boolean; journalDeleting: boolean; journalLikes: boolean;

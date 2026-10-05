@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { X, CircleHelp, Check, AlertCircle, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Person, PersonRole } from '../../shared/types';
@@ -11,12 +11,36 @@ export function Avatar({ person, size = 'md', muted = false, role }: { person?: 
   const labelledRoles = [...new Set([...(role ? [role] : []), ...roles])];
   const frameRole = role || roles[0];
   const [failedImage, setFailedImage] = useState<string | undefined>(undefined);
-  useEffect(() => { setFailedImage(undefined); }, [person?.id, person?.avatar]);
-  const initials = (person?.name || '?').trim().split(/\s+/).slice(0, 2).map((v) => v[0]).join('').toUpperCase();
+  useEffect(() => { setFailedImage(undefined); }, [person?.id, person?.avatar, person?.localEmoji]);
+  const initials = initialsFor(person?.name || '?');
+  const image = person?.avatar && failedImage !== person.avatar ? person.avatar : undefined;
+  const emoji = !image ? person?.localEmoji : undefined;
   const label = [person?.name || t('noAssignee'), ...labelledRoles.map(item => t(`role_${item}`))].join(' · ');
   return <span className={`avatar avatar-${size}${muted ? ' avatar-muted' : ''}${frameRole ? ` avatar-role-${frameRole}` : ''}${labelledRoles.length > 1 ? ' avatar-multiple-roles' : ''}`} title={label} aria-label={label} role="img">
-    <span className="avatar-initials">{initials}</span>{person?.avatar && failedImage !== person.avatar && <img src={person.avatar} alt="" onError={() => setFailedImage(person.avatar)} />}
+    <span className={emoji ? 'avatar-local-emoji' : 'avatar-initials'}>{emoji || initials}</span>{image && <img src={image} alt="" onError={() => setFailedImage(image)} />}
   </span>;
+}
+
+function initialsFor(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return '?';
+  const firstWord = graphemes(words[0]);
+  const initials = words.length > 1
+    ? `${firstWord[0] || ''}${graphemes(words[1])[0] || ''}`
+    : firstWord.slice(0, 2).join('');
+  return initials.toLocaleUpperCase() || '?';
+}
+
+function graphemes(value: string): string[] {
+  type Segment = { segment: string };
+  type Segmenter = { segment(input: string): Iterable<Segment> };
+  const IntlWithSegmenter = Intl as typeof Intl & {
+    Segmenter?: new (locales?: string | string[], options?: { granularity: 'grapheme' }) => Segmenter;
+  };
+  if (IntlWithSegmenter.Segmenter) {
+    return Array.from(new IntlWithSegmenter.Segmenter(undefined, { granularity: 'grapheme' }).segment(value), item => item.segment);
+  }
+  return Array.from(value);
 }
 
 export function Button({ children, variant = 'quiet', size = 'md', disabled, className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'quiet' | 'outline' | 'danger' | 'soft'; size?: 'sm' | 'md' }) {
@@ -27,19 +51,35 @@ export function IconButton({ label, children, className = '', ...props }: React.
   return <button type="button" className={`icon-button ${className}`} aria-label={label} title={label} {...props}>{children}</button>;
 }
 
+export interface ModalFocusScope {
+  /** Stable return target shared by loading and loaded dialogs for one navigation session. */
+  origin: HTMLElement | null;
+}
+
+const ModalFocusScopeContext = createContext<ModalFocusScope | undefined>(undefined);
+
+export function ModalFocusScopeProvider({ scope, children }: { scope: ModalFocusScope; children: ReactNode }) {
+  return <ModalFocusScopeContext.Provider value={scope}>{children}</ModalFocusScopeContext.Provider>;
+}
+
 export function Modal({ title, eyebrow, children, onClose, size = 'md', testId, className = '' }: { title: string; eyebrow?: string; children: ReactNode; onClose: () => void; size?: 'sm' | 'md' | 'lg'; testId?: string; className?: string }) {
   const { t } = useTranslation();
   const dialog = useRef<HTMLDivElement>(null);
-  const previouslyFocusedRef = useRef(typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null);
+  const focusScope = useContext(ModalFocusScopeContext);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  useEffect(() => {
-    const previouslyFocused = previouslyFocusedRef.current;
-    const timer = window.setTimeout(() => {
-      if (!dialog.current || dialog.current.contains(document.activeElement)) return;
-      const first = dialog.current.querySelector<HTMLElement>('[data-autofocus], input:not(:disabled), textarea:not(:disabled), button:not(:disabled)');
-      (first || dialog.current).focus();
-    }, 0);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    const suppliedOrigin = focusScope?.origin;
+    previouslyFocusedRef.current = suppliedOrigin?.isConnected
+      ? suppliedOrigin
+      : active instanceof HTMLElement && active !== document.body && active.isConnected ? active : null;
+    const currentDialog = dialog.current;
+    if (currentDialog && !currentDialog.contains(document.activeElement)) {
+      const first = currentDialog.querySelector<HTMLElement>('[data-autofocus], input:not(:disabled), textarea:not(:disabled), button:not(:disabled)');
+      (first || currentDialog).focus();
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       const openDialogs = [...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')];
       const isTop = openDialogs[openDialogs.length - 1] === dialog.current;
@@ -56,7 +96,14 @@ export function Modal({ title, eyebrow, children, onClose, size = 'md', testId, 
     document.addEventListener('keydown', onKeyDown);
     modalCount += 1;
     document.body.classList.add('modal-open');
-    return () => { window.clearTimeout(timer); document.removeEventListener('keydown', onKeyDown); modalCount = Math.max(0, modalCount - 1); if (modalCount === 0) document.body.classList.remove('modal-open'); previouslyFocused?.focus?.(); };
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      modalCount = Math.max(0, modalCount - 1);
+      if (modalCount === 0) document.body.classList.remove('modal-open');
+      const returnTarget = previouslyFocusedRef.current;
+      // A popover can outlive the modal that opened it; never steal its current focus.
+      if (returnTarget?.isConnected && !document.querySelector('[data-workspace-popover]')) returnTarget.focus();
+    };
   }, []);
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
     <div className={`modal modal-${size} ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={dialog} data-testid={testId}>
@@ -64,7 +111,7 @@ export function Modal({ title, eyebrow, children, onClose, size = 'md', testId, 
         <div>{eyebrow && <div className="eyebrow">{eyebrow}</div>}<h2>{title}</h2></div>
         <IconButton label={t('close')} onClick={onClose}><X size={18} /></IconButton>
       </div>
-      {children}
+      <ModalFocusScopeContext.Provider value={undefined}>{children}</ModalFocusScopeContext.Provider>
     </div>
   </div>;
 }

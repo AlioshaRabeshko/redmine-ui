@@ -115,7 +115,7 @@ export class CommandService {
       if (!people) continue;
       const projectId = Number(projectIdString);
       for (const [personIdString, roles] of Object.entries(people)) {
-        if (roles !== null) await this.assertProjectMember(projectId, Number(personIdString));
+        if (roles !== null) await this.assertProjectPerson(projectId, Number(personIdString));
       }
     }
     const settings = applySettingsPatch(await this.store.getSettings(), patch);
@@ -156,6 +156,16 @@ export class CommandService {
     }
     if (!(await this.store.isProjectMember(projectId, personId))) {
       throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не є учасником цього проєкту Redmine.');
+    }
+  }
+
+  private async assertProjectPerson(projectId: number, personId: number): Promise<void> {
+    if (!(await this.store.getProjects()).some(project => project.id === projectId)) {
+      throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    }
+    const participants = await this.store.getValue<Record<string, number[]>>('projectMembers');
+    if (!(participants?.[String(projectId)] ?? []).includes(personId)) {
+      throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не належить до людей цього проєкту.');
     }
   }
 

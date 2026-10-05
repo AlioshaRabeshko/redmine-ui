@@ -35,7 +35,7 @@ export function visibleJournals(
   visibility: ActivityVisibility,
   initialJournalId?: number,
 ): VisibleJournal[] {
-  return journals.flatMap((journal) => {
+  return [...journals].sort(compareJournalsNewestFirst).flatMap((journal) => {
     const isPermalinkTarget = journal.id === initialJournalId;
     const ordinaryComment = Boolean(journal.notes.trim()) && visibility.comment;
     const ordinaryChanges = journal.changes.filter((change) => visibility[activityKindForField(change.field)]);
@@ -45,6 +45,14 @@ export function visibleJournals(
     if (!showComment && changes.length === 0 && !forcedByPermalink) return [];
     return [{ journal, showComment, changes, forcedByPermalink }];
   });
+}
+
+function compareJournalsNewestFirst(a: Journal, b: Journal): number {
+  const aTime = Date.parse(a.createdOn);
+  const bTime = Date.parse(b.createdOn);
+  if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return bTime - aTime;
+  if ((!Number.isFinite(aTime) || !Number.isFinite(bTime)) && a.createdOn !== b.createdOn) return b.createdOn.localeCompare(a.createdOn);
+  return b.id - a.id;
 }
 
 export function localizeJournalChange(

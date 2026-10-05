@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { clearReleaseDraft, readReleaseDraft, releaseDraftStorageKey, writeReleaseDraft } from './releaseDraft';
+import { clearReleaseDraft, readReleaseDraft, readReleaseDraftState, releaseDraftStorageKey, writeReleaseDraft } from './releaseDraft';
 
 const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
 const memory = new Map<string, string>();
 
-function installStorage() {
+function installStorage(overrides: Partial<Storage> = {}) {
   memory.clear();
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
     getItem: (key: string) => memory.get(key) ?? null,
     setItem: (key: string, value: string) => { memory.set(key, value); },
     removeItem: (key: string) => { memory.delete(key); },
+    ...overrides,
   } });
 }
 
@@ -33,9 +34,26 @@ describe('release draft storage', () => {
     installStorage();
     const key = releaseDraftStorageKey('scope', 9, 'edit', 42);
     const fallback = { name: '', dueDate: '', description: '' };
-    writeReleaseDraft(key, { name: 'Release 2.4', dueDate: '2026-11-20', description: 'QA' });
-    expect(readReleaseDraft(key, fallback)).toEqual({ name: 'Release 2.4', dueDate: '2026-11-20', description: 'QA' });
+    expect(writeReleaseDraft(key, { name: 'Release 2.4', dueDate: '2026-11-20', description: 'QA' })).toBe(true);
+    expect(readReleaseDraftState(key, fallback)).toEqual({ draft: { name: 'Release 2.4', dueDate: '2026-11-20', description: 'QA' }, durable: true });
     clearReleaseDraft(key);
     expect(readReleaseDraft(key, fallback)).toEqual(fallback);
+  });
+
+  it('restores a release form draft from memory when browser writes fail', () => {
+    installStorage({ setItem: () => { throw new Error('quota'); } });
+    const key = releaseDraftStorageKey(`scope-${crypto.randomUUID()}`, 9, 'new');
+    const fallback = { name: '', dueDate: '', description: '' };
+    expect(writeReleaseDraft(key, { name: 'Draft release' })).toBe(false);
+    expect(readReleaseDraftState(key, fallback)).toEqual({ draft: { name: 'Draft release', dueDate: '', description: '' }, durable: false });
+  });
+
+  it('treats the cleared marker as no release draft', () => {
+    installStorage({ removeItem: () => { throw new Error('blocked'); } });
+    const key = releaseDraftStorageKey(`scope-${crypto.randomUUID()}`, 9, 'edit', 42);
+    const fallback = { name: 'Current release', dueDate: '', description: '' };
+    memory.set(key, JSON.stringify({ name: 'stale draft' }));
+    expect(clearReleaseDraft(key)).toBe(true);
+    expect(readReleaseDraftState(key, fallback)).toEqual({ draft: fallback, durable: true });
   });
 });

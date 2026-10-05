@@ -21,6 +21,9 @@ export interface PersonSelectionRecord {
 export type ProjectBackgroundContentType = 'image/jpeg' | 'image/png' | 'image/webp';
 interface ProjectBackgroundRecord { version: string; contentType: ProjectBackgroundContentType; base64: string }
 export interface StoredProjectBackground { version: string; contentType: ProjectBackgroundContentType; data: Buffer }
+export type PersonAvatarContentType = ProjectBackgroundContentType;
+interface PersonAvatarRecord { version: string; contentType: PersonAvatarContentType; base64: string }
+export interface StoredPersonAvatar { version: string; contentType: PersonAvatarContentType; data: Buffer }
 
 const encode = (value: unknown) => JSON.stringify(value);
 const decode = <T>(value: string): T => JSON.parse(value) as T;
@@ -111,12 +114,39 @@ export class WorkspaceStore {
     return { version: selected.version, contentType: selected.contentType, data: Buffer.from(selected.base64, 'base64') };
   }
 
+  async savePersonAvatar(personId: number, version: string, contentType: PersonAvatarContentType,
+    data: Uint8Array, keepVersion?: string): Promise<void> {
+    const key = `personAvatar:${personId}`;
+    const existing = await this.getValue<PersonAvatarRecord[]>(key) ?? [];
+    const previous = keepVersion ? existing.find(item => item.version === keepVersion) : undefined;
+    const records: PersonAvatarRecord[] = [{ version, contentType, base64: Buffer.from(data).toString('base64') }];
+    if (previous && previous.version !== version) records.push(previous);
+    await this.setValue(key, records);
+  }
+
+  async getPersonAvatar(personId: number, version?: string): Promise<StoredPersonAvatar | undefined> {
+    const records = await this.getValue<PersonAvatarRecord[]>(`personAvatar:${personId}`) ?? [];
+    const selected = version === undefined ? records[0] : records.find(item => item.version === version);
+    if (!selected || !['image/jpeg', 'image/png', 'image/webp'].includes(selected.contentType)) return undefined;
+    return { version: selected.version, contentType: selected.contentType, data: Buffer.from(selected.base64, 'base64') };
+  }
+
+  async removePersonAvatar(personId: number, version: string): Promise<boolean> {
+    const key = `personAvatar:${personId}`;
+    const existing = await this.getValue<PersonAvatarRecord[]>(key) ?? [];
+    const records = existing.filter(item => item.version !== version);
+    if (records.length === existing.length) return false;
+    if (records.length) await this.setValue(key, records);
+    else await this.db.delete(keyValues).where(and(eq(keyValues.scope, this.scope), eq(keyValues.key, key)));
+    return true;
+  }
+
   async getSettings(): Promise<AppSettings> {
     const settings = await this.getValue<AppSettings>('settings');
     if (!settings) {
       const initial = structuredClone(defaultSettings);
       await this.setSettings(initial);
-      await this.setValue('settingsSchemaVersion', 2);
+      await this.setValue('settingsSchemaVersion', 3);
       return initial;
     }
     let compatible: AppSettings = {
@@ -125,6 +155,7 @@ export class WorkspaceStore {
       projectBackgrounds: settings.projectBackgrounds ?? {},
       projectActivity: settings.projectActivity ?? {},
       personRoleOverrides: settings.personRoleOverrides ?? {},
+      personAvatarOverrides: settings.personAvatarOverrides ?? {},
       shortcuts: settings.shortcuts ?? structuredClone(defaultSettings.shortcuts), savedViews: settings.savedViews ?? [],
       sort: { ...defaultSettings.sort, ...settings.sort },
       theme: settings.theme ?? defaultSettings.theme, palette: settings.palette ?? defaultSettings.palette,
@@ -135,8 +166,10 @@ export class WorkspaceStore {
     }
     if (schemaVersion < 2) {
       compatible = { ...compatible, shortcuts: ensureNavigationShortcuts(compatible.shortcuts) };
+    }
+    if (schemaVersion < 3) {
       await this.setSettings(compatible);
-      await this.setValue('settingsSchemaVersion', 2);
+      await this.setValue('settingsSchemaVersion', 3);
     }
     return compatible;
   }

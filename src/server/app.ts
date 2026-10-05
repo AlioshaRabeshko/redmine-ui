@@ -4,12 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, PeopleField, Person, PersonRole, RedmineRole, ReleaseDetail, SearchResponse, SearchResult } from '../shared/types.js';
+import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, PeopleField, Person, RedmineRole, ReleaseDetail, SearchResponse, SearchResult } from '../shared/types.js';
 import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
 import { applyMigrations } from './db/migrate.js';
-import { WorkspaceStore, type ProjectBackgroundContentType } from './db/store.js';
+import { WorkspaceStore, type PersonAvatarContentType, type ProjectBackgroundContentType } from './db/store.js';
+import { applyPersonAvatarOverride, projectPerson } from './people.js';
 import { RedmineAdapter } from './redmine/adapter.js';
 import { RedmineRequestError, type FetchLike } from './redmine/transport.js';
 import { BackgroundWorker, SyncService, type EventHub } from './sync/service.js';
@@ -65,8 +66,11 @@ const commandSchema = z.object({
   input: z.record(z.string(), z.unknown()).default({}),
 });
 const projectBackgroundLimit = 5 * 1024 * 1024;
+const personAvatarLimit = 2 * 1024 * 1024;
 const projectBackgroundVersionPattern = /^\/api\/projects\/([1-9]\d*)\/background\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const personAvatarVersionPattern = /^\/api\/people\/([1-9]\d*)\/avatar\?v=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const projectBackgroundUploadSchema = z.object({ dataUrl: z.string().min(1).max(8 * 1024 * 1024) }).strict();
+const personAvatarUploadSchema = z.object({ dataUrl: z.string().min(1).max(3 * 1024 * 1024) }).strict();
 
 export async function createApp(options: CreateAppOptions = {}): Promise<WorkspaceApp> {
   let config = options.config ?? createConfig(options.env ?? process.env);
@@ -144,6 +148,51 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       .send(background.data);
   });
 
+  app.put<{ Params: { id: string } }>('/api/people/:id/avatar', { bodyLimit: 3 * 1024 * 1024 }, async (request, reply) => {
+    const personId = positiveId(request.params.id, 'PERSON_NOT_FOUND');
+    if (!(await store.getValue<Person[]>('people') ?? []).some(person => person.id === personId)) {
+      throw new ApiFault(404, 'PERSON_NOT_FOUND', 'Людину не знайдено.');
+    }
+    const parsed = personAvatarUploadSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_PERSON_AVATAR', message: 'Очікується data URL зображення JPEG, PNG або WebP.' });
+    const decoded = decodeRasterImage(parsed.data.dataUrl, personAvatarLimit);
+    if (!decoded) return reply.code(400).send({ code: 'INVALID_PERSON_AVATAR', message: 'Файл має бути справжнім JPEG, PNG або WebP до 2 MiB.' });
+
+    const settings = await store.getSettings();
+    const currentOverride = settings.personAvatarOverrides[String(personId)];
+    const keepVersion = currentOverride?.kind === 'photo' ? currentOverride.url.match(personAvatarVersionPattern)?.[2] : undefined;
+    const version = randomUUID();
+    await store.savePersonAvatar(personId, version, decoded.contentType as PersonAvatarContentType, decoded.data, keepVersion);
+    return { url: `/api/people/${personId}/avatar?v=${version}` };
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { v?: string } }>('/api/people/:id/avatar', async (request, reply) => {
+    const personId = positiveId(request.params.id, 'PERSON_NOT_FOUND');
+    const requestedVersion = request.query.v;
+    if (requestedVersion !== undefined && !isPersonAvatarVersion(requestedVersion)) {
+      return reply.code(404).send({ code: 'PERSON_AVATAR_NOT_FOUND', message: 'Зображення людини не знайдено.' });
+    }
+    const avatar = await store.getPersonAvatar(personId, requestedVersion);
+    if (!avatar) return reply.code(404).send({ code: 'PERSON_AVATAR_NOT_FOUND', message: 'Зображення людини не знайдено.' });
+    return reply.header('Content-Type', avatar.contentType)
+      .header('Cache-Control', 'no-cache')
+      .header('X-Content-Type-Options', 'nosniff')
+      .send(avatar.data);
+  });
+
+  app.delete<{ Params: { id: string }; Querystring: { v?: string } }>('/api/people/:id/avatar', async (request, reply) => {
+    const personId = positiveId(request.params.id, 'PERSON_NOT_FOUND');
+    const version = request.query.v;
+    if (!version || !isPersonAvatarVersion(version)) {
+      return reply.code(400).send({ code: 'INVALID_PERSON_AVATAR_VERSION', message: 'Не вказано версію локального зображення.' });
+    }
+    const currentOverride = (await store.getSettings()).personAvatarOverrides[String(personId)];
+    if (currentOverride?.kind === 'photo' && currentOverride.url === `/api/people/${personId}/avatar?v=${version}`) {
+      return { deleted: false };
+    }
+    return { deleted: await store.removePersonAvatar(personId, version) };
+  });
+
   app.get('/api/bootstrap', async (): Promise<Bootstrap> => {
     await sync.bootstrapRead();
     const [projects, statuses, priorities, settings, me, capabilities] = await Promise.all([
@@ -157,7 +206,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     }
     return {
       mode: config.mode, readOnly: config.mode === 'redmine', connected: sync.isConnected,
-      redmineUrl: config.redmineUrl, me: me ?? { id: 0, name: 'Підключення Redmine' }, projects,
+      redmineUrl: config.redmineUrl, me: applyPersonAvatarOverride(me ?? { id: 0, name: 'Підключення Redmine' }, settings), projects,
       statuses: statuses ?? [], priorities: priorities ?? [], settings,
       capabilities: { canWrite: config.mode === 'demo', journalEditing: config.mode === 'demo', journalDeleting: config.mode === 'demo', journalLikes: config.mode === 'demo',
         ...(capabilities?.branchFieldId ? { branchFieldId: capabilities.branchFieldId } : {}),
@@ -180,13 +229,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const members = [...new Map([...memberIds.map(id => people.find(person => person.id === id)).filter((person): person is Person => Boolean(person)),
       ...issues.flatMap(issue => [people.find(person => person.id === issue.authorId), people.find(person => person.id === issue.assignedToId),
         ...issue.watcherIds.map(id => people.find(person => person.id === id))].filter((person): person is Person => Boolean(person)))].map(person => [person.id, person])).values()]
-      .map(person => {
-        if (!membershipIds.has(person.id)) return person;
-        const redmineRoles = membershipRoles[String(person.id)] ?? [];
-        const override = settings.personRoleOverrides[String(projectId)]?.[String(person.id)];
-        const roles = override ?? personRolesFromRedmine(redmineRoles);
-        return { ...person, ...(redmineRoles.length ? { redmineRoles } : {}), ...(roles.length ? { roles } : override ? { roles: override } : {}) };
-      });
+      .map(person => projectPerson(person, projectId, { membershipIds, membershipRoles }, settings));
     const peopleRecommendations: Partial<Record<PeopleField, number[]>> = {
       assignee: await store.getPeopleRecommendations(projectId, 'assignee'),
       developer: await store.getPeopleRecommendations(projectId, 'developer'),
@@ -284,17 +327,27 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const [people, me, storedJournals] = await Promise.all([
       store.getValue<Person[]>('people'), store.getValue<Person>('me'), remoteJournals ?? store.getJournals(issueId),
     ]);
+    const settings = await store.getSettings();
+    const membershipIds = new Set((await store.getValue<Record<string, number[]>>('projectMembershipIds'))?.[String(issue.projectId)] ?? []);
+    const membershipRoles = (await store.getValue<Record<string, Record<string, RedmineRole[]>>>('projectMembershipRoles'))?.[String(issue.projectId)] ?? {};
+    const peopleById = new Map((people ?? []).map(person => [person.id, person]));
+    for (const person of remotePeople ?? []) peopleById.set(person.id, { ...peopleById.get(person.id), ...person });
+    for (const journal of storedJournals) if (!peopleById.has(journal.user.id)) peopleById.set(journal.user.id, journal.user);
+    const roleContext = { membershipIds, membershipRoles };
+    const projectedPeople = new Map([...peopleById.values()].map(person => [person.id, projectPerson(person, issue.projectId, roleContext, settings)]));
     const currentUser = me ?? { id: 0, name: 'Підключення Redmine' };
     const journals = storedJournals.map(journal => {
       const hasNotes = journal.notes.trim().length > 0;
       const mayManage = config.mode === 'demo' && hasNotes && (journal.user.id === currentUser.id || currentUser.isAdmin === true);
       const { likes: _likes, likedByMe: _likedByMe, canLike: _canLike, canEdit: _canEdit, canDelete: _canDelete, ...publicJournal } = journal;
       const reactions = config.mode === 'demo' && hasNotes ? store.getJournalLikeState(journal.id, currentUser.id) : undefined;
-      return { ...publicJournal, canEdit: mayManage, canDelete: mayManage, canLike: config.mode === 'demo' && hasNotes,
+      return { ...publicJournal, user: projectedPeople.get(journal.user.id) ?? projectPerson(journal.user, issue.projectId, roleContext, settings),
+        canEdit: mayManage, canDelete: mayManage, canLike: config.mode === 'demo' && hasNotes,
         ...(reactions ? { likes: reactions.count, likedByMe: reactions.likedByMe } : {}) };
     });
-    return { issue, journals, watchers: issue.watcherIds.map(id => people?.find(person => person.id === id)).filter((person): person is Person => Boolean(person)),
-      ...(remotePeople ? { people: remotePeople } : {}) };
+    return { issue, journals,
+      watchers: issue.watcherIds.map(id => projectedPeople.get(id)).filter((person): person is Person => Boolean(person)),
+      ...(remotePeople ? { people: remotePeople.map(person => projectedPeople.get(person.id) ?? projectPerson(person, issue.projectId, roleContext, settings)) } : {}) };
   });
 
   app.get<{ Params: { id: string; attachmentId: string } }>('/api/issues/:id/attachments/:attachmentId/content', async (request, reply) => {
@@ -387,7 +440,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     return { deleted: true };
   });
 
-  app.get<{ Querystring: { archived?: string } }>('/api/notifications', async (request) => store.getNotifications(request.query.archived === 'true'));
+  app.get<{ Querystring: { archived?: string } }>('/api/notifications', async (request) => {
+    const notifications = await store.getNotifications(request.query.archived === 'true');
+    if (!notifications.length) return notifications;
+    const [people, settings, membershipIdsByProject, membershipRolesByProject] = await Promise.all([
+      store.getValue<Person[]>('people'), store.getSettings(),
+      store.getValue<Record<string, number[]>>('projectMembershipIds'),
+      store.getValue<Record<string, Record<string, RedmineRole[]>>>('projectMembershipRoles'),
+    ]);
+    const peopleById = new Map((people ?? []).map(person => [person.id, person]));
+    return notifications.map(notification => {
+      const actor = { ...notification.actor, ...(peopleById.get(notification.actor.id) ?? {}) };
+      const projectKey = String(notification.projectId);
+      const roleContext = {
+        membershipIds: new Set(membershipIdsByProject?.[projectKey] ?? []),
+        membershipRoles: membershipRolesByProject?.[projectKey] ?? {},
+      };
+      return { ...notification, actor: projectPerson(actor, notification.projectId, roleContext, settings) };
+    });
+  });
   app.post('/api/notifications/read', async (request) => {
     const body = z.object({ ids: z.array(z.string().min(1).max(200)).max(500) }).parse(request.body);
     const updated = await store.markNotificationsRead([...new Set(body.ids)]);
@@ -442,16 +513,24 @@ function isProjectBackgroundVersion(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+function isPersonAvatarVersion(value: string): boolean {
+  return isProjectBackgroundVersion(value);
+}
+
 function decodeProjectBackground(dataUrl: string): { contentType: ProjectBackgroundContentType; data: Buffer } | undefined {
-  const maxEncodedLength = Math.ceil(projectBackgroundLimit / 3) * 4;
+  return decodeRasterImage(dataUrl, projectBackgroundLimit);
+}
+
+function decodeRasterImage(dataUrl: string, byteLimit: number): { contentType: PersonAvatarContentType; data: Buffer } | undefined {
+  const maxEncodedLength = Math.ceil(byteLimit / 3) * 4;
   if (dataUrl.length > maxEncodedLength + 64) return undefined;
   const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(dataUrl);
   if (!match) return undefined;
-  const contentType = match[1]!.toLowerCase() as ProjectBackgroundContentType;
+  const contentType = match[1]!.toLowerCase() as PersonAvatarContentType;
   const base64 = match[2]!;
   if (base64.length > maxEncodedLength || base64.length % 4 !== 0) return undefined;
   const data = Buffer.from(base64, 'base64');
-  if (data.length === 0 || data.length > projectBackgroundLimit || data.toString('base64') !== base64) return undefined;
+  if (data.length === 0 || data.length > byteLimit || data.toString('base64') !== base64) return undefined;
   const hasJpegSignature = contentType === 'image/jpeg' && data.length >= 3
     && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
   const hasPngSignature = contentType === 'image/png' && data.length >= 8
@@ -460,18 +539,6 @@ function decodeProjectBackground(dataUrl: string): { contentType: ProjectBackgro
     && data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP';
   if (!hasJpegSignature && !hasPngSignature && !hasWebpSignature) return undefined;
   return { contentType, data };
-}
-
-function personRolesFromRedmine(redmineRoles: RedmineRole[]): PersonRole[] {
-  const roles = new Set<PersonRole>();
-  for (const role of redmineRoles) {
-    const name = role.name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
-    if (/(^|\W)qa(\W|$)|quality\s*assurance|\btest(?:er|ing)\b/.test(name)) roles.add('qa');
-    if (/(^|\W)support(\W|$)|help\s*desk/.test(name)) roles.add('support');
-    if (/(^|\W)developer(?:s)?(\W|$)|\bdevelopment\b/.test(name)) roles.add('developer');
-  }
-  const orderedRoles: PersonRole[] = ['qa', 'support', 'developer'];
-  return orderedRoles.filter(role => roles.has(role));
 }
 
 function assertLocalOrigin(request: FastifyRequest): void {

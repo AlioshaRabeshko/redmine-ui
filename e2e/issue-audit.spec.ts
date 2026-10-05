@@ -50,6 +50,9 @@ async function installIssueResponse(page: Page, issue: Issue, notes = 'Visible j
     ];
     const secondPerson = { id: 2, name: 'Demo Developer' };
     detail.people = [{ id: 1, name: 'Demo User' }, secondPerson];
+    // Keep this fixture's duplicate person snapshots consistent so it tests
+    // project lookup preservation rather than last-write-wins naming precedence.
+    detail.watchers = detail.watchers.map(person => person.id === 1 ? { ...person, name: 'Demo User' } : person);
     detail.journals = [{
       id: mixedJournalId,
       user: secondPerson,

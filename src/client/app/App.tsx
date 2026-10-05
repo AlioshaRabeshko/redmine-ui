@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Bell, BellDot, Check, ChevronDown, Command, Inbox, LayoutDashboard, ListTodo, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, Rocket, Search, Settings2, ShieldCheck, Sparkles, UserRound, X } from 'lucide-react';
+import { Activity, AlertTriangle, Bell, BellDot, Check, ChevronDown, Command, Inbox, LayoutDashboard, ListTodo, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, Rocket, Search, Settings2, ShieldCheck, Sparkles, UserRound, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AppSettings, BoardData, Bootstrap, Command as WorkspaceCommand, CommandResult, Filters, Issue, IssueDetail, Notification, Operation, Person, Project, SavedView, SettingsPatch, Status, View } from '../../shared/types';
 import { defaultActivityVisibility } from '../../shared/types';
@@ -10,7 +10,8 @@ import { api, ApiRequestError, friendlyError, issueUrl } from '../lib/api';
 import { useWorkspaceNavigation, type NavigationState, type Screen } from '../lib/workspaceNavigation';
 import { isEditableTarget, resolveIssueShortcutTarget, shortcutForEvent } from '../lib/shortcuts';
 import { toggleAssignedToMe } from '../../shared/domain';
-import { Avatar, Button, dispatchActiveFormSave, IconButton, Modal, Notice, Spinner, Toast } from '../components/ui';
+import { Avatar, Button, dispatchActiveFormSave, IconButton, Modal, ModalFocusScopeProvider, Notice, Spinner, Toast } from '../components/ui';
+import type { ModalFocusScope } from '../components/ui';
 import { BoardPage } from '../features/board/BoardPage';
 import type { IssueEditPatch } from '../features/issues/IssueDialog';
 import { InboxPage } from '../features/inbox/InboxPage';
@@ -21,7 +22,7 @@ const IssueDialog = lazy(() => import('../features/issues/IssueDialog').then(mod
 const CreateIssueDialog = lazy(() => import('../features/issues/IssueDialog').then(module => ({ default: module.CreateIssueDialog })));
 
 function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
-  const { projectQa, subscriptions, projectActivity, personRoleOverrides, projectBackgrounds, ...simpleFields } = patch;
+  const { projectQa, subscriptions, projectActivity, personRoleOverrides, personAvatarOverrides, projectBackgrounds, ...simpleFields } = patch;
   const next: AppSettings = { ...current, ...simpleFields };
   if (projectBackgrounds) {
     next.projectBackgrounds = { ...current.projectBackgrounds };
@@ -33,6 +34,12 @@ function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSett
     next.projectActivity = { ...current.projectActivity };
     for (const [projectId, visibility] of Object.entries(projectActivity)) {
       if (visibility === null) delete next.projectActivity[projectId]; else next.projectActivity[projectId] = visibility;
+    }
+  }
+  if (personAvatarOverrides) {
+    next.personAvatarOverrides = { ...current.personAvatarOverrides };
+    for (const [personId, override] of Object.entries(personAvatarOverrides)) {
+      if (override === null) delete next.personAvatarOverrides[personId]; else next.personAvatarOverrides[personId] = override;
     }
   }
   if (projectQa) {
@@ -63,7 +70,7 @@ function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSett
 
 function restoreSettingsPatch(current: AppSettings, confirmed: AppSettings, optimistic: AppSettings, patch: SettingsPatch): AppSettings {
   const restored = { ...current };
-  const mapFields = new Set(['projectQa', 'subscriptions', 'personRoleOverrides', 'projectBackgrounds', 'projectActivity']);
+  const mapFields = new Set(['projectQa', 'subscriptions', 'personRoleOverrides', 'personAvatarOverrides', 'projectBackgrounds', 'projectActivity']);
   for (const key of Object.keys(patch) as (keyof AppSettings)[]) {
     if (mapFields.has(key)) continue;
     if (current[key] === optimistic[key]) Object.assign(restored, { [key]: confirmed[key] });
@@ -94,6 +101,13 @@ function restoreSettingsPatch(current: AppSettings, confirmed: AppSettings, opti
       const values = { ...restored.projectActivity };
       if (confirmed.projectActivity[projectId] === undefined) delete values[projectId]; else values[projectId] = confirmed.projectActivity[projectId];
       restored.projectActivity = values;
+    }
+  }
+  for (const personId of Object.keys(patch.personAvatarOverrides || {})) {
+    if (current.personAvatarOverrides[personId] === optimistic.personAvatarOverrides[personId]) {
+      const values = { ...restored.personAvatarOverrides };
+      if (confirmed.personAvatarOverrides[personId] === undefined) delete values[personId]; else values[personId] = confirmed.personAvatarOverrides[personId];
+      restored.personAvatarOverrides = values;
     }
   }
   for (const [projectId, people] of Object.entries(patch.personRoleOverrides || {})) {
@@ -142,6 +156,14 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const selectedProjectId = bootstrap.projects.some(project => project.id === location.projectId) ? location.projectId! : fallbackProjectId;
   const { screen, view, filters, issueId, versionId: selectedVersionId, archived, journalId: initialJournalId, createIssue: createIssueDefaults } = location;
   const issueOpen = issueId !== undefined;
+  const issueFocusSessionRef = useRef<{ issueId?: number; scope: ModalFocusScope }>({ issueId: undefined, scope: { origin: null } });
+  if (issueFocusSessionRef.current.issueId !== issueId) {
+    const active = document.activeElement;
+    issueFocusSessionRef.current = {
+      issueId,
+      scope: { origin: issueId !== undefined && active instanceof HTMLElement && active !== document.body && active.isConnected ? active : null },
+    };
+  }
   const projectPickerOpen = location.overlay === 'projects';
   const showActivity = location.overlay === 'activity';
   const showPalette = location.overlay === 'commands';
@@ -188,6 +210,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const board = boardQuery.data;
   const statuses = bootstrap.statuses;
   const canWrite = bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite;
+  const readOnlyMode = bootstrap.mode === 'redmine' || bootstrap.readOnly;
   const members = board?.members || [];
   const activeIssue = board?.issues.find((item) => item.id === issueId);
   const issueDetailIssue = freshIssueDetailId === issueId
@@ -334,6 +357,14 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
         if (patch.automationEnabled !== undefined && patch.automationEnabled !== persistedBefore.automationEnabled && bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite) {
           await commandMutation.mutateAsync({ type: 'runAutomation', input: { enabled: patch.automationEnabled } });
         }
+        if (patch.personAvatarOverrides || patch.personRoleOverrides) {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['board'] }),
+            queryClient.invalidateQueries({ queryKey: ['issue'] }),
+            queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+            ...(patch.personAvatarOverrides ? [queryClient.invalidateQueries({ queryKey: ['bootstrap'] })] : []),
+          ]);
+        }
         if (!quiet) notify(t('settingsSaved'));
       } catch (error) {
         if (!patchCommitted) {
@@ -346,10 +377,12 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     });
     settingsQueueRef.current = write;
     return write;
-  }, [bootstrap, commandMutation, notify, t]);
+  }, [bootstrap, commandMutation, notify, queryClient, t]);
   const renderedHref = window.location.href;
   const clearForms = { issueId: undefined, journalId: undefined, createIssue: undefined, releaseForm: undefined, overlay: undefined, moveIssueId: undefined };
   const openIssue = useCallback((issue: Issue, journalId?: number) => {
+    const active = document.activeElement;
+    issueFocusSessionRef.current = { issueId: issue.id, scope: { origin: active instanceof HTMLElement && active !== document.body && active.isConnected ? active : null } };
     navigate({ projectId: issue.projectId, issueId: issue.id, journalId, createIssue: undefined, releaseForm: undefined, overlay: undefined, moveIssueId: undefined });
   }, [navigate]);
   const closeIssue = useCallback(() => closeNavigation({ issueId: undefined, journalId: undefined }), [closeNavigation]);
@@ -483,20 +516,37 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     await refreshQueries();
     notify(result.operation.status === 'done' ? t('saved') : t('operationRunning'));
   };
-  const markRead = async (notification: Notification) => {
-    await api.post('/api/notifications/read', { ids: [notification.id] });
-    // Cancel pre-read fetches before publishing the acknowledged state. A stale
-    // response must not restore an already archived event or its favicon badge.
-    await queryClient.cancelQueries({ queryKey: ['notifications', 'unread'] });
-    queryClient.setQueryData<Notification[]>(['notifications', 'unread'], current => current?.filter(item => item.id !== notification.id));
-    await queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  const markManyRead = async (selected: Notification[]) => {
+    const ids = [...new Set(selected.filter((notification) => !notification.readAt).map((notification) => notification.id))];
+    if (!ids.length) return;
+    const acknowledged: string[] = [];
+    try {
+      for (let offset = 0; offset < ids.length; offset += 500) {
+        const batch = ids.slice(offset, offset + 500);
+        await api.post('/api/notifications/read', { ids: batch });
+        acknowledged.push(...batch);
+      }
+    } finally {
+      if (acknowledged.length) {
+        // Cancel pre-read fetches before publishing the acknowledged state. A stale
+        // response must not restore an archived event or its favicon badge.
+        await queryClient.cancelQueries({ queryKey: ['notifications', 'unread'] });
+        const readIds = new Set(acknowledged);
+        queryClient.setQueryData<Notification[]>(['notifications', 'unread'], current => current?.filter(item => !readIds.has(item.id)));
+        await queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      }
+    }
   };
+  const markRead = async (notification: Notification) => markManyRead([notification]);
   const openNotification = async (notification: Notification) => {
     const sequence = ++notificationOpenSequenceRef.current;
     const fromUrl = window.location.href;
+    const active = document.activeElement;
+    const origin = active instanceof HTMLElement && active !== document.body && active.isConnected ? active : null;
     try {
       const detail = await queryClient.fetchQuery({ queryKey: ['issue', notification.issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${notification.issueId}`), staleTime: 0 });
       if (window.location.href !== fromUrl || sequence !== notificationOpenSequenceRef.current) return;
+      issueFocusSessionRef.current = { issueId: notification.issueId, scope: { origin } };
       navigate({ ...clearForms, projectId: detail.issue.projectId, issueId: notification.issueId, journalId: notification.journalId });
       if (!notification.readAt) await markRead(notification);
     } catch (error) { notify(friendlyError(error, t)); }
@@ -591,22 +641,27 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
         <div className="topbar-actions">
           <WorkspaceSearch inputRef={searchRef} project={project} projects={bootstrap.projects} value={filters.search || ''} onFocus={() => { searchEditingRef.current = false; }} onBlur={() => { searchEditingRef.current = false; }} onChange={value => { setFilters(current => ({ ...current, search: value || undefined }), searchEditingRef.current); searchEditingRef.current = true; }} onOpenIssue={(id, projectId) => navigate({ ...clearForms, projectId: projectId ?? selectedProjectId, issueId: id })} />
           <div className={`connection-pill ${bootstrap.connected ? 'connection-online' : 'connection-offline'}`} title={bootstrap.connected ? t('connected') : t('offline')}><span />{bootstrap.connected ? (bootstrap.mode === 'demo' ? t('demo') : t('connected')) : t('offline')}</div>
+          {readOnlyMode && <span className="readonly-mode-pill" role="status" aria-label={t('readOnlyNote')} title={t('readOnlyNote')}><AlertTriangle size={14} />{t('readonlyCompact')}</span>}
           <IconButton label={t('operationTitle')} onClick={() => openOverlay('activity')} className="activity-trigger"><Activity size={17} /></IconButton>
           <Button variant="quiet" size="sm" onClick={manualSync} disabled={busySync}>{busySync ? <Spinner /> : <Sparkles size={15} />}{t('sync')}</Button>
         </div>
       </header>
       <div className="content-scroll" ref={contentScrollRef} onScroll={(event) => { scrollPositionsRef.current[`${selectedProjectId}:${screen}`] = event.currentTarget.scrollTop; }}>
         {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={selectView} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onCreateIssue={openCreateIssue} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
-        {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => navigate({ archived: !archived })} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
+        {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => navigate({ archived: !archived })} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onMarkManyRead={(items) => { void markManyRead(items).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
         {screen === 'releases' && !board && <div className="page-loading">{boardQuery.isError ? <Notice tone="error">{friendlyError(boardQuery.error, t)} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice> : <Spinner label={t('loading')} />}</div>}
-        {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} onSelectVersion={selectVersion} form={location.releaseForm} onFormChange={changeReleaseForm} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`}  onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
+        {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} readOnlyMode={readOnlyMode} onSelectVersion={selectVersion} form={location.releaseForm} onFormChange={changeReleaseForm} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`}  onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
         {screen === 'settings' && <SettingsPage key={selectedProjectId} settings={settings} members={members} peopleRecommendations={board?.peopleRecommendations} project={project} projects={bootstrap.projects} statuses={statuses} labels={board?.labels || []} readOnly={bootstrap.mode === 'redmine' || bootstrap.readOnly} onPatchSettings={patch => patchSettings(patch)} onResetViews={() => { void patchSettings({ savedViews: settingsRef.current.savedViews.filter((saved) => saved.projectId !== selectedProjectId) }).catch(error => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} />}
       </div>
     </div>
 
-    {issueOpen && issueId && issueDetail && freshIssueDetailId === issueId && <Suspense fallback={<div className="modal-backdrop"><Spinner label={t('loading')} /></div>}><IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} activityVisibility={settings.projectActivity[String(issueDetail.issue.projectId)] ?? defaultActivityVisibility} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onEditJournal={editJournal} onDeleteJournal={deleteJournal} onSetJournalLike={setJournalLike} onToast={notify} /></Suspense>}
-    {issueOpen && issueId && (freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading">{issueLoadError ? <><Notice tone="error">{issueLoadError}</Notice><Button size="sm" onClick={() => setIssueLoadAttempt(attempt => attempt + 1)}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
-    {createIssueDefaults && board && <Suspense fallback={<div className="modal-backdrop"><Spinner label={t('loading')} /></div>}><CreateIssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} project={project} board={board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} canWrite={canWrite} defaults={createIssueDefaults} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} onClose={closeCreateIssue} onCreate={createIssue} /></Suspense>}
+    {issueOpen && issueId && <ModalFocusScopeProvider scope={issueFocusSessionRef.current.scope}>
+      <>
+        {issueDetail && freshIssueDetailId === issueId && <Suspense fallback={<div className="modal-backdrop"><Spinner label={t('loading')} /></div>}><IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} activityVisibility={settings.projectActivity[String(issueDetail.issue.projectId)] ?? defaultActivityVisibility} onActivityVisibilityChange={(visibility) => { void patchSettings({ projectActivity: { [String(issueDetail.issue.projectId)]: visibility } }).catch((error) => notify(friendlyError(error, t))); }} readOnlyMode={readOnlyMode} initialJournalId={initialJournalId} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onEditJournal={editJournal} onDeleteJournal={deleteJournal} onSetJournalLike={setJournalLike} onToast={notify} /></Suspense>}
+        {(freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading">{issueLoadError ? <><Notice tone="error">{issueLoadError}</Notice><Button size="sm" onClick={() => setIssueLoadAttempt(attempt => attempt + 1)}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
+      </>
+    </ModalFocusScopeProvider>}
+    {createIssueDefaults && board && <Suspense fallback={<div className="modal-backdrop"><Spinner label={t('loading')} /></div>}><CreateIssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} project={project} board={board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} canWrite={canWrite} readOnlyMode={readOnlyMode} defaults={createIssueDefaults} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${selectedProjectId}`} onClose={closeCreateIssue} onCreate={createIssue} /></Suspense>}
     {createIssueDefaults && !board && <Modal title={t('createIssue')} onClose={closeCreateIssue} size="sm"><div className="center-loading">{boardQuery.isError ? <><Notice tone="error">{friendlyError(boardQuery.error, t)}</Notice><Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
     {projectPickerOpen && <ProjectPickerDialog projects={visibleProjects} current={project} search={projectSearch} onSearch={setProjectSearch} onPick={pickProject} onClose={closeOverlay} />}
     {showPalette && <CommandPalette onClose={closeOverlay} onSearch={() => { focusSearchAfterCloseRef.current = true; closeOverlay(); }} onCreate={() => navigate({ ...clearForms, createIssue: {} }, { replace: true })} onProject={() => navigate({ overlay: 'projects' }, { replace: true })} onInbox={() => openScreen('inbox', true)} onRelease={() => openScreen('releases', true)} />}
@@ -651,7 +706,7 @@ function OperationsDrawer({ operations, mode, onClose, onRetry }: { operations: 
   const operationError = (operation: Operation) => operation.errorCode ? friendlyError(new ApiRequestError({ code: operation.errorCode, message: '' }, '', 400), t) : t('errorGeneric');
   return <div className="drawer-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><aside className="operations-drawer" role="dialog" aria-modal="true" aria-label={t('operationTitle')}>
     <div className="drawer-head"><div><span className="eyebrow">{t('workspace')}</span><h2>{t('operationTitle')}</h2></div><IconButton label={t('close')} onClick={onClose}><X size={17} /></IconButton></div>
-    {mode === 'redmine' && <Notice tone="warning">{t('readOnlyNote')}</Notice>}
+    {mode === 'redmine' && <div className="readonly-dialog-status" role="status"><span className="readonly-dialog-pill" title={t('readOnlyNote')}><AlertTriangle size={14} />{t('readonlyCompact')}</span><span className="readonly-inline-copy">{t('readOnlyNote')}</span></div>}
     <div className="operations-list">{operations.length === 0 ? <div className="empty-state"><div className="empty-illustration"><Activity size={23} /></div><p>{t('noOperations')}</p></div> : operations.map((operation) => <article className="operation-card" key={operation.id}><div className="operation-card-top"><span className={`operation-mark operation-${operation.status}`}><span /></span><strong>{labels[operation.type] ? t(labels[operation.type]) : t('operationTitle')}</strong><span>{statusLabel(operation.status)}</span></div><small>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operation.createdOn))}{operation.issueId ? ` · #${operation.issueId}` : ''}</small>{operation.error && <p className="operation-error">{operationError(operation)}</p>}{operation.steps.length > 0 && <ul>{operation.steps.map((step, index) => <li key={`${operation.id}-${index}`} className={`step-${step.status}`}><span />{t('operationStep', { count: index + 1 })} · {stepStatusLabel(step.status)}</li>)}</ul>}{(operation.error || operation.steps.some((step) => step.name || step.error)) && <details className="operation-technical-details"><summary>{t('technicalDetails')}</summary>{operation.error && <p>{operation.error}</p>}{operation.steps.length > 0 && <ul>{operation.steps.map((step, index) => <li key={`detail-${operation.id}-${index}`}>{step.name}{step.error ? ` · ${step.error}` : ''}</li>)}</ul>}</details>}{mode === 'demo' && ['failed', 'blocked'].includes(operation.status) && <Button size="sm" variant="outline" onClick={() => onRetry(operation)}>{t('retryOperation')}</Button>}</article>)}</div>
   </aside></div>;
 }
