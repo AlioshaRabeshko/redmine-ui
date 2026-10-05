@@ -10,7 +10,7 @@ export function branchForIssue(id: number, title: string): string {
   return `${id}-${slug}`;
 }
 
-export function filterIssues(issues: Issue[], statuses: Status[], view: View, meId: number, filters: Filters = {}, people: Person[] = []): Issue[] {
+export function filterIssues(issues: Issue[], statuses: Status[], view: View, meId: number, filters: Filters = {}, people: Person[] = [], unreadIssueIds: ReadonlySet<number> = new Set()): Issue[] {
   const statusById = new Map(statuses.map(s => [s.id, s]));
   const personById = new Map(people.map(person => [person.id, person]));
   const query = filters.search?.trim().toLocaleLowerCase();
@@ -37,6 +37,7 @@ export function filterIssues(issues: Issue[], statuses: Status[], view: View, me
     if (filters.versionId !== undefined && issue.fixedVersionId !== filters.versionId) return false;
     if (filters.statusIds?.length && !filters.statusIds.includes(issue.statusId)) return false;
     if (filters.priorityIds?.length && !filters.priorityIds.includes(issue.priorityId)) return false;
+    if (filters.hasNotifications && !unreadIssueIds.has(issue.id)) return false;
     return true;
   });
 }

@@ -1070,3 +1070,21 @@ Markdown/GFM і fenced code у preview опису та коментарях не
 Зведений результат і посилання на всі докази: [UX_ROUND2_RESULTS.md](docs/UX_ROUND2_RESULTS.md).
 
 Docker preview оновлено зі збереженням наявного SQLite volume. GET перевірка localhost:3010 підтвердила новий client asset, health 200, connected=true, mode=redmine, readOnly=true та canWrite=false. Жодних зовнішніх записів.
+
+### 19.30. Третій UX-раунд — обговорення 2026-10-05
+
+Користувач додав 18 зауважень щодо Inbox/board unread, raw changes і subscriptions, синхронізації, компактності issue dialog, аватарів, Labels tiles та Settings overflow. Повний список, перевірені code causes, пропозиції й відкриті питання записано в [UX_ROUND3.md](docs/UX_ROUND3.md). Зараз обговорення та документація, без реалізації. Користувач підтвердив comments-only також для assigned-to-me й уточнив, що Settings скролить увесь застосунок разом із header/sidebar; default sync 10 s, повністю відкриті Inbox groups, badge click і конкретні avatar sizes записані як пропозиції. Попередня заборона зовнішніх мутацій залишається чинною.
+
+Подальші підтвердження: дзвіночок відкриває картку та скролить до непрочитаної події; dialog лишається відкритим при зникненні картки з unread-фільтра; comments-only приховує супутні зміни змішаного journal; нові події під час читання доступні через «Нові події — показати», а counters оновлюються одразу. Ці рішення замінюють попередні альтернативи в аудиті. Реалізація ще не починалася.
+
+### 19.31. Реалізація третього UX-раунду — 2026-10-05
+
+Користувач явно авторизував реалізацію всього погодженого UX_ROUND3.md через Luna max, із передачею доступної роботи сабагентам. Три паралельні напрями: backend/Inbox/structured notifications; unread board/filter/live browser integration; compact sticky issue/labels/composer/avatar/layout. Основний агент координує контракти та переклади; після source gate незалежний Luna перевірить код і браузерні сценарії. Зовнішні мутації залишаються заборонені; старі записи про discussion-only є історією.
+
+### 19.32. Результат третього UX-раунду — 2026-10-05
+
+Усі 18 зауважень реалізовано: людський розгорнутий Inbox, board unread badges/filter, comments-only також для assigned-to-me й mixed journal, sync 10 s/live refresh, компактний sticky issue/composer/Activity, multi Labels tiles/due date, менші board avatars зі стабільними кольорами initials та Settings viewport scroll. Збережено URL/history, exact-event read, drafts і рольові рамки.
+
+Незалежний аудит та інтеграція додатково знайшли й закрили втрату фокуса в Inbox/reveal, подвійний detail GET, затримку застосування subscription mask, displacement старого journal при появі/reveal нових подій і втрату comment draft після send з іншої вкладки. Cross-tab recovery обмежений активним unsent comment та remote removals, не повною системою draft conflict resolution.
+
+Фінальний build/typecheck, 180 unit/server у 33 файлах (після settings/cross-tab змін), targeted 3/3 і повний Chrome 92/92 після останніх UI anchor/CSS guards. Ручні факти, source review та автоматизовані outcomes розділені в [UX_ROUND3_RESULTS.md](docs/UX_ROUND3_RESULTS.md) і пов’язаних звітах. Docker preview оновлено зі збереженням volume: final client asset 200, connected=true, mode=redmine, readOnly=true, canWrite=false. Локальний interval явно встановлено на 10 s за вимогою користувача; зовнішніх мутацій не виконували.

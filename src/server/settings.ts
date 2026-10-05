@@ -36,7 +36,7 @@ const personAvatarOverridesPatchSchema = z.record(idKey, personAvatarOverrideSch
 const filtersSchema = z.object({
   search: z.string().optional(), assigneeId: z.number().int().optional(), assignedToMe: z.boolean().optional(),
   label: z.string().optional(), labels: z.array(z.string()).optional(),
-  statusIds: z.array(z.number().int()).optional(), priorityIds: z.array(z.number().int()).optional(),
+  statusIds: z.array(z.number().int()).optional(), priorityIds: z.array(z.number().int()).optional(), hasNotifications: z.boolean().optional(),
   versionId: z.number().int().optional(), includeClosed: z.boolean().optional(),
 });
 const savedViewSchema = z.object({ id: z.string(), projectId: z.number().int().positive(), name: z.string(),
@@ -103,7 +103,7 @@ export const defaultSettings: AppSettings = {
   savedViews: [],
   sort: { field: 'priority', direction: 'desc' },
   automationEnabled: true,
-  pollIntervalSeconds: 30,
+  pollIntervalSeconds: 10,
 };
 
 export function parseSettings(value: unknown): AppSettings {

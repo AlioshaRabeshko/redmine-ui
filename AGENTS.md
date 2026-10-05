@@ -34,6 +34,8 @@ The user subsequently authorized implementing docs/UX_ROUND2.md and then a full 
 
 Draft persistence must be reported honestly. If browser storage rejects a write, preserve the scoped draft in the current tab for reopening and warn that reload/tab close can lose it; never show a durable saved indicator solely because a field is dirty. Successful save/cancel must clear the fallback as well as persistent storage without resurrecting stale drafts or discarding text typed during an in-flight save.
 
+The user authorized implementing docs/UX_ROUND3.md on 2026-10-05 using Luna max subagents, then independent validation. Its latest confirmed decisions override earlier discussion-only pauses: the board unread badge opens the issue and scrolls to one unread event; an open issue remains open when it disappears from the unread board filter; comments-only applies to assigned-to-me issues and to visible portions of mixed journals; incoming Activity is buffered behind a “Show new events” action without disturbing drafts/scroll, while unread counters update immediately. Preserve event-specific reads and existing unread history. All external mutation restrictions remain active.
+
 ## Database connectors
 
 Production/staging MySQL connectors are read-only: SELECT, SHOW, DESCRIBE only. Never send write statements. Production ClickHouse queries must include a date filter, start with small selective scopes, and use conservative limits. If checking logs without a specified database, use adserver. No production database connector is needed to implement this application.

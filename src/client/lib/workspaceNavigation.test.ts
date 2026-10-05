@@ -10,7 +10,7 @@ describe('workspace URL navigation', () => {
       filters: {
         search: 'blue sky', assignedToMe: true, assigneeId: 42,
         labels: ['zeta', 'alpha', 'alpha'], statusIds: [5, 2, 5], priorityIds: [4, 1],
-        versionId: 7, includeClosed: true,
+        versionId: 7, includeClosed: true, hasNotifications: true,
       },
       versionId: 22,
       archived: true,
@@ -26,7 +26,7 @@ describe('workspace URL navigation', () => {
       filters: {
         search: 'blue sky', assignedToMe: true, assigneeId: 42,
         labels: ['alpha', 'zeta'], statusIds: [2, 5], priorityIds: [1, 4],
-        versionId: 7, includeClosed: true,
+        versionId: 7, includeClosed: true, hasNotifications: true,
       },
     });
     expect(navigationUrl(normalized, '/workspace')).toBe(url);
@@ -103,6 +103,7 @@ describe('workspace URL navigation', () => {
   it('omits default values and unsupported query keys', () => {
     expect(navigationUrl({ screen: 'board', view: 'all', filters: {}, archived: false })).toBe('/');
     expect(parseNavigation('?token=hidden&draft=private')).toEqual({ screen: 'board', view: 'all', filters: {}, archived: false });
+    expect(parseNavigation('?notifications=yes')).toMatchObject({ filters: {} });
   });
 
   it('uses Back only when the owned history entry records the exact close target', () => {

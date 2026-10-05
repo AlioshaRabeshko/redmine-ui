@@ -315,6 +315,53 @@ Object.assign(uk, { draftSessionOnly: 'Ця чернетка доступна л
 Object.assign(pl, { draftSessionOnly: 'Ta wersja robocza jest dostępna tylko w tej karcie. Po odświeżeniu lub zamknięciu karty tekst może zniknąć.' });
 Object.assign(es, { draftSessionOnly: 'Este borrador solo está disponible en esta pestaña. Si la recargas o la cierras, podrías perder el texto.' });
 
+Object.assign(en, {
+  unreadNotificationsFilter: 'With unread notifications', openOldestUnreadEvent: 'Open the oldest unread event for this issue ({{count}} unread)',
+  subscriptionHint: 'Follow selected project events. Issues assigned to you are always included, using the same event filters.',
+});
+Object.assign(uk, {
+  unreadNotificationsFilter: 'З непрочитаними сповіщеннями', openOldestUnreadEvent: 'Відкрити найстарішу непрочитану подію цієї задачі (непрочитаних: {{count}})',
+  subscriptionHint: 'Слідкуйте за вибраними подіями проєкту. Призначені вам задачі включені завжди, з тими самими фільтрами подій.',
+});
+Object.assign(pl, {
+  unreadNotificationsFilter: 'Z nieprzeczytanymi powiadomieniami', openOldestUnreadEvent: 'Otwórz najstarsze nieprzeczytane zdarzenie tego zadania (nieprzeczytane: {{count}})',
+  subscriptionHint: 'Obserwuj wybrane zdarzenia projektu. Zadania przypisane do Ciebie są zawsze uwzględniane, z tymi samymi filtrami zdarzeń.',
+});
+Object.assign(es, {
+  unreadNotificationsFilter: 'Con notificaciones sin leer', openOldestUnreadEvent: 'Abrir el evento sin leer más antiguo de esta tarea (sin leer: {{count}})',
+  subscriptionHint: 'Sigue los eventos seleccionados del proyecto. Las tareas asignadas a ti siempre se incluyen, con los mismos filtros de eventos.',
+});
+
+Object.assign(en, {
+  issueActions: 'Issue actions', showNewActivity: 'Show new events ({{count}})', showNewActivity_one: 'Show {{count}} new event', showNewActivity_other: 'Show {{count}} new events',
+  labelsSearch: 'Search labels…', showAllLabels: 'Show all labels', hideLabels: 'Hide labels',
+});
+Object.assign(uk, {
+  issueActions: 'Дії із задачею', showNewActivity: 'Нові події — показати ({{count}})', showNewActivity_one: 'Показати {{count}} нову подію', showNewActivity_few: 'Показати {{count}} нові події', showNewActivity_many: 'Показати {{count}} нових подій', showNewActivity_other: 'Показати {{count}} нові події',
+  labelsSearch: 'Пошук міток…', showAllLabels: 'Показати всі мітки', hideLabels: 'Згорнути мітки',
+});
+Object.assign(pl, {
+  issueActions: 'Działania zadania', showNewActivity: 'Pokaż nowe zdarzenia ({{count}})', showNewActivity_one: 'Pokaż {{count}} nowe zdarzenie', showNewActivity_few: 'Pokaż {{count}} nowe zdarzenia', showNewActivity_many: 'Pokaż {{count}} nowych zdarzeń', showNewActivity_other: 'Pokaż {{count}} nowe zdarzenia',
+  labelsSearch: 'Szukaj etykiet…', showAllLabels: 'Pokaż wszystkie etykiety', hideLabels: 'Zwiń etykiety',
+});
+Object.assign(es, {
+  issueActions: 'Acciones de la tarea', showNewActivity: 'Mostrar eventos nuevos ({{count}})', showNewActivity_one: 'Mostrar {{count}} evento nuevo', showNewActivity_other: 'Mostrar {{count}} eventos nuevos',
+  labelsSearch: 'Buscar etiquetas…', showAllLabels: 'Mostrar todas las etiquetas', hideLabels: 'Ocultar etiquetas',
+});
+
+Object.assign(en, {
+  notificationIssueFallback: 'Issue #{{issueId}}', notificationDetailsUnavailable: 'This event’s details are not available in the local cache.', unreadTargetUnavailable: 'The event is no longer available. This notification remains unread.',
+});
+Object.assign(uk, {
+  notificationIssueFallback: 'Задача #{{issueId}}', notificationDetailsUnavailable: 'Подробиці цієї події відсутні в локальному кеші.', unreadTargetUnavailable: 'Подія більше недоступна. Це сповіщення залишається непрочитаним.',
+});
+Object.assign(pl, {
+  notificationIssueFallback: 'Zadanie #{{issueId}}', notificationDetailsUnavailable: 'Szczegóły tego zdarzenia nie są dostępne w lokalnej pamięci podręcznej.', unreadTargetUnavailable: 'Zdarzenie nie jest już dostępne. To powiadomienie pozostaje nieprzeczytane.',
+});
+Object.assign(es, {
+  notificationIssueFallback: 'Tarea #{{issueId}}', notificationDetailsUnavailable: 'Los detalles de este evento no están disponibles en la caché local.', unreadTargetUnavailable: 'El evento ya no está disponible. Esta notificación sigue sin leer.',
+});
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },

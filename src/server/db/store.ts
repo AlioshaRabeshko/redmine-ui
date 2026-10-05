@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, isNull, notInArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray } from 'drizzle-orm';
 import type { AppSettings, Issue, Journal, Notification, Operation, PeopleField, Person, Project, Status, Priority, Version } from '../../shared/types.js';
 import { demoIssues, demoJournalIssues, demoJournals, demoMe, demoPeople, demoPriorities, demoProjectMembers, demoProjects, demoStatuses, demoVersions } from '../demo/fixtures.js';
 import { defaultSettings } from '../settings.js';
@@ -284,6 +284,22 @@ export class WorkspaceStore {
     return (await this.db.select({ payload: journals.payload }).from(journals)
       .where(and(eq(journals.scope, this.scope), eq(journals.issueId, issueId))).orderBy(asc(journals.createdOn)))
       .map(row => decode<Journal>(row.payload));
+  }
+  async getJournalsForIssues(issueIds: number[]): Promise<Map<number, Journal[]>> {
+    const result = new Map<number, Journal[]>();
+    const ids = [...new Set(issueIds)].filter(Number.isSafeInteger);
+    // Keep IN clauses comfortably below SQLite's bind-variable limit for a large inbox.
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const batch = ids.slice(offset, offset + 400);
+      const rows = await this.db.select({ issueId: journals.issueId, payload: journals.payload }).from(journals)
+        .where(and(eq(journals.scope, this.scope), inArray(journals.issueId, batch))).orderBy(asc(journals.createdOn));
+      for (const row of rows) {
+        const items = result.get(row.issueId) ?? [];
+        items.push(decode<Journal>(row.payload));
+        result.set(row.issueId, items);
+      }
+    }
+    return result;
   }
   async saveJournal(issueId: number, journal: Journal): Promise<void> {
     await this.db.insert(journals).values({ scope: this.scope, id: journal.id, issueId, createdOn: journal.createdOn, payload: encode(journal) })

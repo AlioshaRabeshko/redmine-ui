@@ -1,10 +1,37 @@
-import { expect, test, type APIRequestContext, type Page, type Route } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page, type Route } from '@playwright/test';
 import type { Bootstrap, BoardData, CommandResult, Issue, IssueDetail } from '../src/shared/types.js';
 
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
+}
+
+async function assertVisibleHeaderFocusTrap(page: Page, dialog: Locator) {
+  const menuSummary = dialog.locator('.issue-header-menu summary');
+  await expect(menuSummary).toBeVisible();
+  await expect(dialog.locator('.issue-header-menu button')).toBeHidden();
+
+  const focusLastStop = () => dialog.evaluate(element => {
+    const selector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])';
+    const stops = [...element.querySelectorAll<HTMLElement>(selector)]
+      .filter(item => item.getClientRects().length > 0 && !item.closest('[aria-hidden="true"]'));
+    const last = stops.at(-1);
+    if (!last) throw new Error('Issue dialog has no visible tab stops');
+    last.focus();
+  });
+  const isLastStopFocused = () => dialog.evaluate(element => {
+    const selector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])';
+    const stops = [...element.querySelectorAll<HTMLElement>(selector)]
+      .filter(item => item.getClientRects().length > 0 && !item.closest('[aria-hidden="true"]'));
+    return document.activeElement === stops.at(-1);
+  });
+
+  await focusLastStop();
+  await page.keyboard.press('Tab');
+  await expect(menuSummary).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect.poll(isLastStopFocused).toBe(true);
 }
 
 async function openThroughDeferredIssueLoad(page: Page, request: APIRequestContext, issueId: number) {
@@ -75,8 +102,7 @@ async function openThroughCachedIssueHandoff(page: Page, request: APIRequestCont
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Закрити', exact: true }).first()).toBeFocused();
   if (tabBeforeClose) {
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: 'Копіювати посилання Redmine', exact: true })).toBeFocused();
+    await assertVisibleHeaderFocusTrap(page, dialog);
   }
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
@@ -132,8 +158,7 @@ test('delayed issue GET and lazy dialog handoff restore the same opener after ta
   const issue = board.issues[0]!;
   const { dialog, opener } = await openThroughDeferredIssueLoad(page, request, issue.id);
 
-  await page.keyboard.press('Tab');
-  await expect(dialog.getByRole('button', { name: 'Копіювати посилання Redmine', exact: true })).toBeFocused();
+  await assertVisibleHeaderFocusTrap(page, dialog);
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await expect.poll(() => new URL(page.url()).searchParams.get('issue')).toBeNull();

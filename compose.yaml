@@ -11,7 +11,7 @@ services:
       DATABASE_PATH: /data/workspace.sqlite
       HOST: 0.0.0.0
       PORT: 3000
-      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-10}
     volumes:
       - workspace-data:/data
     restart: unless-stopped

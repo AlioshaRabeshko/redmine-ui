@@ -61,10 +61,10 @@ describe('background notification ingestion', () => {
     expect(await store.hasSeenSourceEvent('journal:9901')).toBe(true);
   });
 
-  it('hides own events but always follows assigned tasks and assignment away', async () => {
+  it('hides own actions and applies the current event mask to assigned-task activity', async () => {
     await service.sync();
     const settings = await store.getSettings();
-    settings.subscriptions = { '10': { enabled: false, events: [] }, '20': { enabled: false, events: [] } };
+    settings.subscriptions = { '10': { enabled: false, events: ['comment', 'assignee'] }, '20': { enabled: false, events: ['comment', 'assignee'] } };
     await store.setSettings(settings);
     snapshot.issues[0].assignedToId = demoMe.id;
     snapshot.journals = [
@@ -72,6 +72,7 @@ describe('background notification ingestion', () => {
       { issueId: 1001, journal: journal(73, 2, 'assigned task comment') },
       { issueId: 1004, journal: { ...journal(74, 3, ''), changes: [{ field: 'assigned_to_id', oldValue: '1', newValue: '2' }] } },
       { issueId: 1005, journal: journal(75, 2, 'unsubscribed') },
+      { issueId: 1001, journal: { ...journal(76, 3, ''), changes: [{ field: 'Labels', oldValue: 'Build: Running', newValue: 'Build: Failed' }] } },
     ];
     await service.sync();
     expect((await store.getNotifications()).map(item => item.id).sort()).toEqual(['journal:73', 'journal:74']);

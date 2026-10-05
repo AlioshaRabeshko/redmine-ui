@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, Heart, History, Link, MessageSquare, Paperclip, Pencil, Quote, Save, Send, Trash2, UserRound, Users, WandSparkles } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, Heart, History, Link, MessageSquare, MoreHorizontal, Paperclip, Pencil, Quote, Save, Send, Trash2, UserRound, Users, WandSparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { defaultActivityVisibility, type ActivityVisibility, type BoardData, type Issue, type IssueDetail, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
+import { defaultActivityVisibility, type ActivityVisibility, type BoardData, type Issue, type IssueDetail, type Journal, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
 import { branchForIssue } from '../../../shared/domain';
 import { Avatar, Button, Field, IconButton, Modal, Notice, Spinner } from '../../components/ui';
-import { MultiPicker, Picker, PeoplePicker, type PickerOption } from '../../components/pickers';
+import { Picker, PeoplePicker, type PickerOption } from '../../components/pickers';
 import { ChoiceTiles, type ChoiceTileOption } from '../../components/choiceTiles';
 import { AttachmentPreview, RichContent, attachmentContentPath, isPreviewableImage } from '../../components/RichContent';
 import { api, issueUrl } from '../../lib/api';
@@ -12,9 +12,11 @@ import { createIssueTextDraftKey, enqueueFieldWrite, issueTextDraftKey, useWorks
 import { clearDraftStorage, readDraftStorage, writeDraftStorage } from '../../lib/draftStorage';
 import { localizeJournalChange, visibleJournals } from '../../lib/issueActivity';
 import { mergePeopleById } from '../../lib/peoplePresentation';
+import { LabelsTiles } from './LabelsTiles';
 
 type IssueText = { subject: string; description: string; branch: string; dueDate: string };
 type JournalEditDraft = { notes: string; expectedNotes: string; operationId?: string };
+type OwnCommentReveal = { notes: string; userId: number; submittedAt: number; knownJournalIds: Set<number> };
 type AutoField = 'statusId' | 'priorityId' | 'trackerId' | 'assignedToId' | 'developerId' | 'qaId' | 'fixedVersionId' | 'labels';
 type AutoValues = Pick<Issue, 'statusId' | 'priorityId' | 'trackerId' | 'assignedToId' | 'developerId' | 'qaId' | 'fixedVersionId' | 'labels'>;
 type FieldSaveState = { state: 'pending' | 'saved' | 'error'; error?: string };
@@ -103,9 +105,9 @@ function suggestedAssignees(members: Person[], selectedId?: number, recommendati
   return candidates;
 }
 
-export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, activityVisibility = defaultActivityVisibility, canWrite, readOnlyMode, onActivityVisibilityChange, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
+export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, currentUserId, notificationRequestKey, onNotificationTargetShown, activityVisibility = defaultActivityVisibility, canWrite, readOnlyMode, onActivityVisibilityChange, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
   detail: IssueDetail; board: BoardData; statuses: Status[]; priorities: Priority[]; redmineUrl: string; canWrite: boolean; onClose: () => void;
-  draftScope: string; initialJournalId?: number; activityVisibility?: ActivityVisibility; readOnlyMode: boolean; onActivityVisibilityChange: (visibility: ActivityVisibility) => void;
+  draftScope: string; initialJournalId?: number; currentUserId?: number; notificationRequestKey?: string; onNotificationTargetShown?: (issueId: number, journalId?: number) => void; activityVisibility?: ActivityVisibility; readOnlyMode: boolean; onActivityVisibilityChange: (visibility: ActivityVisibility) => void;
   onSave: (issue: Issue, patch: IssueEditPatch, operationId?: string) => Promise<Issue | void>; onComment: (issue: Issue, notes: string) => Promise<void>;
   onSaveRoles: (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }, operationId?: string) => Promise<Issue | void>;
   onEditJournal: (issue: Issue, journalId: number, notes: string, expectedNotes: string, operationId: string) => Promise<void>;
@@ -199,6 +201,16 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const [likingJournalIds, setLikingJournalIds] = useState<Set<number>>(() => new Set());
   const [journalLikeErrors, setJournalLikeErrors] = useState<Record<number, string>>({});
   const [preview, setPreview] = useState(() => !canWrite && !initialDirty.description);
+  const [activityJournals, setActivityJournals] = useState<Journal[]>(() => detail.journals);
+  const activityJournalsRef = useRef(activityJournals);
+  const [bufferedActivity, setBufferedActivity] = useState<Journal[]>([]);
+  const bufferedActivityRef = useRef(bufferedActivity);
+  const issueDialogScrollRef = useRef<HTMLDivElement>(null);
+  const activityListRef = useRef<HTMLDivElement>(null);
+  const activeIssueIdRef = useRef(issue.id);
+  activeIssueIdRef.current = issue.id;
+  const [ownCommentReveal, setOwnCommentReveal] = useState<OwnCommentReveal>();
+  const reportedNotificationTargetsRef = useRef(new Set<string>());
   const textFormRef = useWorkspaceFormSave<HTMLFormElement>();
   const commentFormRef = useWorkspaceFormSave<HTMLFormElement>();
   const journalEditFormRef = useRef<HTMLFormElement>(null);
@@ -227,7 +239,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     ? [...board.trackers, ...(!board.trackers.some(tracker => tracker.id === issue.trackerId) ? [{ id: issue.trackerId, name: issue.trackerName }] : [])]
     : [...new Map([...board.issues, issue].map(entry => [entry.trackerId, { id: entry.trackerId, name: entry.trackerName }])).values()], [board.trackers, board.issues, issue]);
   const trackerOptions: ChoiceTileOption[] = trackers.map((tracker) => ({ value: String(tracker.id), label: tracker.name }));
-  const status = statuses.find((entry) => entry.id === issue.statusId);
+  const textFormId = 'issue-text-form-' + issue.id;
   const author = personFrom(issuePeople, issue.authorId);
   const assignee = personFrom(issuePeople, autoDraft.assignedToId);
   const developer = personFrom(issuePeople, autoDraft.developerId);
@@ -270,6 +282,50 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   }, [issue]);
 
   useEffect(() => {
+    const latestById = new Map(detail.journals.map((journal) => [journal.id, journal]));
+    const current = activityJournalsRef.current;
+    const knownIds = new Set([
+      ...current.map((journal) => journal.id),
+      ...bufferedActivityRef.current.map((journal) => journal.id),
+    ]);
+    const currentIds = new Set(current.map((journal) => journal.id));
+    const newlyReceived = detail.journals.filter((journal) => !knownIds.has(journal.id));
+    const ownJournal = ownCommentReveal && currentUserId === ownCommentReveal.userId
+      ? newlyReceived.find((journal) => journal.user.id === ownCommentReveal.userId
+        && !ownCommentReveal.knownJournalIds.has(journal.id)
+        && journal.notes === ownCommentReveal.notes
+        && Date.parse(journal.createdOn) >= ownCommentReveal.submittedAt - 60_000
+        && Date.parse(journal.createdOn) <= Date.now() + 60_000)
+      : undefined;
+    const immediatelyVisibleIds = new Set<number>([
+      ...(initialJournalId ? [initialJournalId] : []),
+      ...(ownJournal ? [ownJournal.id] : []),
+    ]);
+    const nextDisplayed = [
+      ...current.flatMap((journal) => latestById.has(journal.id) ? [latestById.get(journal.id)!] : []),
+      ...newlyReceived.filter((journal) => immediatelyVisibleIds.has(journal.id)),
+      ...(initialJournalId !== undefined && latestById.has(initialJournalId) && !currentIds.has(initialJournalId) && !newlyReceived.some((journal) => journal.id === initialJournalId)
+        ? [latestById.get(initialJournalId)!]
+        : []),
+    ];
+    activityJournalsRef.current = nextDisplayed;
+    setActivityJournals(nextDisplayed);
+
+    const pendingById = new Map<number, Journal>();
+    for (const journal of bufferedActivityRef.current) {
+      const latest = latestById.get(journal.id);
+      if (latest && !immediatelyVisibleIds.has(journal.id)) pendingById.set(latest.id, latest);
+    }
+    for (const journal of newlyReceived) {
+      if (!immediatelyVisibleIds.has(journal.id)) pendingById.set(journal.id, journal);
+    }
+    const nextBuffered = [...pendingById.values()];
+    bufferedActivityRef.current = nextBuffered;
+    setBufferedActivity(nextBuffered);
+    if (ownJournal) setOwnCommentReveal(undefined);
+  }, [detail.journals, initialJournalId, currentUserId, ownCommentReveal]);
+
+  useEffect(() => {
     const durable: Record<keyof IssueText, boolean> = { subject: true, description: true, branch: true, dueDate: true };
     for (const key of Object.keys(textDraft) as (keyof IssueText)[]) {
       if (dirtyText[key]) durable[key] = writeDraftStorage(textKeys[key], textDraft[key]);
@@ -280,6 +336,19 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   useEffect(() => {
     setCommentDraftDurable(comment.trim() ? writeDraftStorage(commentKey, comment) : clearDraftStorage(commentKey));
   }, [comment, commentKey]);
+  useEffect(() => {
+    const preserveUnsavedCommentOnRemoteClear = (event: StorageEvent) => {
+      if (event.key !== commentKey || event.newValue !== null) return;
+      const current = commentRef.current;
+      // Storage events are delivered only to other tabs. If this tab still has
+      // non-empty text, that text is its unsent draft even when another tab's
+      // follow-up clear happens to remove the same persisted value.
+      if (!current.trim()) return;
+      setCommentDraftDurable(writeDraftStorage(commentKey, current));
+    };
+    window.addEventListener('storage', preserveUnsavedCommentOnRemoteClear);
+    return () => window.removeEventListener('storage', preserveUnsavedCommentOnRemoteClear);
+  }, [commentKey]);
   useEffect(() => {
     if (!legacyTextMigrationPending) {
       clearDraftStorage(legacyDraftKey);
@@ -293,14 +362,31 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     }
   }, [commentDraftDurable, legacyCommentKey]);
   useEffect(() => {
-    if (!initialJournalId) return;
-    const timer = window.setTimeout(() => {
-      const target = document.getElementById(`journal-${initialJournalId}`);
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      target?.focus({ preventScroll: true });
-    }, 80);
-    return () => window.clearTimeout(timer);
-  }, [initialJournalId, detail.journals]);
+    if (!notificationRequestKey) return;
+    const reportKey = `${issue.id}:${initialJournalId ?? 'issue'}:${notificationRequestKey || 'route'}`;
+    if (reportedNotificationTargetsRef.current.has(reportKey)) return;
+    const frame = requestAnimationFrame(() => {
+      const dialog = document.querySelector<HTMLElement>('.issue-dialog[data-testid="issue-dialog"]');
+      if (!dialog) return;
+      if (initialJournalId === undefined) {
+        reportedNotificationTargetsRef.current.add(reportKey);
+        onNotificationTargetShown?.(issue.id);
+        return;
+      }
+      const target = dialog.querySelector<HTMLElement>(`#journal-${initialJournalId}`);
+      if (!target?.isConnected || target.closest('.issue-dialog') !== dialog) return;
+      target.scrollIntoView({ behavior: 'auto', block: 'center' });
+      target.focus({ preventScroll: true });
+      const scroller = dialog.querySelector<HTMLElement>('.issue-dialog-scroll');
+      const targetRect = target.getBoundingClientRect();
+      const scrollerRect = scroller?.getBoundingClientRect();
+      const visible = Boolean(scrollerRect && targetRect.bottom > scrollerRect.top && targetRect.top < scrollerRect.bottom);
+      if (!visible) return;
+      reportedNotificationTargetsRef.current.add(reportKey);
+      onNotificationTargetShown?.(issue.id, initialJournalId);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [issue.id, initialJournalId, notificationRequestKey, activityJournals, onNotificationTargetShown]);
 
   const setTextValue = (field: keyof IssueText, value: string) => {
     const nextDirty = value !== serverTextRef.current[field];
@@ -418,6 +504,10 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     if (!canWrite || !comment.trim() || sendingComment) return;
     setCommentError(''); setSendingComment(true);
     const sentComment = comment;
+    if (currentUserId !== undefined) setOwnCommentReveal({
+      notes: sentComment.trim(), userId: currentUserId, submittedAt: Date.now(),
+      knownJournalIds: new Set([...detail.journals, ...activityJournalsRef.current, ...bufferedActivityRef.current].map((journal) => journal.id)),
+    });
     try {
       await onComment(issue, sentComment.trim());
       clearDraftStorage(legacyCommentKey);
@@ -428,7 +518,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
         setCommentDraftDurable(clearDraftStorage(commentKey));
       }
       onToast(t('saved'));
-    } catch (error) { setCommentError(error instanceof Error ? error.message : t('error')); }
+    } catch (error) { setOwnCommentReveal(undefined); setCommentError(error instanceof Error ? error.message : t('error')); }
     finally { setSendingComment(false); }
   };
 
@@ -572,9 +662,42 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     .map((version) => ({ value: String(version.id), label: version.name,
       description: version.status === 'closed' ? t('closed') : version.dueDate || undefined,
       ...(version.status === 'closed' ? { disabled: true } : {}) }));
-  const labelOptions: PickerOption[] = [...new Set([...board.labels, ...issue.labels])].sort().map((label) => ({ value: label, label }));
-  const activityItems = visibleJournals(detail.journals, activityVisibility, initialJournalId);
+  const labelOptions = [...new Set([...board.labels, ...(board.labelOptions || []).map((option) => option.name), ...issue.labels])].sort((a, b) => a.localeCompare(b));
+  const activityItems = visibleJournals(activityJournals, activityVisibility, initialJournalId);
   const changeLookups = { statuses, people: issuePeople, priorities, versions: board.versions, labels: board.labelOptions || [] };
+  const applyBufferedActivity = () => {
+    const applyingIssueId = issue.id;
+    const scroller = issueDialogScrollRef.current;
+    const scrollerBounds = scroller?.getBoundingClientRect();
+    const visibleAnchor = scrollerBounds
+      ? [...(activityListRef.current?.querySelectorAll<HTMLElement>('.activity-item') ?? [])]
+        .find((item) => {
+          const bounds = item.getBoundingClientRect();
+          return bounds.top < scrollerBounds.bottom && bounds.bottom > scrollerBounds.top;
+        })
+      : undefined;
+    const visibleAnchorTop = visibleAnchor?.getBoundingClientRect().top;
+    const previousScrollTop = scroller?.scrollTop;
+    const latestById = new Map(detail.journals.map((journal) => [journal.id, journal]));
+    const merged = new Map<number, Journal>();
+    for (const journal of [...activityJournalsRef.current, ...bufferedActivityRef.current]) {
+      const latest = latestById.get(journal.id);
+      if (latest) merged.set(latest.id, latest);
+    }
+    const next = [...merged.values()];
+    activityJournalsRef.current = next;
+    setActivityJournals(next);
+    bufferedActivityRef.current = [];
+    setBufferedActivity([]);
+    requestAnimationFrame(() => {
+      if (activeIssueIdRef.current !== applyingIssueId || !scroller?.isConnected || issueDialogScrollRef.current !== scroller) return;
+      if (scroller && visibleAnchor && visibleAnchorTop !== undefined) {
+        const shift = visibleAnchor.getBoundingClientRect().top - visibleAnchorTop;
+        if (Math.abs(shift) > 0.5) scroller.scrollTop += shift;
+      } else if (scroller && previousScrollTop !== undefined) scroller.scrollTop = previousScrollTop;
+      activityHeadingRef.current?.focus({ preventScroll: true });
+    });
+  };
   const progress = (field: AutoField) => {
     const item = fieldSave[field];
     if (!item) return null;
@@ -583,38 +706,48 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     </span>;
   };
 
-  return <Modal title={`#${issue.id} ${issue.subject}`} eyebrow={issue.trackerName} onClose={onClose} size="lg" testId="issue-dialog" className="issue-dialog">
-    <div className="issue-toolbar">
-      <div className="issue-toolbar-left">
-        {autoDraft.fixedVersionId && <span className="roadmap-pill"><CalendarDays size={13} />{board.versions.find((v) => v.id === autoDraft.fixedVersionId)?.name || t('roadmap')}</span>}
-      </div>
-      <div className="issue-toolbar-actions">
-        <IconButton label={t('copyRedmineUrl')} onClick={onCopyUrl}><Copy size={16} /></IconButton>
-        <a className="icon-button" href={issueUrl(redmineUrl, issue.id)} target="_blank" rel="noreferrer" aria-label={t('openRedmine')} title={t('openRedmine')}><ArrowUpRight size={16} /></a>
-      </div>
+  return <Modal title={`${issue.trackerName} #${issue.id} ${issue.subject}`} heading={<span className="issue-heading-line"><span className="issue-heading-type">{issue.trackerName}</span>{' '}<span className="issue-heading-id">#{issue.id}</span>{' '}<span className="issue-heading-subject">{issue.subject}</span></span>} headerActions={<details className="issue-header-menu">
+    <summary className="icon-button" aria-label={t('issueActions')} title={t('issueActions')}><MoreHorizontal size={17} /></summary>
+    <div className="issue-header-menu-panel">
+      <button type="button" onClick={onCopyUrl}><Copy size={14} />{t('copyRedmineUrl')}</button>
+      <a href={issueUrl(redmineUrl, issue.id)} target="_blank" rel="noreferrer"><ArrowUpRight size={14} />{t('openRedmine')}</a>
     </div>
-    {readOnlyMode && <ReadOnlyDialogStatus />}
-    <div className="issue-dialog-scroll">
+  </details>} onClose={onClose} size="lg" testId="issue-dialog" className="issue-dialog">
+    <div className="issue-dialog-scroll" ref={issueDialogScrollRef}>
+      {readOnlyMode && <ReadOnlyDialogStatus />}
       <DraftStorageStatus meaningful={anyTextDirty} durable={textDraftDurable} />
       <div className="issue-layout">
         <div className="issue-main-fields">
-          <form ref={textFormRef} className="issue-text-form" data-workspace-save onSubmit={saveText}>
+          <form id={textFormId} ref={textFormRef} className="issue-text-form" data-workspace-save onSubmit={saveText}>
             <Field label={t('issueTitle')}><input className="text-input input-title" value={textDraft.subject} onChange={(e) => setTextValue('subject', e.target.value)} /></Field>
             <div className="description-head"><span className="field-label">{t('description')}</span><div className="segmented"><button type="button" className={!preview ? 'selected' : ''} onClick={() => setPreview(false)}>{t('edit')}</button><button type="button" className={preview ? 'selected' : ''} onClick={() => setPreview(true)}>{t('preview')}</button></div></div>
             {preview ? <div className="description-preview"><div className="raw-preview-label">{t('preview')}</div>{textDraft.description ? <RichContent source={textDraft.description} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} /> : <span className="placeholder-text">{t('noDescription')}</span>}</div> : <Field label=""><textarea className="text-area description-area" aria-label={t('description')} value={textDraft.description} onChange={(e) => setTextValue('description', e.target.value)} placeholder={t('noDescription')} /></Field>}
             <Field label={t('branch')}><div className="input-with-actions"><GitBranch size={16} /><input className="text-input" value={textDraft.branch} onChange={(e) => setTextValue('branch', e.target.value)} /><Button size="sm" variant="outline" onClick={onGenerateBranch}><WandSparkles size={14} />{t('generate')}</Button><IconButton label={t('copyBranchShortcut')} onClick={async () => { try { await navigator.clipboard.writeText(textDraft.branch); onToast(t('copied')); } catch { onToast(t('error')); } }}><Copy size={15} /></IconButton></div></Field>
-            <Field label={t('dueDate')}><div className="input-icon-wrap"><CalendarDays size={15} /><input type="date" className="text-input" value={textDraft.dueDate} onChange={(e) => setTextValue('dueDate', e.target.value)} /></div></Field>
             {hasTextConflict && <Notice tone="warning" className="text-draft-conflict">{t('errorConflict')}</Notice>}
             {textError && <Notice tone="error" className="text-save-error">{textError}</Notice>}
             {anyTextDirty && <div className="text-save-row"><span>{t('textChanges')}</span><Button type="submit" variant="primary" disabled={!canWrite || textSaving || !textDraft.subject.trim()}>{textSaving ? <Spinner /> : <Save size={15} />}{t('saveChanges')}</Button></div>}
           </form>
-          <div className="section-title"><History size={15} /><h3 ref={activityHeadingRef} tabIndex={-1}>{t('activity')}</h3><span>{activityItems.length}</span></div>
-          <div className="activity-filter-row" role="group" aria-label={t('activityFilters')} data-testid="activity-filter-controls">
-            {activityFilterKinds.map(({ key, label }) => <button key={key} type="button" className="activity-filter-button" aria-pressed={activityVisibility[key]} title={t('activityFilterProjectHint')} data-testid={`activity-filter-${key}`} onClick={() => onActivityVisibilityChange({ ...activityVisibility, [key]: !activityVisibility[key] })}>{t(label)}</button>)}
+          <div className="activity-toolbar" data-testid="activity-toolbar">
+            <div className="activity-toolbar-heading"><History size={15} /><h3 ref={activityHeadingRef} tabIndex={-1}>{t('activity')}</h3><span>{activityItems.length}</span></div>
+            <div className="activity-filter-row" role="group" aria-label={t('activityFilters')} data-testid="activity-filter-controls">
+              {activityFilterKinds.map(({ key, label }) => <button key={key} type="button" className="activity-filter-button" aria-pressed={activityVisibility[key]} title={t('activityFilterProjectHint')} data-testid={`activity-filter-${key}`} onClick={() => onActivityVisibilityChange({ ...activityVisibility, [key]: !activityVisibility[key] })}>{t(label)}</button>)}
+            </div>
           </div>
           {activityItems.some((item) => item.forcedByPermalink) && <div className="activity-target-override" role="status"><strong>{t('activityTargetOverride')}</strong><span>{t('activityTargetOverrideHint')}</span></div>}
-          <div className="activity-list">
-            {activityItems.length === 0 && <div className="activity-empty"><History size={15} />{detail.journals.length === 0 ? t('noActivity') : t('activityFilteredEmpty')}</div>}
+          <form ref={commentFormRef} className="comment-composer" data-workspace-save onSubmit={sendComment}>
+            <div className="section-title"><MessageSquare size={15} /><h3>{t('comments')}</h3></div>
+            <textarea ref={commentTextareaRef} className="text-area comment-area" aria-label={t('comments')} data-testid="comment-composer" value={comment} onChange={(e) => { const next = e.target.value; commentRef.current = next; setComment(next); setCommentError(''); if (!next.trim()) { clearDraftStorage(legacyCommentKey); setLegacyCommentDurable(false); } }} placeholder={t('commentPlaceholder')} />
+            <DraftStorageStatus meaningful={Boolean(comment.trim())} durable={commentDurable} />
+            {commentError && <Notice tone="error" className="comment-save-error">{commentError}</Notice>}
+            <div className="comment-footer"><span>{!canWrite ? t('readOnlyBadge') : ''}</span><Button type="submit" size="sm" variant="primary" disabled={!canWrite || !comment.trim() || sendingComment}>{sendingComment ? <Spinner /> : <Send size={14} />}{t('addComment')}</Button></div>
+          </form>
+          <div className="activity-new-events-slot" data-testid="activity-new-events-slot">
+            {bufferedActivity.length > 0 && <div className="activity-new-events-banner" role="status" data-testid="activity-new-events">
+              <Button size="sm" variant="outline" className="activity-new-events-action" onClick={applyBufferedActivity} data-testid="show-new-activity"><History size={14} aria-hidden="true" />{t('showNewActivity', { count: bufferedActivity.length })}</Button>
+            </div>}
+          </div>
+          <div className="activity-list" ref={activityListRef}>
+            {activityItems.length === 0 && <div className="activity-empty"><History size={15} />{activityJournals.length === 0 ? t('noActivity') : t('activityFilteredEmpty')}</div>}
             {activityItems.map(({ journal, showComment, changes, forcedByPermalink }) => {
               const journalUser = personFrom(issuePeople, journal.user.id) || journal.user;
               const isEditing = editingJournalId === journal.id;
@@ -659,13 +792,6 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
               </article>;
             })}
           </div>
-          <form ref={commentFormRef} className="comment-composer" data-workspace-save onSubmit={sendComment}>
-            <div className="section-title"><MessageSquare size={15} /><h3>{t('comments')}</h3></div>
-            <textarea ref={commentTextareaRef} className="text-area comment-area" aria-label={t('comments')} data-testid="comment-composer" value={comment} onChange={(e) => { const next = e.target.value; commentRef.current = next; setComment(next); setCommentError(''); if (!next.trim()) { clearDraftStorage(legacyCommentKey); setLegacyCommentDurable(false); } }} placeholder={t('commentPlaceholder')} />
-            <DraftStorageStatus meaningful={Boolean(comment.trim())} durable={commentDurable} />
-            {commentError && <Notice tone="error" className="comment-save-error">{commentError}</Notice>}
-            <div className="comment-footer"><span>{!canWrite ? t('readOnlyBadge') : ''}</span><Button type="submit" size="sm" variant="primary" disabled={!canWrite || !comment.trim() || sendingComment}>{sendingComment ? <Spinner /> : <Send size={14} />}{t('addComment')}</Button></div>
-          </form>
         </div>
         <aside className="issue-side-fields">
           <div className="side-section"><div className="section-title"><Users size={15} /><h3>{t('details')}</h3></div>
@@ -677,7 +803,8 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
               <PeoplePicker compact className="assignee-avatar-picker" members={board.members} value={autoDraft.assignedToId} onChange={(value) => saveAutoField('assignedToId', value)} label={t('assignee')} placeholder={t('noAssignee')} recommendations={board.peopleRecommendations?.assignee} disabled={!canWrite} />
             </div>{progress('assignedToId')}</Field>
             <Field label={t('release')}><Picker className="issue-property-picker" options={versionOptions} value={autoDraft.fixedVersionId === undefined ? undefined : String(autoDraft.fixedVersionId)} onChange={(value) => saveAutoField('fixedVersionId', value ? Number(value) : undefined)} label={t('release')} placeholder={t('noRelease')} clearable disabled={!canWrite} />{progress('fixedVersionId')}</Field>
-            <Field label={t('labels')}><MultiPicker className="issue-property-picker" options={labelOptions} values={autoDraft.labels} onChange={(values) => saveAutoField('labels', values)} label={t('labels')} placeholder={t('labels')} disabled={!canWrite} />{progress('labels')}</Field>
+            <Field label={t('labels')}><LabelsTiles options={labelOptions} values={autoDraft.labels} onChange={(values) => saveAutoField('labels', values)} label={t('labels')} disabled={!canWrite} />{progress('labels')}</Field>
+            <Field label={t('dueDate')} className="issue-due-date-field"><div className="input-icon-wrap"><CalendarDays size={15} /><input form={textFormId} type="date" className="text-input" value={textDraft.dueDate} onChange={(e) => setTextValue('dueDate', e.target.value)} data-testid="issue-due-date" /></div></Field>
           </div>
           <div className="side-section role-section"><div className="section-title"><UserRound size={15} /><h3>{t('developer')} / {t('qa')}</h3></div>
             <Field label={t('developer')}><PeoplePicker className="issue-property-picker" members={board.members} value={autoDraft.developerId} onChange={(value) => saveAutoField('developerId', value)} label={t('developer')} placeholder={t('unknown')} recommendations={board.peopleRecommendations?.developer} disabled={!canWrite} />{progress('developerId')}</Field>
@@ -693,7 +820,6 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
         </aside>
       </div>
     </div>
-    <div className="issue-dialog-footer"><span>{anyTextDirty ? (textDraftDurable ? t('draftSaved') : t('draftSessionOnly')) : `${t('actualStatus')}: ${status?.name || t('unknown')}`}</span><div>{!canWrite && anyTextDirty && <span className="readonly-inline"><AlertTriangle size={14} />{t('readOnlyBadge')}</span>}<Button onClick={onClose}>{t('close')}</Button></div></div>
     {deleteJournal && <Modal title={t('deleteCommentTitle')} onClose={() => { if (!deletingJournal) { setDeleteJournal(undefined); setDeleteJournalError(''); } }} size="sm" testId="journal-delete-confirmation" className="journal-delete-dialog">
       <div className="journal-delete-content">
         <p>{t('deleteCommentMessage')}</p>

@@ -36,7 +36,7 @@ export interface Issue {
   parentId?: number; allowedStatusIds?: number[];
 }
 export type View = 'all' | 'mine' | 'watching' | 'backlog';
-export interface Filters { search?: string; assigneeId?: number; assignedToMe?: boolean; label?: string; labels?: string[]; statusIds?: number[]; priorityIds?: number[]; versionId?: number; includeClosed?: boolean }
+export interface Filters { search?: string; assigneeId?: number; assignedToMe?: boolean; label?: string; labels?: string[]; statusIds?: number[]; priorityIds?: number[]; versionId?: number; includeClosed?: boolean; hasNotifications?: boolean }
 export interface SavedView { id: string; projectId: number; name: string; filters: Filters; view: View }
 export interface Shortcut { id: string; keys: string; action: string; value?: string; enabled: boolean }
 export interface Subscription { enabled: boolean; events: string[] }
@@ -78,7 +78,19 @@ export interface IssueDetail { issue: Issue; journals: Journal[]; watchers: Pers
 export interface SearchResult { id: number; title: string; description: string; projectId?: number; statusName?: string; url?: string; updatedOn?: string }
 export interface SearchResponse { results: SearchResult[]; total: number; offset: number; limit: number }
 export interface ReleaseDetail { version: Version; issues: Issue[] }
-export interface Notification { id: string; projectId: number; issueId: number; journalId?: number; actor: Person; kind: string; text: string; createdOn: string; readAt?: string }
+export interface Notification {
+  id: string; projectId: number; issueId: number; journalId?: number; actor: Person; kind: string; text: string; createdOn: string; readAt?: string;
+  /** Optional cached subject for old issues that are no longer in the local issue cache. */
+  issueSubject?: string;
+  /** Structured source content lets the API project events through current subscription preferences. */
+  notes?: string;
+  changes?: Journal['changes'];
+  eventKinds?: ActivityKind[];
+  changeLookups?: {
+    statuses?: Status[]; people?: Person[]; priorities?: Priority[]; versions?: Version[]; labels?: LabelOption[];
+  };
+  detailsUnavailable?: boolean;
+}
 export interface OperationStep { name: string; status: 'pending' | 'done' | 'failed' | 'skipped' | 'blocked'; error?: string }
 export interface Operation { id: string; type: string; issueId?: number; versionId?: number; status: 'pending' | 'running' | 'done' | 'failed' | 'blocked'; steps: OperationStep[]; createdOn: string; error?: string; errorCode?: string }
 export interface Command { type: 'createIssue' | 'updateIssue' | 'moveIssue' | 'handoffToQA' | 'returnToDeveloper' | 'comment' | 'editJournal' | 'deleteJournal' | 'setJournalLike' | 'generateBranch' | 'createRelease' | 'updateRelease' | 'assignRelease' | 'finishRelease' | 'runAutomation'; issueId?: number; projectId?: number; versionId?: number; operationId?: string; input: Record<string, unknown> }

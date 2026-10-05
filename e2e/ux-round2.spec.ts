@@ -69,13 +69,12 @@ test('Inbox groups sort by latest issue event and reading or opening one event l
   await expect(groups.nth(1)).toHaveAttribute('data-testid', `notification-group-${first.id}`);
   const firstGroup = page.getByTestId(`notification-group-${first.id}`);
   const firstEvents = firstGroup.locator('.notification-group-events');
-  await expect(firstEvents).toBeHidden();
-  await expect(firstEvents.locator('.notification-row')).toHaveCount(3);
-  await firstGroup.locator('.notification-group-toggle').click();
   await expect(firstEvents).toBeVisible();
+  await expect(firstEvents.locator('.notification-row')).toHaveCount(3);
+  await expect(firstGroup.locator('.notification-group-toggle')).toHaveCount(0);
   await expect(firstEvents.locator('.notification-row').first()).toHaveAttribute('data-testid', 'notification-group-a-latest');
   await expect(firstGroup.locator('.notification-row')).toHaveCount(3);
-  expect(readCalls).toHaveLength(0); // Expanding a group must not acknowledge its events.
+  expect(readCalls).toHaveLength(0); // Displaying the expanded group must not acknowledge its events.
 
   await firstGroup.getByTestId('notification-group-a-old').locator('.notification-open').click();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();

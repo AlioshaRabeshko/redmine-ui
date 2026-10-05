@@ -73,6 +73,7 @@ function parseFilters(params: URLSearchParams): Filters {
   const versionId = parsePositiveId(params.get('versionFilter'));
   if (versionId !== undefined) filters.versionId = versionId;
   if (parseBoolean(params.get('closed'))) filters.includeClosed = true;
+  if (parseBoolean(params.get('notifications'))) filters.hasNotifications = true;
   return filters;
 }
 
@@ -99,6 +100,7 @@ function normalizeFilters(value: unknown): Filters {
   const versionId = positiveId(raw.versionId);
   if (versionId !== undefined) filters.versionId = versionId;
   if (raw.includeClosed === true) filters.includeClosed = true;
+  if (raw.hasNotifications === true) filters.hasNotifications = true;
   return filters;
 }
 
@@ -238,6 +240,7 @@ export function navigationUrl(stateValue: NavigationState, pathname = '/'): stri
   for (const id of filters.priorityIds ?? []) params.append('priorityFilter', String(id));
   appendId(params, 'versionFilter', filters.versionId);
   if (filters.includeClosed) params.set('closed', '1');
+  if (filters.hasNotifications) params.set('notifications', '1');
   const query = params.toString();
   const path = pathname.startsWith('/') ? pathname : `/${pathname}`;
   return query ? `${path}?${query}` : path;

@@ -6,6 +6,8 @@
   overflow-wrap: anywhere;
 }
 
+.issue-dialog .rich-content.activity-rich-content { font-size: 12px; }
+
 .rich-content > :first-child { margin-top: 0; }
 .rich-content > :last-child { margin-bottom: 0; }
 .rich-content p, .rich-content ul, .rich-content ol, .rich-content blockquote,

@@ -1,8 +1,9 @@
 import type { AppConfig } from '../config.js';
-import type { Issue, LabelOption, Notification, Operation, OperationStep, Person, Status, Version } from '../../shared/types.js';
+import type { ActivityKind, Issue, LabelOption, Notification, Operation, OperationStep, Person, Status, Version } from '../../shared/types.js';
 import { RedmineAdapter, type RedmineSnapshot } from '../redmine/adapter.js';
 import { RedmineConfigError, RedmineRequestError } from '../redmine/transport.js';
 import { WorkspaceStore } from '../db/store.js';
+import { activityKindsForJournal, resolveNotificationEligibility } from '../notifications.js';
 
 export interface SyncResult { syncedAt: string; issuesUpdated: number; notificationsAdded: number; warnings: string[] }
 export interface EventHub { publish(event: string, data?: unknown): void }
@@ -181,26 +182,22 @@ export class SyncService {
     const isSelf = actor.id === me.id;
     const notes = journal.notes.trim();
     const changes = journal.changes;
-    const kinds = new Set<string>();
-    if (notes) kinds.add('comment');
-    for (const change of changes) {
-      if (/status/i.test(change.field)) kinds.add('status');
-      else if (/assigned_to|assignee/i.test(change.field)) kinds.add('assignee');
-      else if (/label|tag/i.test(change.field)) kinds.add('labels');
-      else kinds.add('field');
-    }
-    const kind = kinds.values().next().value as string | undefined;
+    const kinds = activityKindsForJournal(notes, changes);
     const assignedToMe = issue?.assignedToId === me.id || changes.some(change => /assigned_to|assignee/i.test(change.field)
       && (change.newValue === String(me.id) || change.oldValue === String(me.id)));
     const settings = await this.store.getSettings();
     const subscription = project ? settings.subscriptions[String(project.id)] : undefined;
-    const subscribed = Boolean(subscription?.enabled && [...kinds].some(event => subscription.events.includes(event)));
-    const shouldNotify = !isSelf && kind && (subscribed || assignedToMe);
+    const { eligible, visibleKinds } = resolveNotificationEligibility(kinds, subscription, assignedToMe);
+    const shouldNotify = !isSelf && kinds.length > 0 && eligible;
     if (!shouldNotify || !issue || !project) return this.store.commitSourceEvent(key);
+    // Assignment affects issue eligibility only. It never bypasses the selected event mask.
+    if (!visibleKinds.length) return this.store.commitSourceEvent(key);
     const actorPerson = snapshot.people.find(person => person.id === actor.id) ?? actor;
-    const text = notes || changes.map(change => `${change.field}: ${change.oldValue ?? '—'} → ${change.newValue ?? '—'}`).join('; ');
+    const kind = preferredActivityKind(visibleKinds);
+    const text = visibleKinds.includes('comment') ? notes : '';
     const item: Notification = { id: key, projectId: project.id, issueId, journalId: journal.id, actor: actorPerson,
-      kind: kind!, text, createdOn: journal.createdOn };
+      issueSubject: issue.subject, kind, text, createdOn: journal.createdOn, eventKinds: kinds,
+      notes: notes || undefined, changes: [...changes] };
     return this.store.commitSourceEvent(key, item);
   }
 
@@ -251,7 +248,7 @@ export class BackgroundWorker {
   private stopped = true;
   private failures = 0;
   constructor(private readonly syncService: SyncService, private readonly store: WorkspaceStore,
-    private readonly intervalSeconds: () => Promise<number>, private readonly fallbackIntervalSeconds = 30,
+    private readonly intervalSeconds: () => Promise<number>, private readonly fallbackIntervalSeconds = 10,
     private readonly afterSync: () => Promise<void> = async () => undefined) {}
 
   start(): void {
@@ -271,6 +268,13 @@ export class BackgroundWorker {
     const interval = Math.min(15 * 60, configuredInterval * (this.failures ? 2 ** this.failures : 1));
     if (!this.stopped) this.timer = setTimeout(() => { void this.run(); }, interval * 1000);
   }
+}
+
+function preferredActivityKind(kinds: ActivityKind[]): ActivityKind {
+  for (const kind of ['comment', 'status', 'assignee', 'labels', 'field'] as const) {
+    if (kinds.includes(kind)) return kind;
+  }
+  return 'field';
 }
 
 function safeErrorMessage(error: unknown): string {

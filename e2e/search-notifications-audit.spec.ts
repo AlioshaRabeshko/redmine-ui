@@ -49,7 +49,8 @@ test('favicon clears after acknowledged reads, survives a failed read, and retur
   const icon = page.locator('link[rel="icon"]');
   await expect(icon).toHaveAttribute('data-unread', '2');
   const group = page.getByTestId(`notification-group-${issue.id}`);
-  await group.locator('.notification-group-toggle').click();
+  await expect(group.locator('.notification-group-toggle')).toHaveCount(0);
+  await expect(group.locator('.notification-row')).toHaveCount(2);
   const row = group.getByTestId('notification-favicon-event-1');
   await row.getByRole('button', { name: 'Прочитати', exact: true }).click();
   await expect(page.locator('.toast')).toBeVisible();

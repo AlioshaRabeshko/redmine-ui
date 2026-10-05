@@ -1,12 +1,14 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { CalendarDays, ChevronDown, CircleDot, Clock3, Plus, Search, SlidersHorizontal, X } from 'lucide-react';
+import { Bell, CalendarDays, ChevronDown, CircleDot, Clock3, Plus, Search, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppSettings, BoardData, Filters, Issue, Person, Priority, Project, SavedView, Status, View } from '../../../shared/types';
+import type { AppSettings, BoardData, Filters, Issue, Notification, Person, Priority, Project, SavedView, Status, View } from '../../../shared/types';
 import { filterIssues, groupBoard, sortIssues, toggleAssignedToMe } from '../../../shared/domain';
 import { Avatar, Button, IconButton } from '../../components/ui';
 import { MultiPicker, PeoplePicker, Picker, Popover } from '../../components/pickers';
+import { groupUnreadNotifications, oldestUnreadNotification } from './unreadNotifications';
+import './board-round3.css';
 
 export interface BoardPageProps {
   project: Project;
@@ -17,6 +19,7 @@ export interface BoardPageProps {
   settings: AppSettings;
   view: View;
   filters: Filters;
+  unreadNotifications: Notification[];
   canWrite: boolean;
   pendingIssueIds: ReadonlySet<number>;
   onFiltersChange: (filters: Filters) => void;
@@ -25,6 +28,7 @@ export interface BoardPageProps {
   onSelectSavedView: (saved: SavedView) => void;
   onDeleteSavedView: (saved: SavedView) => void;
   onOpenIssue: (issue: Issue) => void;
+  onOpenNotification: (notification: Notification) => void;
   onCreateIssue: (defaults?: { statusId?: number; fixedVersionId?: number | null }) => void;
   onMoveIssue: (issue: Issue, target: { statusId?: number; fixedVersionId?: number | null }) => void;
   onSaveView: (name: string, filters: Filters, view: View) => void;
@@ -49,8 +53,9 @@ function labelTone(label: string): number {
   return Math.abs(hash) % 6;
 }
 
-function BoardCard({ issue, data, statuses, priorities, canWrite, pending = false, onOpen, isDragging = false }: {
+function BoardCard({ issue, data, statuses, priorities, canWrite, pending = false, onOpen, isDragging = false, unreadCount = 0, oldestUnread, onOpenNotification }: {
   issue: Issue; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pending?: boolean; onOpen: (issue: Issue) => void; isDragging?: boolean;
+  unreadCount?: number; oldestUnread?: Notification; onOpenNotification?: (notification: Notification) => void;
 }) {
   const { t, i18n } = useTranslation();
   const activeVersion = data.versions.find((version) => version.id === issue.fixedVersionId && version.projectId === issue.projectId && version.status !== 'closed');
@@ -68,7 +73,9 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
     <div className="card-hit-area" {...attributes} {...listeners} role="button" tabIndex={pending ? -1 : 0} aria-disabled={pending} aria-label={`#${issue.id} ${issue.subject}`} onClick={() => !pending && onOpen(issue)} onKeyDown={(event) => { if (!pending && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpen(issue); } }}>
       <div className="card-topline">
         <span className="issue-ref">{issue.trackerName} <span>#{issue.id}</span></span>
-        {priority && <span className={`priority-mark priority-${Math.max(0, Math.min(4, priority.rank))}`} title={`${t('priorityField')}: ${priority.name}`}><CircleDot size={13} />{priority.name}</span>}
+        <span className={`card-topline-actions${unreadCount > 0 ? ' has-unread' : ''}`}>
+          {priority && <span className={`priority-mark priority-${Math.max(0, Math.min(4, priority.rank))}`} title={`${t('priorityField')}: ${priority.name}`}><CircleDot size={13} />{priority.name}</span>}
+        </span>
       </div>
       <h3>{issue.subject}</h3>
       {issue.labels.length > 0 && <div className="card-labels">{issue.labels.slice(0, 3).map((label) => <span key={label} className={`label-chip label-tone-${labelTone(label)}`} title={label}>{label}</span>)}{issue.labels.length > 3 && <span className="label-more" title={issue.labels.slice(3).join(', ')}>+{issue.labels.length - 3}</span>}</div>}
@@ -87,12 +94,15 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
         </div>
       </div>
     </div>
+    {unreadCount > 0 && oldestUnread && onOpenNotification && <button type="button" className="issue-unread-badge" data-testid={`issue-unread-badge-${issue.id}`} aria-label={`${t('openOldestUnreadEvent', { count: unreadCount })} · #${issue.id}`} title={`${t('openOldestUnreadEvent', { count: unreadCount })} · #${issue.id}`} onClick={event => { event.stopPropagation(); onOpenNotification(oldestUnread); }}>
+      <Bell size={13} aria-hidden="true" />{unreadCount}
+    </button>}
     <button className="card-open-action" type="button" onClick={() => onOpen(issue)} aria-label={t('open')}><ChevronDown size={14} /></button>
   </article>;
 }
 
-function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, onOpenIssue, onCreateIssue, activeIssueId }: {
-  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onCreateIssue: BoardPageProps['onCreateIssue']; activeIssueId?: number;
+function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, onOpenIssue, onOpenNotification, notificationsByIssue, onCreateIssue, activeIssueId }: {
+  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onOpenNotification: (notification: Notification) => void; notificationsByIssue: Map<number, Notification[]>; onCreateIssue: BoardPageProps['onCreateIssue']; activeIssueId?: number;
 }) {
   const { t, i18n } = useTranslation();
   const { isOver, setNodeRef } = useDroppable({ id: `lane:${column.id}`, disabled: !canWrite });
@@ -111,24 +121,29 @@ function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, o
     {road && column.version?.dueDate && <div className="lane-caption">{t('dueDate')} · {new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' }).format(new Date(`${column.version.dueDate}T00:00:00`))}</div>}
     <div className="lane-content">
       <div className="lane-dropzone" ref={setNodeRef}>
-        {column.issues.map((issue) => <BoardCard key={issue.id} issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pending={pendingIssueIds.has(issue.id)} onOpen={onOpenIssue} isDragging={activeIssueId === issue.id} />)}
+        {column.issues.map((issue) => {
+          const unread = notificationsByIssue.get(issue.id) || [];
+          return <BoardCard key={issue.id} issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pending={pendingIssueIds.has(issue.id)} onOpen={onOpenIssue} isDragging={activeIssueId === issue.id} unreadCount={unread.length} oldestUnread={oldestUnreadNotification(unread)} onOpenNotification={onOpenNotification} />;
+        })}
         {column.issues.length === 0 && <div className="lane-empty">{isOver ? <span>{t('moveTo')} {column.name}</span> : <span className="lane-empty-mark">· · ·</span>}</div>}
       </div>
     </div>
   </section>;
 }
 
-export function BoardPage({ project, data, statuses, priorities, me, settings, view, filters, canWrite, pendingIssueIds, onFiltersChange, onSettingsChange, onViewChange, onSelectSavedView, onDeleteSavedView, onOpenIssue, onCreateIssue, onMoveIssue, onSaveView, savedViews }: BoardPageProps) {
+export function BoardPage({ project, data, statuses, priorities, me, settings, view, filters, unreadNotifications, canWrite, pendingIssueIds, onFiltersChange, onSettingsChange, onViewChange, onSelectSavedView, onDeleteSavedView, onOpenIssue, onOpenNotification, onCreateIssue, onMoveIssue, onSaveView, savedViews }: BoardPageProps) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
   const [savingView, setSavingView] = useState(false);
   const [viewName, setViewName] = useState('');
   const [draggedId, setDraggedId] = useState<number>();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const filtered = useMemo(() => sortIssues(filterIssues(data.issues, statuses, view, me.id, filters, data.members), priorities, settings.sort), [data.issues, data.members, statuses, priorities, view, me.id, filters, settings.sort]);
+  const notificationsByIssue = useMemo(() => groupUnreadNotifications(unreadNotifications), [unreadNotifications]);
+  const unreadIssueIds = useMemo(() => new Set(notificationsByIssue.keys()), [notificationsByIssue]);
+  const filtered = useMemo(() => sortIssues(filterIssues(data.issues, statuses, view, me.id, filters, data.members, unreadIssueIds), priorities, settings.sort), [data.issues, data.members, statuses, priorities, view, me.id, filters, settings.sort, unreadIssueIds]);
   const columns = useMemo(() => groupBoard(filtered, statuses, data.versions, view), [filtered, statuses, data.versions, view]);
   const selectedLabels = [...new Set([...(filters.labels || []), ...(filters.label ? [filters.label] : [])])];
-  const hasFilters = Boolean(filters.assignedToMe || filters.assigneeId !== undefined || selectedLabels.length || filters.search || filters.statusIds?.length || filters.priorityIds?.length || filters.versionId !== undefined || filters.includeClosed);
+  const hasFilters = Boolean(filters.assignedToMe || filters.assigneeId !== undefined || selectedLabels.length || filters.search || filters.statusIds?.length || filters.priorityIds?.length || filters.versionId !== undefined || filters.includeClosed || filters.hasNotifications);
   const mineActive = Boolean(filters.assignedToMe || view === 'mine');
   const onDragEnd = (event: DragEndEvent) => {
     const from = String(event.active.id);
@@ -181,6 +196,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     activeChips.push({ key: 'version', label: `${t('release')}: ${version?.name || `#${filters.versionId}`}`, remove: () => onFiltersChange({ ...filters, versionId: undefined }) });
   }
   if (filters.includeClosed) activeChips.push({ key: 'closed', label: t('includeClosed'), remove: () => onFiltersChange({ ...filters, includeClosed: undefined }) });
+  if (filters.hasNotifications) activeChips.push({ key: 'hasNotifications', label: t('unreadNotificationsFilter'), remove: () => onFiltersChange({ ...filters, hasNotifications: undefined }) });
   const sortOptions = (['priority', 'updated', 'created', 'id', 'subject'] as const).flatMap(field => (['desc', 'asc'] as const).map(direction => ({
     value: `${field}:${direction}`,
     label: `${t(field === 'id' ? 'issueId' : field === 'subject' ? 'subject' : field)} · ${t(direction)}`,
@@ -188,7 +204,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
   const viewLabelKeys: Record<View, string> = { all: 'viewAll', mine: 'viewMine', watching: 'viewWatching', backlog: 'viewBacklog' };
   const background = settings.projectBackgrounds?.[project.id];
   const backgroundStyle = background ? { '--project-background': `url("${background}")` } as CSSProperties : undefined;
-  return <main className={`page board-page${background ? ' has-project-background' : ''}`} style={backgroundStyle} data-testid="board">
+  return <main className={`page board-page${background ? ' has-project-background' : ''}`} style={backgroundStyle} data-testid="board" data-modal-focus-fallback tabIndex={-1}>
     <h1 className="sr-only">{view === 'backlog' ? t('backlog') : t('board')} · {project.name}</h1>
     <div className="board-toolbar">
       <nav className="board-view-switcher" aria-label={t('boardViews')}>
@@ -209,6 +225,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
               <div className="board-filter-field"><span>{t('filterStatus')}</span><MultiPicker label={t('filterStatus')} placeholder={t('viewAll')} options={statuses.map(status => ({ value: String(status.id), label: status.name }))} values={(filters.statusIds || []).map(String)} onChange={values => { const ids = values.map(Number).filter(Number.isFinite); onFiltersChange({ ...filters, statusIds: ids.length ? ids : undefined }); }} /></div>
               <div className="board-filter-field"><span>{t('filterPriority')}</span><MultiPicker label={t('filterPriority')} placeholder={t('viewAll')} options={priorities.map(priority => ({ value: String(priority.id), label: priority.name }))} values={(filters.priorityIds || []).map(String)} onChange={values => { const ids = values.map(Number).filter(Number.isFinite); onFiltersChange({ ...filters, priorityIds: ids.length ? ids : undefined }); }} /></div>
               <div className="board-filter-field"><span>{t('release')}</span><Picker label={t('release')} placeholder={t('viewAll')} options={data.versions.map(version => ({ value: String(version.id), label: version.name, description: version.status === 'closed' ? t('closed') : undefined }))} value={filters.versionId === undefined ? undefined : String(filters.versionId)} onChange={value => onFiltersChange({ ...filters, versionId: value ? Number(value) : undefined })} clearable /></div>
+              <label className="closed-filter"><input type="checkbox" checked={!!filters.hasNotifications} onChange={event => onFiltersChange({ ...filters, hasNotifications: event.target.checked || undefined })} />{t('unreadNotificationsFilter')}</label>
               <label className="closed-filter"><input type="checkbox" checked={!!filters.includeClosed} onChange={event => onFiltersChange({ ...filters, includeClosed: event.target.checked || undefined })} />{t('includeClosed')}</label>
             </div>
             <div className="board-filter-footer"><span className="filter-result-count">{t('issueCount', { count: filtered.length })}</span><Button size="sm" variant="outline" onClick={() => setSavingView(true)}>{t('saveView')}</Button></div>
@@ -225,7 +242,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     {filtered.length === 0 && columns.length > 0 && <p className="board-empty-hint" role="status">{hasFilters ? t('emptySearch') : t('noIssues')} · {t('noIssuesHint')}</p>}
     {columns.length === 0 ? <div className="empty-state board-empty"><div className="empty-illustration"><Search size={24} /></div><h2>{hasFilters ? t('emptySearch') : t('noIssues')}</h2><p>{t('noIssuesHint')}</p>{!hasFilters && canWrite && <Button variant="primary" onClick={() => onCreateIssue()}><Plus size={15} />{t('createFirstIssue')}</Button>}</div> : <DndContext sensors={sensors} onDragStart={(event) => setDraggedId(Number(String(event.active.id).replace('issue:', '')))} onDragCancel={() => setDraggedId(undefined)} onDragEnd={onDragEnd}>
       <div className="board-scroll"><div className="board-lanes">
-        {columns.map((column) => <Lane key={column.id} column={column} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onOpenIssue={onOpenIssue} onCreateIssue={onCreateIssue} activeIssueId={draggedId} />)}
+        {columns.map((column) => <Lane key={column.id} column={column} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} notificationsByIssue={notificationsByIssue} onCreateIssue={onCreateIssue} activeIssueId={draggedId} />)}
       </div></div>
       <DragOverlay>{draggedId ? (() => { const issue = data.issues.find((entry) => entry.id === draggedId); return issue ? <BoardCard issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={false} onOpen={onOpenIssue} isDragging /> : null; })() : null}</DragOverlay>
     </DndContext>}

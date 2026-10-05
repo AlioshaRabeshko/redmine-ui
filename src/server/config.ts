@@ -51,7 +51,7 @@ export function createConfig(input: ConfigInput = process.env): AppConfig {
   }
   const db = input.DATABASE_PATH ?? './data/workspace.sqlite';
   const port = Number(input.PORT ?? 3000);
-  const pollIntervalSeconds = Number(input.POLL_INTERVAL_SECONDS ?? 30);
+  const pollIntervalSeconds = Number(input.POLL_INTERVAL_SECONDS ?? 10);
   return {
     mode,
     modeSetting,
@@ -62,7 +62,7 @@ export function createConfig(input: ConfigInput = process.env): AppConfig {
     scope: mode === 'demo' ? 'demo:isolated' : `redmine:${instanceKey}`,
     host: input.HOST ?? '127.0.0.1',
     port: Number.isInteger(port) && port > 0 && port < 65536 ? port : 3000,
-    pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) && pollIntervalSeconds >= 5 ? pollIntervalSeconds : 30,
+    pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) && pollIntervalSeconds >= 5 ? pollIntervalSeconds : 10,
     configurationError,
   };
 }

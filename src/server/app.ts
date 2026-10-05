@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, PeopleField, Person, RedmineRole, ReleaseDetail, SearchResponse, SearchResult } from '../shared/types.js';
+import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, Notification, PeopleField, Person, Priority, RedmineRole, ReleaseDetail, SearchResponse, SearchResult, Status, Version } from '../shared/types.js';
 import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
@@ -14,6 +14,7 @@ import { applyPersonAvatarOverride, projectPerson } from './people.js';
 import { RedmineAdapter } from './redmine/adapter.js';
 import { RedmineRequestError, type FetchLike } from './redmine/transport.js';
 import { BackgroundWorker, SyncService, type EventHub } from './sync/service.js';
+import { projectNotifications } from './notifications.js';
 
 export interface BackendRuntime {
   config: AppConfig;
@@ -440,29 +441,42 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     return { deleted: true };
   });
 
-  app.get<{ Querystring: { archived?: string } }>('/api/notifications', async (request) => {
-    const notifications = await store.getNotifications(request.query.archived === 'true');
-    if (!notifications.length) return notifications;
-    const [people, settings, membershipIdsByProject, membershipRolesByProject] = await Promise.all([
-      store.getValue<Person[]>('people'), store.getSettings(),
+  const loadVisibleNotifications = async (archived = false): Promise<Notification[]> => {
+    const stored = await store.getNotifications(archived);
+    if (!stored.length) return [];
+    const issueIds = [...new Set(stored.map(notification => notification.issueId))];
+    const [issues, journalsByIssue, people, settings, membershipIdsByProject, membershipRolesByProject,
+      statuses, priorities, versions, labelOptions] = await Promise.all([
+      store.getIssues(), store.getJournalsForIssues(issueIds), store.getValue<Person[]>('people'), store.getSettings(),
       store.getValue<Record<string, number[]>>('projectMembershipIds'),
       store.getValue<Record<string, Record<string, RedmineRole[]>>>('projectMembershipRoles'),
+      store.getValue<Status[]>('statuses'), store.getValue<Priority[]>('priorities'), store.getVersions(),
+      store.getValue<Record<string, LabelOption[]>>('labelOptions'),
     ]);
     const peopleById = new Map((people ?? []).map(person => [person.id, person]));
-    return notifications.map(notification => {
+    const projected = projectNotifications(stored, { issues, journalsByIssue, statuses: statuses ?? [], people: people ?? [],
+      priorities: priorities ?? [], versions, labelOptions: labelOptions ?? {}, settings });
+    return projected.map(notification => {
       const actor = { ...notification.actor, ...(peopleById.get(notification.actor.id) ?? {}) };
       const projectKey = String(notification.projectId);
       const roleContext = {
         membershipIds: new Set(membershipIdsByProject?.[projectKey] ?? []),
         membershipRoles: membershipRolesByProject?.[projectKey] ?? {},
       };
-      return { ...notification, actor: projectPerson(actor, notification.projectId, roleContext, settings) };
+      return {
+        ...notification,
+        actor: projectPerson(actor, notification.projectId, roleContext, settings),
+        ...(notification.changeLookups ? { changeLookups: { ...notification.changeLookups,
+          people: (notification.changeLookups.people ?? []).map(person => projectPerson(person, notification.projectId, roleContext, settings)) } } : {}),
+      };
     });
-  });
+  };
+  app.get<{ Querystring: { archived?: string } }>('/api/notifications', async (request) =>
+    loadVisibleNotifications(request.query.archived === 'true'));
   app.post('/api/notifications/read', async (request) => {
     const body = z.object({ ids: z.array(z.string().min(1).max(200)).max(500) }).parse(request.body);
     const updated = await store.markNotificationsRead([...new Set(body.ids)]);
-    const unreadCount = (await store.getNotifications(false)).length;
+    const unreadCount = (await loadVisibleNotifications(false)).length;
     events.publish('notifications', { unreadCount });
     return { updated, unreadCount };
   });

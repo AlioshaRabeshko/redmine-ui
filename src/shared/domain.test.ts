@@ -67,6 +67,12 @@ describe('board and release rules', () => {
     expect(filterIssues(tasks, statuses, 'all', 1, { labels: ['frontend', 'support'] }).map(i => i.id)).toEqual([1, 2]);
     expect(filterIssues(tasks, statuses, 'all', 1, { label: 'docs' }).map(i => i.id)).toEqual([3]);
   });
+  it('filters by the shared unread issue index without disturbing other filters', () => {
+    const tasks = [issue({ id: 1 }), issue({ id: 2, assignedToId: 7 }), issue({ id: 3, assignedToId: 7 })];
+    const unreadIssueIds = new Set([1, 3]);
+    expect(filterIssues(tasks, statuses, 'all', 7, { hasNotifications: true }, [], unreadIssueIds).map(item => item.id)).toEqual([1, 3]);
+    expect(filterIssues(tasks, statuses, 'all', 7, { hasNotifications: true, assignedToMe: true }, [], unreadIssueIds).map(item => item.id)).toEqual([3]);
+  });
   it('toggles assigned-to-me without clearing other filters', () => {
     const current = { search: 'dialog', statusIds: [2], labels: ['ux'], assigneeId: 9 };
     const enabled = toggleAssignedToMe(current);
