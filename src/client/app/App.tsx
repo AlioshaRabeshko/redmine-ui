@@ -1,3 +1,4 @@
+import { pendingCommandIntents } from '../lib/pendingCommandIntents';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, AlertTriangle, Bell, BellDot, Check, ChevronDown, Command, Inbox, LayoutDashboard, ListTodo, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, Rocket, Search, Settings2, ShieldCheck, Sparkles, UserRound, X } from 'lucide-react';
@@ -213,8 +214,8 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const quickMoveQuery = useQuery({ queryKey: ['issue', quickMoveIssueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${quickMoveIssueId}`), enabled: !!quickMoveIssueId, staleTime: 0, retry: false });
   const board = boardQuery.data;
   const statuses = bootstrap.statuses;
-  const canWrite = bootstrap.mode === 'demo' && !bootstrap.readOnly && bootstrap.capabilities.canWrite;
-  const readOnlyMode = bootstrap.mode === 'redmine' || bootstrap.readOnly;
+  const canWrite = !bootstrap.readOnly && bootstrap.capabilities.canWrite && (bootstrap.mode === 'demo' || bootstrap.connected);
+  const readOnlyMode = bootstrap.readOnly;
   const members = board?.members || [];
   const activeIssue = board?.issues.find((item) => item.id === issueId);
   const issueDetailIssue = freshIssueDetailId === issueId
@@ -417,15 +418,19 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const runCommand = useCallback(async (command: WorkspaceCommand): Promise<CommandResult> => {
     if (!canWrite) throw new ApiRequestError({ code: 'READ_ONLY', message: t('readOnlyNote') }, t('readOnlyNote'), 403);
     let result: CommandResult;
-    try { result = await commandMutation.mutateAsync(command); }
-    catch (error) { throw new Error(friendlyError(error, t)); }
+    const scope = `${bootstrap.redmineUrl}:${bootstrap.me.id}`;
+    const retryEnvelope = command.operationId && Object.keys(command.input || {}).length === 0;
+    const pending = bootstrap.mode === 'redmine' && !retryEnvelope ? pendingCommandIntents.claim(scope, command) : command;
+    try { result = await commandMutation.mutateAsync(pending); }
+    catch (error) { throw new Error(bootstrap.mode === 'redmine' && !(error instanceof ApiRequestError) ? t('errorOutcomeUnknown') : friendlyError(error, t)); }
+    if (result.operation.status === 'done' && bootstrap.mode === 'redmine') pendingCommandIntents.complete(scope, pending);
     if (result.operation.status === 'failed' || result.operation.status === 'blocked') {
       const code = result.operation.errorCode;
       const mapped = code ? friendlyError(new ApiRequestError({ code, message: '' }, '', 400), t) : t('errorGeneric');
       throw new Error(mapped);
     }
     return result;
-  }, [canWrite, commandMutation, t]);
+  }, [canWrite, commandMutation, t, bootstrap.mode, bootstrap.redmineUrl, bootstrap.me.id]);
 
   const patchSettings = useCallback((patch: SettingsPatch, quiet = true) => {
     const optimistic = mergeSettingsPatch(settingsRef.current, patch);
@@ -750,7 +755,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const shortcutKeys = (action: string) => settings.shortcuts.find(item => item.action === action && item.enabled && item.keys.trim())?.keys;
   const visibleProjects = bootstrap.projects.filter((item) => `${item.name} ${item.identifier}`.toLocaleLowerCase().includes(projectSearch.toLocaleLowerCase()));
   const statusesReady = statuses.length > 0;
-  if (!project) return <div className="startup-state startup-error"><div className="startup-brand"><span className="brand-mark"><LayoutDashboard size={18} /></span><strong>{t('appName')}</strong></div><div className="empty-illustration"><ShieldCheck size={24} /></div><h1>{t('noProjects')}</h1><p>{bootstrap.mode === 'redmine' ? t('readOnlyNote') : t('offline')}</p><Button variant="primary" onClick={onReload}>{t('retry')}</Button></div>;
+  if (!project) return <div className="startup-state startup-error"><div className="startup-brand"><span className="brand-mark"><LayoutDashboard size={18} /></span><strong>{t('appName')}</strong></div><div className="empty-illustration"><ShieldCheck size={24} /></div><h1>{t('noProjects')}</h1><p>{bootstrap.readOnly ? t('readOnlyNote') : t('offline')}</p><Button variant="primary" onClick={onReload}>{t('retry')}</Button></div>;
   return <div className={`app-frame${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
     <aside className="sidebar">
       <div className="sidebar-top"><a href="#home" className="brand-lockup" onClick={(e) => e.preventDefault()}><span className="brand-mark"><LayoutDashboard size={17} /></span><span className="brand-name">Redmine<span>Workspace</span></span></a><IconButton label={sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')} title={`${sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')}${shortcutKeys('toggleSidebar') ? ` (${shortcutKeys('toggleSidebar')})` : ''}`} aria-expanded={!sidebarCollapsed} data-testid="sidebar-toggle" className="sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</IconButton></div>
@@ -768,7 +773,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
           <NavItem active={screen === 'settings'} label={t('settings')} icon={<Settings2 size={17} />} collapsed={sidebarCollapsed} shortcut={shortcutKeys('openSettings')} onClick={() => openScreen('settings')} />
         </div>
       </div>
-      <div className="sidebar-bottom"><div className="mode-footer"><span className={`connection-indicator ${bootstrap.connected ? 'is-connected' : 'is-offline'}`} /><span>{bootstrap.mode === 'demo' ? t('demo') : t('readonly')}</span></div><div className="user-footer"><Avatar person={bootstrap.me} size="sm" /><span><strong>{bootstrap.me.name}</strong><small>{bootstrap.mode === 'demo' ? t('demo') : t('readOnlyBadge')}</small></span></div></div>
+      <div className="sidebar-bottom"><div className="mode-footer"><span className={`connection-indicator ${bootstrap.connected ? 'is-connected' : 'is-offline'}`} /><span>{bootstrap.mode === 'demo' ? t('demo') : readOnlyMode ? t('readonly') : t('writeMode')}</span></div><div className="user-footer"><Avatar person={bootstrap.me} size="sm" /><span><strong>{bootstrap.me.name}</strong><small>{bootstrap.mode === 'demo' ? t('demo') : readOnlyMode ? t('readOnlyBadge') : t('writeMode')}</small></span></div></div>
     </aside>
     <div className="app-main">
       <header className="topbar">
@@ -776,6 +781,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
         <div className="topbar-actions">
           <WorkspaceSearch inputRef={searchRef} project={project} projects={bootstrap.projects} value={filters.search || ''} onFocus={() => { searchEditingRef.current = false; }} onBlur={() => { searchEditingRef.current = false; }} onChange={value => { setFilters(current => ({ ...current, search: value || undefined }), searchEditingRef.current); searchEditingRef.current = true; }} onOpenIssue={(id, projectId) => navigate({ ...clearForms, projectId: projectId ?? selectedProjectId, issueId: id })} />
           <div className={`connection-pill ${bootstrap.connected ? 'connection-online' : 'connection-offline'}`} title={bootstrap.connected ? t('connected') : t('offline')}><span />{bootstrap.connected ? (bootstrap.mode === 'demo' ? t('demo') : t('connected')) : t('offline')}</div>
+          {canWrite && bootstrap.mode === 'redmine' && <span className="write-mode-pill" role="status"><Check size={14} />{t('writeMode')}</span>}
           {readOnlyMode && <span className="readonly-mode-pill" role="status" aria-label={t('readOnlyNote')} title={t('readOnlyNote')}><AlertTriangle size={14} />{t('readonlyCompact')}</span>}
           <IconButton label={t('operationTitle')} onClick={() => openOverlay('activity')} className="activity-trigger"><Activity size={17} /></IconButton>
           <Button variant="quiet" size="sm" onClick={manualSync} disabled={busySync}>{busySync ? <Spinner /> : <Sparkles size={15} />}{t('sync')}</Button>
@@ -786,7 +792,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
         {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => navigate({ archived: !archived })} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onMarkManyRead={(items) => { void markManyRead(items).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
         {screen === 'releases' && !board && <div className="page-loading">{boardQuery.isError ? <Notice tone="error">{friendlyError(boardQuery.error, t)} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice> : <Spinner label={t('loading')} />}</div>}
         {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} readOnlyMode={readOnlyMode} onSelectVersion={selectVersion} form={location.releaseForm} onFormChange={changeReleaseForm} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`}  onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
-        {screen === 'settings' && <SettingsPage key={selectedProjectId} settings={settings} members={members} peopleRecommendations={board?.peopleRecommendations} project={project} projects={bootstrap.projects} statuses={statuses} labels={board?.labels || []} readOnly={bootstrap.mode === 'redmine' || bootstrap.readOnly} onPatchSettings={patch => patchSettings(patch)} onResetViews={() => { void patchSettings({ savedViews: settingsRef.current.savedViews.filter((saved) => saved.projectId !== selectedProjectId) }).catch(error => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} />}
+        {screen === 'settings' && <SettingsPage key={selectedProjectId} settings={settings} members={members} peopleRecommendations={board?.peopleRecommendations} project={project} projects={bootstrap.projects} statuses={statuses} labels={board?.labels || []} readOnly={readOnlyMode} onPatchSettings={patch => patchSettings(patch)} onResetViews={() => { void patchSettings({ savedViews: settingsRef.current.savedViews.filter((saved) => saved.projectId !== selectedProjectId) }).catch(error => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} />}
       </div>
     </div>
 
@@ -802,7 +808,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     {showPalette && <CommandPalette onClose={closeOverlay} onSearch={() => { focusSearchAfterCloseRef.current = true; closeOverlay(); }} onCreate={() => navigate({ ...clearForms, createIssue: {} }, { replace: true })} onProject={() => navigate({ overlay: 'projects' }, { replace: true })} onInbox={() => openScreen('inbox', true)} onRelease={() => openScreen('releases', true)} />}
     {quickMoveIssue && <QuickMoveDialog issue={quickMoveIssue} statuses={statuses} onMove={(statusId) => { closeOverlay(); void moveIssue(quickMoveIssue, { statusId, fixedVersionId: quickMoveIssue.fixedVersionId }).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onClose={() => closeOverlay()} canWrite={canWrite} />}
     {quickMoveIssueId && !quickMoveIssue && <Modal title={`#${quickMoveIssueId}`} onClose={closeOverlay} size="sm"><div className="center-loading">{quickMoveQuery.isError ? <><Notice tone="error">{friendlyError(quickMoveQuery.error, t)}</Notice><Button size="sm" onClick={() => quickMoveQuery.refetch()}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
-    {showActivity && <OperationsDrawer operations={operationsQuery.data || []} mode={bootstrap.mode} onClose={closeOverlay} onRetry={(operation) => { void retryOperation(operation, runCommand, notify, t); }} />}
+    {showActivity && <OperationsDrawer operations={operationsQuery.data || []} mode={bootstrap.mode} readOnly={readOnlyMode} canWrite={canWrite} onClose={closeOverlay} onRetry={(operation) => { void retryOperation(operation, runCommand, notify, t); }} />}
     {toastText && <Toast text={toastText} onClose={() => setToastText('')} />}
   </div>;
 }
@@ -833,7 +839,7 @@ function QuickMoveDialog({ issue, statuses, canWrite, onMove, onClose }: { issue
   return <Modal title={t('moveShortcut')} eyebrow={`#${issue.id} ${issue.subject}`} onClose={onClose} size="sm" className="quick-move-modal"><p className="form-intro">{t('actualStatus')}: {statuses.find((status) => status.id === issue.statusId)?.name || t('unknown')}</p><div className="quick-move-list">{statuses.map((status) => <button key={status.id} type="button" className={status.id === issue.statusId ? 'selected' : ''} onClick={() => onMove(status.id)} disabled={!canWrite || status.id === issue.statusId}><span className={`lane-dot dot-${status.key}`} />{status.name}<ChevronDown size={14} /></button>)}</div>{issue.fixedVersionId && <Notice>{t('keepRoadmapHint')}</Notice>}</Modal>;
 }
 
-function OperationsDrawer({ operations, mode, onClose, onRetry }: { operations: Operation[]; mode: string; onClose: () => void; onRetry: (operation: Operation) => void }) {
+function OperationsDrawer({ operations, mode, readOnly, canWrite, onClose, onRetry }: { operations: Operation[]; mode: string; readOnly: boolean; canWrite: boolean; onClose: () => void; onRetry: (operation: Operation) => void }) {
   const { t, i18n } = useTranslation();
   const statusLabel = (status: Operation['status']) => status === 'done' ? t('operationDone') : status === 'running' || status === 'pending' ? t('operationRunning') : status === 'blocked' ? t('operationBlocked') : t('operationFailed');
   const stepStatusLabel = (status: Operation['steps'][number]['status']) => status === 'done' ? t('stepDone') : status === 'pending' ? t('stepPending') : status === 'skipped' ? t('stepSkipped') : status === 'blocked' ? t('stepBlocked') : t('stepFailed');
@@ -841,8 +847,8 @@ function OperationsDrawer({ operations, mode, onClose, onRetry }: { operations: 
   const operationError = (operation: Operation) => operation.errorCode ? friendlyError(new ApiRequestError({ code: operation.errorCode, message: '' }, '', 400), t) : t('errorGeneric');
   return <div className="drawer-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><aside className="operations-drawer" role="dialog" aria-modal="true" aria-label={t('operationTitle')}>
     <div className="drawer-head"><div><span className="eyebrow">{t('workspace')}</span><h2>{t('operationTitle')}</h2></div><IconButton label={t('close')} onClick={onClose}><X size={17} /></IconButton></div>
-    {mode === 'redmine' && <div className="readonly-dialog-status" role="status"><span className="readonly-dialog-pill" title={t('readOnlyNote')}><AlertTriangle size={14} />{t('readonlyCompact')}</span><span className="readonly-inline-copy">{t('readOnlyNote')}</span></div>}
-    <div className="operations-list">{operations.length === 0 ? <div className="empty-state"><div className="empty-illustration"><Activity size={23} /></div><p>{t('noOperations')}</p></div> : operations.map((operation) => <article className="operation-card" key={operation.id}><div className="operation-card-top"><span className={`operation-mark operation-${operation.status}`}><span /></span><strong>{labels[operation.type] ? t(labels[operation.type]) : t('operationTitle')}</strong><span>{statusLabel(operation.status)}</span></div><small>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operation.createdOn))}{operation.issueId ? ` · #${operation.issueId}` : ''}</small>{operation.error && <p className="operation-error">{operationError(operation)}</p>}{operation.steps.length > 0 && <ul>{operation.steps.map((step, index) => <li key={`${operation.id}-${index}`} className={`step-${step.status}`}><span />{t('operationStep', { count: index + 1 })} · {stepStatusLabel(step.status)}</li>)}</ul>}{(operation.error || operation.steps.some((step) => step.name || step.error)) && <details className="operation-technical-details"><summary>{t('technicalDetails')}</summary>{operation.error && <p>{operation.error}</p>}{operation.steps.length > 0 && <ul>{operation.steps.map((step, index) => <li key={`detail-${operation.id}-${index}`}>{step.name}{step.error ? ` · ${step.error}` : ''}</li>)}</ul>}</details>}{mode === 'demo' && ['failed', 'blocked'].includes(operation.status) && <Button size="sm" variant="outline" onClick={() => onRetry(operation)}>{t('retryOperation')}</Button>}</article>)}</div>
+    {readOnly && <div className="readonly-dialog-status" role="status"><span className="readonly-dialog-pill" title={t('readOnlyNote')}><AlertTriangle size={14} />{t('readonlyCompact')}</span><span className="readonly-inline-copy">{t('readOnlyNote')}</span></div>}
+    <div className="operations-list">{operations.length === 0 ? <div className="empty-state"><div className="empty-illustration"><Activity size={23} /></div><p>{t('noOperations')}</p></div> : operations.map((operation) => <article className="operation-card" key={operation.id}><div className="operation-card-top"><span className={`operation-mark operation-${operation.status}`}><span /></span><strong>{labels[operation.type] ? t(labels[operation.type]) : t('operationTitle')}</strong><span>{statusLabel(operation.status)}</span></div><small>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(operation.createdOn))}{operation.issueId ? ` · #${operation.issueId}` : ''}</small>{operation.error && <p className="operation-error">{operationError(operation)}</p>}{operation.steps.length > 0 && <ul>{operation.steps.map((step, index) => <li key={`${operation.id}-${index}`} className={`step-${step.status}`}><span />{t('operationStep', { count: index + 1 })} · {stepStatusLabel(step.status)}</li>)}</ul>}{(operation.error || operation.steps.some((step) => step.name || step.error)) && <details className="operation-technical-details"><summary>{t('technicalDetails')}</summary>{operation.error && <p>{operation.error}</p>}{operation.steps.length > 0 && <ul>{operation.steps.map((step, index) => <li key={`detail-${operation.id}-${index}`}>{step.name}{step.error ? ` · ${step.error}` : ''}</li>)}</ul>}</details>}{canWrite && (mode === 'demo' || operation.retryable === true) && operation.errorCode !== 'OUTCOME_UNKNOWN' && ['failed', 'blocked'].includes(operation.status) && <Button size="sm" variant="outline" onClick={() => onRetry(operation)}>{t('retryOperation')}</Button>}</article>)}</div>
   </aside></div>;
 }
 

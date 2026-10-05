@@ -5,10 +5,11 @@ import { branchForIssue, releaseReadiness } from '../../shared/domain.js';
 import { WorkspaceStore, type OperationRecord } from '../db/store.js';
 import { applySettingsPatch, parseSettings, parseSettingsPatch } from '../settings.js';
 import type { EventHub } from '../sync/service.js';
+import { ApiFault } from './errors.js';
+import { RealCommandExecutor } from './real-executor.js';
+import type { RedmineAdapter } from '../redmine/adapter.js';
 
-export class ApiFault extends Error {
-  constructor(readonly statusCode: number, readonly code: string, message: string, readonly details?: unknown) { super(message); }
-}
+export { ApiFault } from './errors.js';
 
 const now = () => new Date().toISOString();
 function numberField(input: Record<string, unknown>, key: string): number | undefined {
@@ -20,17 +21,22 @@ function stringField(input: Record<string, unknown>, key: string): string | unde
   return typeof value === 'string' ? value : undefined;
 }
 function readOnlyFault(): ApiFault {
-  return new ApiFault(403, 'READ_ONLY', 'Тимчасове обмеження розробки: записи в реальний Redmine наразі вимкнені.');
+  return new ApiFault(403, 'READ_ONLY', 'Запис у Redmine вимкнений. Для нього потрібно задати REDMINE_WRITE_ENABLED=true на backend.');
 }
 
 export class CommandService {
   private commandTail: Promise<void> = Promise.resolve();
+  private readonly realExecutor?: RealCommandExecutor;
 
-  constructor(private readonly config: AppConfig, readonly store: WorkspaceStore, private readonly events?: EventHub) {}
+  constructor(private readonly config: AppConfig, readonly store: WorkspaceStore, private readonly events?: EventHub, adapter?: RedmineAdapter) {
+    if (config.mode === 'redmine' && adapter) this.realExecutor = new RealCommandExecutor(adapter, store, events);
+  }
 
   async execute(command: Command): Promise<CommandResult> {
     // Reject before queuing or inspecting mutation data. All demo writes are serialized to avoid ID and workflow races.
-    if (this.config.mode === 'redmine' && command.type !== 'generateBranch') throw readOnlyFault();
+    if (this.config.mode === 'redmine' && !this.config.writeEnabled && command.type !== 'generateBranch') throw readOnlyFault();
+    if (this.config.mode === 'redmine' && !this.realExecutor) throw new ApiFault(503, 'REDMINE_UNAVAILABLE',
+      this.config.configurationError ?? 'З’єднання з Redmine недоступне; деморежим не використовується.');
     const previous = this.commandTail;
     let release!: () => void;
     this.commandTail = new Promise<void>(resolve => { release = resolve; });
@@ -40,6 +46,8 @@ export class CommandService {
   }
 
   private async executeQueued(command: Command): Promise<CommandResult> {
+    if (this.config.mode === 'redmine' && this.config.writeEnabled) return this.realExecutor!.execute(command);
+    if (this.config.mode === 'redmine' && command.type === 'generateBranch') return this.generateBranch(command);
     await this.store.initializeDemo();
     let effectiveCommand = command;
     if (command.operationId) {
@@ -47,7 +55,7 @@ export class CommandService {
       if (existing && existing.operation.type !== command.type) throw new ApiFault(409, 'OPERATION_CONFLICT', 'Цей operationId уже використано для іншої команди.');
       if (existing) {
         const original = existing.context?.originalCommand as Command | undefined;
-        if (original && isRetryEnvelope(command, original, existing.operation.issueId)) effectiveCommand = { ...original, operationId: command.operationId };
+        if (original && isRetryEnvelope(command, original, existing.operation.issueId, existing.operation.versionId)) effectiveCommand = { ...original, operationId: command.operationId };
       }
       if (existing?.context?.commandSignature && existing.context.commandSignature !== commandSignature(effectiveCommand)) {
         throw new ApiFault(409, 'OPERATION_CONFLICT', 'Цей operationId уже використано з іншими даними.');
@@ -674,6 +682,10 @@ export class CommandService {
   }
 
   async processPendingDemoAutomations(issueId?: number, exceptId?: string): Promise<Operation[]> {
+    if (this.config.mode === 'redmine') {
+      await this.realExecutor?.processPendingAutomations(issueId);
+      return [];
+    }
     if (this.config.mode !== 'demo') return [];
     const settings = await this.store.getSettings();
     if (!settings.automationEnabled) return [];
@@ -864,11 +876,13 @@ function commandSignature(command: Command): string {
   const { operationId: _operationId, ...payload } = command;
   return createHash('sha256').update(JSON.stringify(sortObject(payload))).digest('hex');
 }
-function isRetryEnvelope(candidate: Command, original: Command, storedIssueId?: number): boolean {
+function isRetryEnvelope(candidate: Command, original: Command, storedIssueId?: number, storedVersionId?: number): boolean {
   if (Object.keys(candidate.input ?? {}).length > 0 || candidate.type !== original.type) return false;
   for (const key of ['issueId', 'versionId', 'projectId'] as const) {
     if (candidate[key] === undefined || candidate[key] === original[key]) continue;
-    if (!(key === 'issueId' && candidate[key] === storedIssueId && original.type === 'createIssue' && original.issueId === undefined)) return false;
+    const returnedIssue = key === 'issueId' && candidate[key] === storedIssueId && original.type === 'createIssue' && original.issueId === undefined;
+    const returnedVersion = key === 'versionId' && candidate[key] === storedVersionId && original.type === 'createRelease' && original.versionId === undefined;
+    if (!returnedIssue && !returnedVersion) return false;
   }
   return true;
 }

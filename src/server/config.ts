@@ -8,6 +8,7 @@ export interface AppConfig {
   modeSetting: AppModeSetting;
   token?: string;
   tokenConfigured: boolean;
+  writeEnabled: boolean;
   redmineUrl: string;
   databasePath: string;
   scope: string;
@@ -21,6 +22,7 @@ export interface ConfigInput {
   APP_MODE?: string;
   REDMINE_URL?: string;
   REDMINE_API_TOKEN?: string;
+  REDMINE_WRITE_ENABLED?: string;
   DATABASE_PATH?: string;
   HOST?: string;
   PORT?: string | number;
@@ -34,6 +36,7 @@ export function createConfig(input: ConfigInput = process.env): AppConfig {
   }
   const token = input.REDMINE_API_TOKEN?.trim() || undefined;
   const mode = modeSetting === 'auto' ? (token ? 'redmine' : 'demo') : modeSetting;
+  const writeEnabled = mode === 'redmine' && input.REDMINE_WRITE_ENABLED === 'true';
   const requestedUrl = input.REDMINE_URL ?? 'https://redmine.example.invalid';
   let redmineUrl = 'https://invalid-redmine-url.local';
   let configurationError: string | undefined;
@@ -57,6 +60,7 @@ export function createConfig(input: ConfigInput = process.env): AppConfig {
     modeSetting,
     token,
     tokenConfigured: Boolean(token),
+    writeEnabled,
     redmineUrl,
     databasePath: db,
     scope: mode === 'demo' ? 'demo:isolated' : `redmine:${instanceKey}`,

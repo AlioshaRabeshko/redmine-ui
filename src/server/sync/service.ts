@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import type { ActivityKind, Issue, LabelOption, Notification, Operation, OperationStep, Person, Status, Version } from '../../shared/types.js';
 import { RedmineAdapter, type RedmineSnapshot } from '../redmine/adapter.js';
 import { RedmineConfigError, RedmineRequestError } from '../redmine/transport.js';
-import { WorkspaceStore } from '../db/store.js';
+import { WorkspaceStore, type OperationRecord } from '../db/store.js';
+import type { Command } from '../../shared/types.js';
 import { activityKindsForJournal, resolveNotificationEligibility } from '../notifications.js';
 
 export interface SyncResult { syncedAt: string; issuesUpdated: number; notificationsAdded: number; warnings: string[] }
@@ -104,7 +106,7 @@ export class SyncService {
       const labelOptions = mergeCatalogByProject(oldLabelOptions, snapshot.labelOptions ?? {});
       await this.store.setValue('labelOptions', labelOptions);
       const previousCapabilities = await this.store.getValue<{ branchFieldId?: number; labelsFieldId?: number; warnings?: string[] }>('capabilities');
-      await this.store.setValue('capabilities', { canWrite: false,
+      await this.store.setValue('capabilities', { canWrite: this.config.writeEnabled,
         branchFieldId: snapshot.branchFieldId ?? previousCapabilities?.branchFieldId,
         labelsFieldId: snapshot.labelsFieldId ?? previousCapabilities?.labelsFieldId, warnings: snapshot.warnings });
       const settings = await this.store.getSettings();
@@ -140,7 +142,7 @@ export class SyncService {
         if (!wasSeen && automationEnabled && issue && issue.labels.includes('Build: Failed')
           && snapshot.statuses.find(status => status.key === 'review')?.id === issue.statusId
           && hasCiFailureTransition(item.journal.changes)) {
-          await this.recordBlockedAutomation(issue, `journal-${item.journal.id}`);
+          await this.recordAutomation(issue, `journal-${item.journal.id}`, previousIssues.get(issue.id)?.developerId);
           ciTransitions.add(issue.id);
         }
       }
@@ -151,7 +153,7 @@ export class SyncService {
           if (!ciTransitions.has(issue.id) && previous && previous.statusId === this.statusId(snapshot.statuses, 'review')
             && previous.labels.includes('Build: Running') && issue.labels.includes('Build: Failed')
             && issue.statusId === this.statusId(snapshot.statuses, 'review')) {
-            await this.recordBlockedAutomation(issue, `snapshot-${issue.updatedOn.replace(/[^0-9]/g, '')}`);
+            await this.recordAutomation(issue, `snapshot-${issue.updatedOn.replace(/[^0-9]/g, '')}`, previous?.developerId);
           }
         }
       }
@@ -203,17 +205,31 @@ export class SyncService {
 
   private statusId(statuses: Status[], key: Status['key']): number | undefined { return statuses.find(status => status.key === key)?.id; }
 
-  private async recordBlockedAutomation(issue: Issue, triggerId: string): Promise<void> {
-    const id = `blocked-ci-${issue.id}-${triggerId.replace(/[^a-zA-Z0-9-]/g, '')}`;
+  private async recordAutomation(issue: Issue, triggerId: string, developerId?: number): Promise<void> {
+    const enabled = this.config.writeEnabled && Boolean(this.adapter);
+    const id = `${enabled ? 'ci' : 'blocked-ci'}-${issue.id}-${triggerId.replace(/[^a-zA-Z0-9-]/g, '')}`;
     if (await this.store.getOperationRecord(id)) return;
+    const command: Command = { type: 'runAutomation', issueId: issue.id, operationId: id, input: {} };
+    const signature = createHash('sha256').update(JSON.stringify(sortObject({ type: command.type, issueId: command.issueId, input: command.input }))).digest('hex');
     const steps: OperationStep[] = [
       { name: 'Виявлено Build: Running → Build: Failed у Review', status: 'done' },
-      { name: 'Повернути задачу в To Do і призначити розробника', status: 'blocked', error: 'Тимчасове обмеження розробки блокує записи в реальний Redmine.' },
+      ...(enabled ? [{ name: 'Повернути задачу в To Do розробнику', status: 'pending' as const }]
+        : [{ name: 'Повернути задачу в To Do розробнику', status: 'blocked' as const, error: 'Для запису потрібне REDMINE_WRITE_ENABLED=true на backend.' }]),
     ];
-    const operation: Operation = { id, type: 'runAutomation', issueId: issue.id, status: 'blocked', steps,
-      createdOn: new Date().toISOString(), error: 'Автоматизацію зафіксовано, але тимчасове обмеження розробки блокує запис у Redmine.', errorCode: 'READ_ONLY' };
-    await this.store.saveOperationRecord({ operation, context: { triggerId } });
+    const operation: Operation = { id, type: 'runAutomation', issueId: issue.id, status: enabled ? 'pending' : 'blocked', steps,
+      createdOn: new Date().toISOString(), ...(!enabled ? { error: 'Автоматизацію зафіксовано, але запис у Redmine вимкнений.', errorCode: 'READ_ONLY' } : {}) };
+    const trigger = { triggerId, expectedUpdatedOn: issue.updatedOn, reviewStatusId: issue.statusId, ...(developerId ? { developerId } : {}) };
+    const record: OperationRecord = { operation, context: enabled
+      ? { realWrite: true, commandSignature: signature, originalCommand: command, automationTrigger: trigger }
+      : { triggerId, automationTrigger: trigger } };
+    await this.store.saveOperationRecord(record);
   }
+}
+
+function sortObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObject);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sortObject(item)]));
+  return value;
 }
 
 function mergeCatalogByProject(previous: Record<string, LabelOption[]>, incoming: Record<string, LabelOption[]>): Record<string, LabelOption[]> {

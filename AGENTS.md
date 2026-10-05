@@ -2,19 +2,19 @@
 
 Respond to the user in Ukrainian. Never respond in Russian.
 
-## Development restriction: no external mutations
+## Redmine write authorization — 2026-10-05
 
-The user explicitly prohibits ALL mutating operations against Redmine during development and testing, even when a real API token is present in the project `.env`. This is a TEMPORARY DEVELOPMENT RESTRICTION, not a permanent limitation of the intended product. The user clarified that writes should be enableable later, after validation and explicit authorization. Until then this restriction remains active.
+The user explicitly requested enabling write mode on 2026-10-05. This lifts the previous temporary runtime Redmine write restriction. Implement real Redmine commands behind deliberate backend-only `REDMINE_WRITE_ENABLED=true`; absent/false remains read-only. A flag alone must never turn demo/local-only mutations into pretend real writes. Use actual remote API commands, fresh reads, workflow/permission validation, durable operation status and honest errors. Do not automatically replay historical blocked or uncertain operations.
 
-- Never create, edit, delete, assign, transition, watch/unwatch, comment, upload attachments, or change issues, Versions / NEXT, projects, custom fields, or any other Redmine resource during development or tests.
-- Never mutate Trello or other external services for development or tests.
-- Real Redmine requests are read-only: GET / HEAD only. Enforce this in the transport as well as in the real adapter. Real write commands must return a clear read-only error BEFORE any external request. Do not add an environment variable or UI toggle that bypasses this restriction.
-- Keep command/capability boundaries ready for a future explicitly authorized write mode. Once the user lifts the restriction, add deliberate opt-in write configuration with a safe read-only default; retain demo tests and authorization/error handling. Do not enable or exercise that future mode during this development/testing run. UI copy must describe the current block as temporary.
-- Background automations may read and calculate intended actions; they must not write to Redmine. Report blocked actions honestly and avoid repeated attempts.
-- Exercise editing, creation, transitions, comments, releases and automation execution only against isolated demo fixtures or mocked transports. Tests must verify that real transport write methods cannot be sent.
-- Local filesystem, Git commits, local application SQLite writes, migrations and isolated demo operations are authorized and are not external mutations.
-- Never print or commit `.env`, tokens, authentication headers, or secret fields from API responses. Exclude `.env` from Git and Docker build context. Only the backend may access the token.
-- Do not read or reveal the token just to confirm it exists. Check configured status without displaying the value.
+- During development, automated tests and smoke checks, exercise mutations ONLY against isolated demo fixtures or mocked HTTP transports. Enabling the running app is authorized; do not create/edit/delete real resources merely to test write mode.
+- Actual user-initiated actions in the explicitly enabled app may write to Redmine using the backend token. Existing explicitly enabled automation rules may operate on new observed events; do not replay previously blocked historical actions.
+- Read-only guards must reject writes before external requests unless explicitly opted in. Real connection failures must never switch to demo.
+- Unsupported plugin-only actions (for example journal likes/deletion without a verified API) must remain unavailable and return an honest capability error; never simulate real success in local cache.
+- Never mutate Trello or other external services for development/tests. Production database connectors remain read-only.
+- Local filesystem, Git commits, SQLite, migrations and isolated demo operations remain authorized.
+- Never print or commit `.env`, tokens, authentication headers or secret response fields. Exclude `.env` from Git/Docker context. Only backend accesses the token; do not read/reveal it merely to confirm configuration.
+
+Older references below to the development write restriction describe the historical read-only phase. This authorization supersedes that restriction only for deliberate Redmine runtime write mode, not for tests or unrelated services.
 
 ## Implementation
 

@@ -9,7 +9,7 @@ import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
 import { applyMigrations } from './db/migrate.js';
-import { WorkspaceStore, type PersonAvatarContentType, type ProjectBackgroundContentType } from './db/store.js';
+import { WorkspaceStore, type OperationRecord, type PersonAvatarContentType, type ProjectBackgroundContentType } from './db/store.js';
 import { applyPersonAvatarOverride, projectPerson } from './people.js';
 import { RedmineAdapter } from './redmine/adapter.js';
 import { RedmineRequestError, type FetchLike } from './redmine/transport.js';
@@ -88,7 +88,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     catch { adapter = undefined; }
   }
   const sync = new SyncService(config, store, adapter, events);
-  const commands = new CommandService(config, store, events);
+  const commands = new CommandService(config, store, events, adapter);
   const worker = new BackgroundWorker(sync, store, async () => (await store.getSettings()).pollIntervalSeconds,
     config.pollIntervalSeconds, async () => { await commands.processPendingDemoAutomations(); });
   const runtime: BackendRuntime = { config, store, sync, commands, worker,
@@ -113,7 +113,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
   });
 
   app.get('/api/health', async () => ({ ok: true, mode: config.mode, connected: sync.isConnected,
-    readOnly: config.mode === 'redmine', ...(sync.connectionError ? { connectionError: sync.connectionError } : {}) }));
+    readOnly: config.mode === 'redmine' && !config.writeEnabled,
+    canWrite: config.mode === 'demo' || config.writeEnabled && sync.isConnected && Boolean(adapter),
+    ...(sync.connectionError ? { connectionError: sync.connectionError } : {}) }));
 
   app.put<{ Params: { id: string } }>('/api/projects/:id/background', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
     const projectId = positiveId(request.params.id, 'PROJECT_NOT_FOUND');
@@ -201,15 +203,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       store.getSettings(), store.getValue<Person>('me'), store.getValue<Bootstrap['capabilities']>('capabilities'),
     ]);
     const warnings = [...(capabilities?.warnings ?? [])];
-    if (config.mode === 'redmine') {
-      warnings.unshift('Тимчасове обмеження розробки: редагування реального Redmine наразі вимкнено.');
+    if (config.mode === 'redmine' && !config.writeEnabled) {
+      warnings.unshift('Реальний Redmine відкритий лише для читання. Для запису потрібне backend-налаштування REDMINE_WRITE_ENABLED=true.');
+    } else if (config.mode === 'redmine') {
       if (sync.connectionError && !warnings.includes(sync.connectionError)) warnings.push(sync.connectionError);
     }
     return {
-      mode: config.mode, readOnly: config.mode === 'redmine', connected: sync.isConnected,
+      mode: config.mode, readOnly: config.mode === 'redmine' && !config.writeEnabled, connected: sync.isConnected,
       redmineUrl: config.redmineUrl, me: applyPersonAvatarOverride(me ?? { id: 0, name: 'Підключення Redmine' }, settings), projects,
       statuses: statuses ?? [], priorities: priorities ?? [], settings,
-      capabilities: { canWrite: config.mode === 'demo', journalEditing: config.mode === 'demo', journalDeleting: config.mode === 'demo', journalLikes: config.mode === 'demo',
+      capabilities: { canWrite: config.mode === 'demo' || config.writeEnabled && sync.isConnected && Boolean(adapter),
+        journalEditing: config.mode === 'demo', journalDeleting: config.mode === 'demo', journalLikes: config.mode === 'demo',
         ...(capabilities?.branchFieldId ? { branchFieldId: capabilities.branchFieldId } : {}),
         ...(capabilities?.labelsFieldId ? { labelsFieldId: capabilities.labelsFieldId } : {}), warnings },
     };
@@ -480,7 +484,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     events.publish('notifications', { unreadCount });
     return { updated, unreadCount };
   });
-  app.get('/api/operations', async () => (await store.getOperations()).filter(operation => operation.type !== 'saveIssueRoles'));
+  app.get('/api/operations', async () => (await store.getOperationRecords()).filter(record => record.operation.type !== 'saveIssueRoles')
+    .map(record => ({ ...record.operation, retryable: realOperationRetryable(record) })));
   app.post('/api/sync', async (_request, reply) => {
     try { return await sync.sync(); }
     catch {
@@ -574,4 +579,13 @@ function assertLocalOrigin(request: FastifyRequest): void {
 
 function requestLogSafe(_error: unknown): void {
   // Deliberately do not log raw errors: third-party errors can carry URLs, headers, or remote payloads.
+}
+
+function realOperationRetryable(record: OperationRecord): boolean {
+  return record.context?.realWrite === true
+    && ['failed', 'blocked'].includes(record.operation.status)
+    && record.operation.errorCode !== 'OUTCOME_UNKNOWN'
+    && record.context.outcomeUnknown !== true
+    && typeof record.context.inFlightStep !== 'string'
+    && !['UNSUPPORTED_CAPABILITY', 'LABEL_UNAVAILABLE', 'LABELS_UNAVAILABLE', 'STALE', 'REMOTE_STATE_MISMATCH', 'USE_FINISH_RELEASE'].includes(record.operation.errorCode ?? '');
 }

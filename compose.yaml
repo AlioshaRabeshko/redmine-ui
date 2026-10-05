@@ -7,6 +7,7 @@ services:
     environment:
       REDMINE_URL: ${REDMINE_URL:-https://redmine.example.invalid}
       REDMINE_API_TOKEN: ${REDMINE_API_TOKEN:-}
+      REDMINE_WRITE_ENABLED: ${REDMINE_WRITE_ENABLED:-false}
       APP_MODE: ${APP_MODE:-auto}
       DATABASE_PATH: /data/workspace.sqlite
       HOST: 0.0.0.0

@@ -1,6 +1,6 @@
 # Технічні рішення реалізації
 
-Початкові рішення: 2026-10-02; поточний стан: 2026-10-05. Локальна реалізація працює з demo та перевіреним Redmine read-only; SQLite, Drizzle ORM / Kit та `.env` погоджені. Стек: React + TypeScript + Vite, TanStack Query, dnd-kit, i18next; Fastify, better-sqlite3, Drizzle; Vitest та Playwright. Продуктові вимоги: [RESEARCH.md](RESEARCH.md), початкове рев’ю: [REVIEW.md](REVIEW.md), результати реалізації й перевірок — у доповненнях нижче. Усі зовнішні мутації тимчасово заборонені.
+Початкові рішення: 2026-10-02; поточний стан: 2026-10-05. Локальна реалізація працює з demo та перевіреним Redmine read-only; SQLite, Drizzle ORM / Kit та `.env` погоджені. Стек: React + TypeScript + Vite, TanStack Query, dnd-kit, i18next; Fastify, better-sqlite3, Drizzle; Vitest та Playwright. Продуктові вимоги: [RESEARCH.md](RESEARCH.md), початкове рев’ю: [REVIEW.md](REVIEW.md), результати реалізації й перевірок — у доповненнях нижче. 2026-10-05 користувач дозволив runtime запис Redmine через явний backend opt-in; усі мутаційні тести залишаються тільки demo/mocks (див. останнє доповнення Write mode).
 
 ## 1. Базова архітектура
 
@@ -304,3 +304,10 @@ Issue header компактний і нерухомий, дії URL/Open у `⋯
 Фінальний gate третього раунду: build/typecheck після всіх source changes; 180/180 unit/server у 33 файлах після settings/cross-tab змін, targeted 3/3 та Chrome 92/92 після UI anchor/CSS guards. Додаткові audit fixes: subscriptions PATCH/settings SSE перечитують notification projection; remote storage removals відновлюють активний unsent comment іншої вкладки без write ping-pong; постійний banner slot не змінює висоту, а explicit reveal компенсує фактичний viewport delta існуючого journal і повертає focus. Cross-tab recovery не означає незалежні multi-version draft forks. Native/manual межі й докази: `docs/UX_ROUND3_RESULTS.md`.
 
 Docker image зібрано, app оновлено `compose up -d --wait --no-build` із чинним volume. GET smoke: health=true, фінальний `index-BK72XyDl.js` 200, mode=redmine, connected=true, readOnly=true, canWrite=false. Локальні settings явно встановлені на pollIntervalSeconds=10 згідно з дорученням користувача; Redmine writes заблоковані. Vite advisory: main ~578 kB / gzip173 kB, IssueDialog ~378 kB / gzip115 kB.
+
+
+## Write mode — 2026-10-05
+
+Користувач явно дозволив увімкнути запис Redmine. Попереднє обмеження runtime знято; під час розробки й перевірок мутації виконуються тільки у demo або через mocks. Backend вимагає точного `REDMINE_WRITE_ENABLED=true`, за замовчуванням лише читання. Токен залишається тільки на backend. Інтерфейс визначає доступність дій за фактичними capabilities.
+
+Реальні команди мають використовувати REST API, свіжу перевірку стану й локальні checkpoints операцій. Отриманий ID зберігається перед наступними запитами; невідомі результати запису не повторюються автоматично. Історичні readonly операції не можна перетворити на реальні повторні записи. Непідтримувані API функції не імітуються локальним успіхом. Докладні межі: docs/WRITE_ADAPTER.md і docs/WRITE_COMMANDS.md.

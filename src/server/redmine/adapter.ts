@@ -22,6 +22,12 @@ interface RedmineIssue {
   custom_fields?: { id: number; name: string; value: unknown }[]; labels?: string[]; allowed_statuses?: RedmineIssueStatus[];
 }
 
+export interface RedmineWriteFieldMetadata {
+  branchFieldId?: number;
+  labelFieldIds: number[];
+  labelOptions: LabelOption[];
+}
+
 export interface RedmineSnapshot {
   me: Person;
   projects: Project[];
@@ -247,6 +253,96 @@ export class RedmineAdapter {
     return { issue: mapIssue(raw, raw.project!.id, detailOptions), journals, people };
   }
 
+  async createIssue(fields: Record<string, unknown>, labelOptions: LabelOption[] = []): Promise<Issue> {
+    const response = await this.transport.request<{ issue?: RedmineIssue }>('issues.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issue: fields }),
+    });
+    const raw = response.issue;
+    const projectId = positiveId(raw?.project?.id) ?? positiveId(fields.project_id);
+    if (!raw || !positiveId(raw.id) || !projectId || !raw.status || !positiveId(raw.status.id) || typeof raw.subject !== 'string'
+      || typeof raw.created_on !== 'string' || typeof raw.updated_on !== 'string') {
+      throw new RedmineRequestError('Redmine прийняв створення, але не повернув достатньо даних для визначення задачі. Перевірте її в Redmine перед повтором.', 201, undefined, true);
+    }
+    // Redmine returns the created object. Mapping it here retains its ID without a second request.
+    return mapIssue(raw, projectId, labelOptions);
+  }
+
+  async updateIssue(issueId: number, fields: Record<string, unknown>): Promise<void> {
+    await this.transport.requestVoid(`issues/${resourceId(issueId, 'задачі')}.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issue: fields }),
+    });
+  }
+
+  async createVersion(projectId: number, fields: Record<string, unknown>): Promise<Version> {
+    const id = resourceId(projectId, 'проєкту');
+    const response = await this.transport.request<{ version?: RedmineVersion }>(`projects/${id}/versions.json`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: fields }),
+    });
+    const raw = response.version;
+    if (!raw || !positiveId(raw.id) || typeof raw.name !== 'string') {
+      throw new RedmineRequestError('Redmine прийняв створення релізу, але не повернув його ID. Перевірте реліз у Redmine перед повтором.', 201, undefined, true);
+    }
+    return mapVersion(raw, id);
+  }
+
+  async updateVersion(versionId: number, fields: Record<string, unknown>): Promise<void> {
+    await this.transport.requestVoid(`versions/${resourceId(versionId, 'релізу')}.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: fields }),
+    });
+  }
+
+  async versionDetail(versionId: number): Promise<Version> {
+    const id = resourceId(versionId, 'релізу');
+    const response = await this.transport.request<{ version?: RedmineVersion }>(`versions/${id}.json`);
+    const projectId = positiveId(response.version?.project?.id);
+    if (!response.version || !positiveId(response.version.id) || !projectId || typeof response.version.name !== 'string'
+      || !['open', 'locked', 'closed'].includes(response.version.status ?? '')) {
+      throw new RedmineRequestError(`Redmine не повернув реліз ${id}.`);
+    }
+    return mapVersion(response.version, projectId);
+  }
+
+  async updateJournal(journalId: number, notes: string): Promise<void> {
+    await this.transport.requestVoid(`journals/${resourceId(journalId, 'коментаря')}.json`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ journal: { notes } }),
+    });
+  }
+
+  async writeFieldMetadata(projectId: number, sampleIssueId?: number): Promise<RedmineWriteFieldMetadata> {
+    const id = resourceId(projectId, 'проєкту');
+    let sample: RedmineIssue | undefined;
+    if (sampleIssueId !== undefined) {
+      const issueId = resourceId(sampleIssueId, 'задачі');
+      const response = await this.transport.request<{ issue?: RedmineIssue }>(`issues/${issueId}.json`);
+      sample = response.issue;
+      if (!sample || sample.project?.id !== id) throw new RedmineRequestError('Зразок поля не належить вибраному проєкту.', 404);
+    } else {
+      const response = await this.transport.request<{ issues?: RedmineIssue[] }>(
+        `issues.json?project_id=${id}&subproject_id=%21%2A&status_id=*&limit=1&offset=0`);
+      sample = response.issues?.[0];
+    }
+    const definitions = await this.readCustomFieldCatalog();
+    const definitionById = new Map(definitions
+      .filter(field => !field.projects?.length || field.projects.some(item => item.id === id))
+      .map(field => [field.id, field]));
+    for (const field of sample?.custom_fields ?? []) if (!definitionById.has(field.id)) {
+      definitionById.set(field.id, field);
+    }
+    const fields = [...definitionById.values()];
+    const branchFieldId = fields.find(field => /\bbranch\b/i.test(field.name))?.id;
+    const labelFields = fields.filter(field => isLabelOrTagField(field.name));
+    const labelFieldIds = [...new Set(labelFields.map(field => field.id))].sort((a, b) => a - b);
+    let labelOptions = mergeLabelOptions(...labelFields.map(field => normalizePossibleValues(field, id)));
+    const sampleLabelFields = (sample?.custom_fields ?? []).filter(field => labelFieldIds.includes(field.id));
+    const hasUnresolvedNumericValues = sampleLabelFields.some(field => flattenLabels(field.value).some(value => /^\d+$/.test(value)
+      && !labelOptions.some(option => option.fieldId === field.id && option.id === value && option.name !== value)));
+    if (sample && labelFieldIds.length && (!labelOptions.length || hasUnresolvedNumericValues)) {
+      const fromForm = await this.readLabelOptionsFromEditForm(sample.id, new Set(labelFieldIds)).catch(() => []);
+      labelOptions = mergeLabelOptions(labelOptions, fromForm);
+    }
+    return { ...(branchFieldId ? { branchFieldId } : {}), labelFieldIds, labelOptions };
+  }
+
   async search(q: string, options: { projectIdentifier?: string; offset: number; limit: number }): Promise<SearchResponse> {
     // Redmine uses presence, not boolean parsing: even "0" enables these flags.
     // Omit title/open restrictions and other resource flags to search issue bodies and closed work only.
@@ -302,10 +398,14 @@ export class RedmineAdapter {
   }
 
   private async readCustomFieldDefinitions(): Promise<RedmineCustomField[]> {
+    return (await this.readCustomFieldCatalog()).filter(field => isLabelOrTagField(field.name));
+  }
+
+  private async readCustomFieldCatalog(): Promise<RedmineCustomField[]> {
     try {
       const response = await this.transport.request<{ custom_fields?: RedmineCustomField[] }>('custom_fields.json');
       return Array.isArray(response.custom_fields) ? response.custom_fields.filter(field => Number.isSafeInteger(field.id) && field.id > 0
-        && typeof field.name === 'string' && isLabelOrTagField(field.name)) : [];
+        && typeof field.name === 'string') : [];
     } catch {
       // Redmine restricts this endpoint to administrators on many installations.
       return [];
@@ -389,6 +489,15 @@ function mapVersion(version: RedmineVersion, projectId: number): Version {
   const status = ['open', 'locked', 'closed'].includes(version.status ?? '') ? version.status as Version['status'] : 'open';
   return { id: version.id, projectId: version.project?.id ?? projectId, name: version.name, status,
     ...(version.due_date ? { dueDate: version.due_date } : {}), ...(version.description ? { description: version.description } : {}) };
+}
+function positiveId(value: unknown): number | undefined {
+  const id = typeof value === 'number' ? value : typeof value === 'string' && /^[1-9]\d*$/.test(value) ? Number(value) : NaN;
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+function resourceId(value: unknown, resource: string): number {
+  const id = positiveId(value);
+  if (id === undefined) throw new RedmineRequestError(`Некоректний ID ${resource}.`, 400);
+  return id;
 }
 function flattenLabels(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(item => flattenLabels(item));

@@ -362,6 +362,19 @@ Object.assign(es, {
   notificationIssueFallback: 'Tarea #{{issueId}}', notificationDetailsUnavailable: 'Los detalles de este evento no están disponibles en la caché local.', unreadTargetUnavailable: 'El evento ya no está disponible. Esta notificación sigue sin leer.',
 });
 
+Object.assign(en, {
+  writeMode: 'Write enabled', readOnlyNote: 'Redmine changes are disabled for this run. Local settings and drafts remain available.', saveBlocked: 'Redmine is in read-only mode.', errorReadOnly: 'Redmine is in read-only mode. Your draft remains available.', automationBlocked: 'Redmine automation requires write mode.', errorOutcomeUnknown: 'The server response was lost. Check the issue in Redmine before repeating this action.', errorUnsupported: 'This action is unavailable through the connected Redmine API.',
+});
+Object.assign(uk, {
+  writeMode: 'Запис увімкнено', readOnlyNote: 'Зміни в Redmine вимкнено для цього запуску. Локальні налаштування й чернетки доступні.', saveBlocked: 'Redmine працює в режимі лише читання.', errorReadOnly: 'Redmine працює в режимі лише читання. Чернетка залишається доступною.', automationBlocked: 'Для автоматизацій Redmine потрібен режим запису.', errorOutcomeUnknown: 'Відповідь сервера втрачено. Перевір задачу в Redmine перед повторенням цієї дії.', errorUnsupported: 'Ця дія недоступна через API підключеного Redmine.',
+});
+Object.assign(pl, {
+  writeMode: 'Zapis włączony', readOnlyNote: 'Zmiany w Redmine są wyłączone dla tego uruchomienia. Lokalne ustawienia i wersje robocze pozostają dostępne.', saveBlocked: 'Redmine działa w trybie tylko do odczytu.', errorReadOnly: 'Redmine działa w trybie tylko do odczytu. Wersja robocza pozostaje dostępna.', automationBlocked: 'Automatyzacja Redmine wymaga trybu zapisu.', errorOutcomeUnknown: 'Utracono odpowiedź serwera. Sprawdź zadanie w Redmine przed ponowieniem tej czynności.', errorUnsupported: 'Ta czynność nie jest dostępna przez API połączonego Redmine.',
+});
+Object.assign(es, {
+  writeMode: 'Escritura activada', readOnlyNote: 'Los cambios en Redmine están desactivados para esta ejecución. Los ajustes locales y borradores siguen disponibles.', saveBlocked: 'Redmine está en modo de solo lectura.', errorReadOnly: 'Redmine está en modo de solo lectura. El borrador sigue disponible.', automationBlocked: 'La automatización de Redmine requiere el modo de escritura.', errorOutcomeUnknown: 'Se perdió la respuesta del servidor. Comprueba la tarea en Redmine antes de repetir esta acción.', errorUnsupported: 'Esta acción no está disponible mediante la API del Redmine conectado.',
+});
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },

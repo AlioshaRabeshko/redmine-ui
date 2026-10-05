@@ -2,7 +2,7 @@ import type { AppConfig } from '../config.js';
 
 export class ReadOnlyError extends Error {
   readonly code = 'READ_ONLY';
-  constructor() { super('Тимчасове обмеження розробки: записи в реальний Redmine наразі вимкнені.'); }
+  constructor() { super('Запис у Redmine вимкнений. Для його ввімкнення задайте REDMINE_WRITE_ENABLED=true на backend.'); }
 }
 
 export class RedmineConfigError extends Error {
@@ -12,7 +12,7 @@ export class RedmineConfigError extends Error {
 
 export class RedmineRequestError extends Error {
   readonly code = 'REDMINE_REQUEST_FAILED';
-  constructor(message: string, readonly statusCode?: number) { super(message); }
+  constructor(message: string, readonly statusCode?: number, readonly validationErrors?: string[], readonly outcomeUnknown = false) { super(message); }
 }
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -37,12 +37,19 @@ export class RedmineTransport {
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.read(path, init);
-    if (response.method === 'HEAD') return undefined as T;
+    if (response.method === 'HEAD' || response.response.status === 204) return undefined as T;
     try {
       return await response.response.json() as T;
     } catch {
-      throw new RedmineRequestError('Redmine повернув відповідь у невідомому форматі.', response.response.status);
+      const outcomeUnknown = response.method === 'POST';
+      throw new RedmineRequestError(outcomeUnknown
+        ? 'Redmine прийняв запис, але повернув відповідь без коректного JSON. Результат невідомий; перевірте стан перед повтором.'
+        : 'Redmine повернув відповідь у невідомому форматі.', response.response.status, undefined, outcomeUnknown);
     }
+  }
+
+  async requestVoid(path: string, init: RequestInit = {}): Promise<void> {
+    await this.read(path, init);
   }
 
   async requestText(path: string, init: RequestInit = {}, maxBytes = 2 * 1024 * 1024): Promise<string> {
@@ -89,26 +96,63 @@ export class RedmineTransport {
   private async read(path: string, init: RequestInit = {}, manualRedirect = false): Promise<{ method: string; response: Response; url: URL }> {
     const method = String(init.method ?? 'GET').trim().toUpperCase();
     // This check must remain before URL construction and before any fetch call.
-    if ((method !== 'GET' && method !== 'HEAD') || init.body !== undefined && init.body !== null) throw new ReadOnlyError();
+    const hasBody = init.body !== undefined && init.body !== null;
+    const readMethod = method === 'GET' || method === 'HEAD';
+    const writeMethod = method === 'POST' || method === 'PUT' || method === 'DELETE';
+    if (readMethod ? hasBody : !writeMethod || this.config.writeEnabled !== true) throw new ReadOnlyError();
+    if (manualRedirect && !readMethod) throw new ReadOnlyError();
+    if (!readMethod && !/\.json(?:\?.*)?$/i.test(path)) {
+      throw new RedmineConfigError('Записи Redmine дозволені лише через REST JSON endpoints.');
+    }
+    const headers = new Headers(init.headers);
+    if (method === 'POST' || method === 'PUT') {
+      if (typeof init.body !== 'string') throw new RedmineConfigError('Записи в Redmine підтримують лише JSON-тіло.');
+      const contentType = headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+      if (contentType && contentType !== 'application/json') throw new RedmineConfigError('Записи в Redmine підтримують лише application/json.');
+      headers.set('Content-Type', 'application/json');
+      try {
+        const parsed = JSON.parse(init.body) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+      } catch {
+        throw new RedmineConfigError('Тіло запису Redmine має бути коректним JSON-об’єктом.');
+      }
+    } else if (method === 'DELETE' && hasBody) {
+      throw new RedmineConfigError('DELETE-запити до Redmine мають бути без тіла.');
+    }
     const url = this.resolvePath(path);
     let response: Response;
     try {
-      const headers = new Headers(init.headers);
       headers.delete('authorization');
       headers.set('X-Redmine-API-Key', this.config.token!);
       response = await this.fetcher(url, {
         ...init,
         method,
-        body: undefined,
+        body: hasBody ? init.body : undefined,
         headers,
+        // Writes never follow redirects: redirecting a POST can duplicate a mutation or expose auth.
         redirect: manualRedirect ? 'manual' : 'error',
         signal: init.signal ?? AbortSignal.timeout(20_000),
       });
-    } catch {
+    } catch (error) {
+      if (!readMethod) {
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        throw new RedmineRequestError(timedOut
+          ? 'Час очікування відповіді Redmine минув. Результат запису невідомий; перевірте стан перед повтором.'
+          : 'Не вдалося підтвердити відповідь Redmine. Результат запису невідомий; перевірте стан перед повтором.', undefined, undefined, true);
+      }
       throw new RedmineRequestError('Не вдалося підключитися до Redmine. Перевірте адресу та мережеве з’єднання.');
     }
     if (!response.ok && !(manualRedirect && response.status >= 300 && response.status < 400)) {
-      throw new RedmineRequestError(`Redmine повернув помилку HTTP ${response.status}.`, response.status);
+      if (response.status === 422) {
+        const validationErrors = await readValidationErrors(response, this.config.token);
+        const detail = validationErrors.length ? `: ${validationErrors.join('; ')}` : '.';
+        throw new RedmineRequestError(`Redmine відхилив зміни${detail}`, 422, validationErrors, false);
+      }
+      const redirect = response.status >= 300 && response.status < 400;
+      const outcomeUnknown = !readMethod && (redirect || response.status >= 500);
+      throw new RedmineRequestError(redirect
+        ? 'Redmine намагався перенаправити запис; запит зупинено для безпеки.'
+        : `Redmine повернув помилку HTTP ${response.status}.`, response.status, undefined, outcomeUnknown);
     }
     return { method, response, url };
   }
@@ -126,6 +170,25 @@ export class RedmineTransport {
       throw new RedmineConfigError('Запит Redmine виходить за межі налаштованого сервера.');
     }
     return url;
+  }
+}
+
+async function readValidationErrors(response: Response, secret?: string): Promise<string[]> {
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') return [];
+  try {
+    const bytes = await readBounded(response.clone(), 16 * 1024);
+    const parsed = JSON.parse(bytes.toString('utf8')) as { errors?: unknown };
+    const values = Array.isArray(parsed.errors) ? parsed.errors : parsed.errors === undefined ? [] : [parsed.errors];
+    return values.flatMap(value => {
+      if (typeof value !== 'string') return [];
+      const message = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!message) return [];
+      const redacted = secret ? message.split(secret).join('[redacted]') : message;
+      return [redacted.slice(0, 240)];
+    }).slice(0, 8);
+  } catch {
+    return [];
   }
 }
 

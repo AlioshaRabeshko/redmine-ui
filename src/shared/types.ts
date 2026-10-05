@@ -92,7 +92,7 @@ export interface Notification {
   detailsUnavailable?: boolean;
 }
 export interface OperationStep { name: string; status: 'pending' | 'done' | 'failed' | 'skipped' | 'blocked'; error?: string }
-export interface Operation { id: string; type: string; issueId?: number; versionId?: number; status: 'pending' | 'running' | 'done' | 'failed' | 'blocked'; steps: OperationStep[]; createdOn: string; error?: string; errorCode?: string }
+export interface Operation { id: string; type: string; issueId?: number; versionId?: number; status: 'pending' | 'running' | 'done' | 'failed' | 'blocked'; steps: OperationStep[]; createdOn: string; error?: string; errorCode?: string; retryable?: boolean }
 export interface Command { type: 'createIssue' | 'updateIssue' | 'moveIssue' | 'handoffToQA' | 'returnToDeveloper' | 'comment' | 'editJournal' | 'deleteJournal' | 'setJournalLike' | 'generateBranch' | 'createRelease' | 'updateRelease' | 'assignRelease' | 'finishRelease' | 'runAutomation'; issueId?: number; projectId?: number; versionId?: number; operationId?: string; input: Record<string, unknown> }
 export interface CommandResult { operation: Operation; issue?: Issue; version?: Version }
 export interface ApiError { code: string; message: string; details?: unknown }

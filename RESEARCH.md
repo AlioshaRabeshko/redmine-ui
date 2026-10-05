@@ -1088,3 +1088,12 @@ Docker preview оновлено зі збереженням наявного SQL
 Незалежний аудит та інтеграція додатково знайшли й закрили втрату фокуса в Inbox/reveal, подвійний detail GET, затримку застосування subscription mask, displacement старого journal при появі/reveal нових подій і втрату comment draft після send з іншої вкладки. Cross-tab recovery обмежений активним unsent comment та remote removals, не повною системою draft conflict resolution.
 
 Фінальний build/typecheck, 180 unit/server у 33 файлах (після settings/cross-tab змін), targeted 3/3 і повний Chrome 92/92 після останніх UI anchor/CSS guards. Ручні факти, source review та автоматизовані outcomes розділені в [UX_ROUND3_RESULTS.md](docs/UX_ROUND3_RESULTS.md) і пов’язаних звітах. Docker preview оновлено зі збереженням volume: final client asset 200, connected=true, mode=redmine, readOnly=true, canWrite=false. Локальний interval явно встановлено на 10 s за вимогою користувача; зовнішніх мутацій не виконували.
+
+
+## Write mode — 2026-10-05
+
+Користувач явно дозволив увімкнути запис Redmine. Попереднє обмеження runtime знято; під час розробки й перевірок мутації виконуються тільки у demo або через mocks. Backend вимагає точного `REDMINE_WRITE_ENABLED=true`, за замовчуванням лише читання. Токен залишається тільки на backend. Інтерфейс визначає доступність дій за фактичними capabilities.
+
+Реальні команди мають використовувати REST API, свіжу перевірку стану й локальні checkpoints операцій. Отриманий ID зберігається перед наступними запитами; невідомі результати запису не повторюються автоматично. Історичні readonly операції не можна перетворити на реальні повторні записи. Непідтримувані API функції не імітуються локальним успіхом. Докладні межі: docs/WRITE_ADAPTER.md і docs/WRITE_COMMANDS.md.
+
+Реалізацію режиму запису завершено й увімкнено локально: 221/221 Vitest, 95/95 Chromium сценаріїв, build/typecheck та Docker healthy. Live smoke тільки GET підтвердив підключений write mode. Повний звіт: [docs/WRITE_MODE.md](docs/WRITE_MODE.md).
