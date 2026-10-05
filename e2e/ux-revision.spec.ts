@@ -81,7 +81,7 @@ test('column creation preselects status or roadmap over old property drafts and 
   await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('Без релізу');
 });
 
-test('empty filtered boards retain column creation controls including backlog', async ({ page, request }) => {
+test('empty filtered boards retain column creation and backlog list has scoped creation', async ({ page, request }) => {
   const boot = await bootstrap(request);
   await start(page, boot);
   await page.getByRole('searchbox', { name: 'Пошук', exact: true }).fill('No matches for this lane creation check');
@@ -93,7 +93,9 @@ test('empty filtered boards retain column creation controls including backlog', 
   await page.keyboard.press('Escape');
   await page.locator('.board-view-button').filter({ hasText: /^Беклог$/ }).click();
   const backlog = boot.statuses.find(status => status.key === 'backlog')!;
-  await page.getByTestId(`lane-status:${backlog.id}`).locator('.lane-create').click();
+  await expect(page.getByTestId('backlog-list')).toBeVisible();
+  await expect(page.locator('.board-lanes')).toHaveCount(0);
+  await page.getByTestId('new-issue').click();
   await expect(page.getByTestId('issue-dialog').getByRole('combobox', { name: 'Статус', exact: true })).toContainText(backlog.name);
 });
 

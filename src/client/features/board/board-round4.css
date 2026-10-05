@@ -1,0 +1,143 @@
+/* Keep the unread action beside the footer without narrowing the card title. */
+.issue-card.has-unread .card-bottom { flex-wrap: wrap; padding-right: 56px; }
+.issue-card.has-unread .card-meta { min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+.issue-card h3 { min-width: 0; overflow-wrap: anywhere; word-break: break-word; hyphens: auto; }
+.issue-unread-badge {
+  top: auto;
+  right: 8px;
+  bottom: 12px;
+  min-width: 29px;
+  min-height: 25px;
+  justify-content: center;
+  border-color: #8f1f2e;
+  background: #b42335;
+  color: #fff;
+}
+.issue-unread-badge:hover { border-color: #701724; background: #951f30; color: #fff; }
+.issue-unread-badge:focus-visible { outline-color: #b42335; }
+
+.backlog-scroll {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.backlog-rows { display: grid; gap: 6px; width: 100%; min-width: 0; padding: 0 1px 16px; }
+.backlog-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  transition: border-color .15s, background-color .15s;
+}
+.backlog-row:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.backlog-row.is-pending { border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface)); }
+.backlog-row-open {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.backlog-row-open:hover { background: transparent; }
+.backlog-row-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.backlog-row-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.backlog-row-heading .priority-mark { flex: 0 0 auto; align-self: center; }
+.backlog-issue-ref { flex: 0 0 auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.backlog-issue-title {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 620;
+}
+.backlog-saving { flex: 0 0 auto; color: var(--accent); font-size: 10px; font-weight: 650; }
+.backlog-labels { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.backlog-label {
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 6px;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  text-overflow: clip;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 8%, var(--surface));
+  font-size: 10px;
+  line-height: 1.35;
+}
+.backlog-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; min-width: 0; }
+.backlog-people { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.backlog-people > span { display: inline-flex; flex: 0 0 auto; }
+.backlog-dates { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 12px; min-width: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.backlog-dates time { min-width: 0; overflow-wrap: anywhere; }
+.backlog-dates time span { color: var(--text); font-weight: 600; }
+.backlog-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 6px 8px 6px 0; }
+.backlog-unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 29px;
+  min-height: 25px;
+  padding: 3px 6px;
+  border: 1px solid #8f1f2e;
+  border-radius: 999px;
+  background: #b42335;
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.backlog-unread-badge:hover { border-color: #701724; background: #951f30; color: #fff; }
+.backlog-unread-badge:focus-visible, .backlog-move-todo:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.backlog-move-todo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 620;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.backlog-move-todo:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.backlog-move-todo:disabled { opacity: .52; cursor: not-allowed; }
+.backlog-empty { width: 100%; min-width: 0; padding: 24px 16px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+
+@media (max-width: 840px) {
+  .backlog-row { grid-template-columns: minmax(0, 1fr); }
+  .backlog-row-actions { justify-content: flex-end; padding: 0 8px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backlog-row { transition: none; }
+}

@@ -39,3 +39,7 @@ The user authorized implementing docs/UX_ROUND3.md on 2026-10-05 using Luna max 
 ## Database connectors
 
 Production/staging MySQL connectors are read-only: SELECT, SHOW, DESCRIBE only. Never send write statements. Production ClickHouse queries must include a date filter, start with small selective scopes, and use conservative limits. If checking logs without a specified database, use adserver. No production database connector is needed to implement this application.
+
+## UX round 4 — authorized implementation
+
+The user authorized docs/UX_ROUND4.md implementation using Luna max: optimistic issue moves with Saving, persistent intended position during stale polling, actual remote-state fallback for partial/unknown failures; red unread badge at the lower right after avatars; event-specific auto-read after active viewport dwell; separate Backlog list with creation/update dates and quick To Do action. Never auto-read filtered, offscreen, buffered or unknown journal content. Mixed notification IDs require all represented kinds to be visible unless an explicit targeted notification click acknowledges that exact ID. Mutation tests remain demo/mocks only despite runtime write mode being enabled.

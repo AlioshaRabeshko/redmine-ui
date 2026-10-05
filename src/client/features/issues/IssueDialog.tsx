@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, Heart, History, Link, MessageSquare, MoreHorizontal, Paperclip, Pencil, Quote, Save, Send, Trash2, UserRound, Users, WandSparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { defaultActivityVisibility, type ActivityVisibility, type BoardData, type Issue, type IssueDetail, type Journal, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
+import { defaultActivityVisibility, type ActivityVisibility, type BoardData, type Issue, type IssueDetail, type Journal, type Notification, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
 import { branchForIssue } from '../../../shared/domain';
 import { Avatar, Button, Field, IconButton, Modal, Notice, Spinner } from '../../components/ui';
 import { Picker, PeoplePicker, type PickerOption } from '../../components/pickers';
@@ -10,9 +10,10 @@ import { AttachmentPreview, RichContent, attachmentContentPath, isPreviewableIma
 import { api, issueUrl } from '../../lib/api';
 import { createIssueTextDraftKey, enqueueFieldWrite, issueTextDraftKey, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
 import { clearDraftStorage, readDraftStorage, writeDraftStorage } from '../../lib/draftStorage';
-import { localizeJournalChange, visibleJournals } from '../../lib/issueActivity';
+import { activityKindForField, localizeJournalChange, visibleJournals } from '../../lib/issueActivity';
 import { mergePeopleById } from '../../lib/peoplePresentation';
 import { LabelsTiles } from './LabelsTiles';
+import { useVisibleUnreadEvents } from './useVisibleUnreadEvents';
 
 type IssueText = { subject: string; description: string; branch: string; dueDate: string };
 type JournalEditDraft = { notes: string; expectedNotes: string; operationId?: string };
@@ -105,9 +106,10 @@ function suggestedAssignees(members: Person[], selectedId?: number, recommendati
   return candidates;
 }
 
-export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, currentUserId, notificationRequestKey, onNotificationTargetShown, activityVisibility = defaultActivityVisibility, canWrite, readOnlyMode, onActivityVisibilityChange, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
+export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, currentUserId, notificationRequestKey, onNotificationTargetShown, unreadNotifications, onUnreadEventsVisible, activityVisibility = defaultActivityVisibility, canWrite, readOnlyMode, onActivityVisibilityChange, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
   detail: IssueDetail; board: BoardData; statuses: Status[]; priorities: Priority[]; redmineUrl: string; canWrite: boolean; onClose: () => void;
   draftScope: string; initialJournalId?: number; currentUserId?: number; notificationRequestKey?: string; onNotificationTargetShown?: (issueId: number, journalId?: number) => void; activityVisibility?: ActivityVisibility; readOnlyMode: boolean; onActivityVisibilityChange: (visibility: ActivityVisibility) => void;
+  unreadNotifications: Notification[]; onUnreadEventsVisible: (issueId: number, ids: string[]) => void | Promise<void>;
   onSave: (issue: Issue, patch: IssueEditPatch, operationId?: string) => Promise<Issue | void>; onComment: (issue: Issue, notes: string) => Promise<void>;
   onSaveRoles: (issue: Issue, rolePatch: { developerId?: number | null; qaId?: number | null }, operationId?: string) => Promise<Issue | void>;
   onEditJournal: (issue: Issue, journalId: number, notes: string, expectedNotes: string, operationId: string) => Promise<void>;
@@ -257,17 +259,21 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     updatedOnRef.current = issue.updatedOn;
     serverTextRef.current = next;
     setServerText(next);
-    setTextDraft((current) => {
-      const updated = { ...current };
-      for (const key of Object.keys(next) as (keyof IssueText)[]) {
-        if (!dirtyTextRef.current[key]) {
-          updated[key] = next[key];
-          baselineTextRef.current[key] = next[key];
-        }
+    // Reconcile from the synchronous refs, which are updated by input handlers.
+    // Mutating them inside a React state updater can run later than a newer input
+    // event and replace its draft ref with an older render snapshot.
+    const updated = { ...textDraftRef.current };
+    const updatedDirty = { ...dirtyTextRef.current };
+    for (const key of Object.keys(next) as (keyof IssueText)[]) {
+      if (!updatedDirty[key]) {
+        updated[key] = next[key];
+        baselineTextRef.current[key] = next[key];
       }
-      textDraftRef.current = updated;
-      return updated;
-    });
+    }
+    textDraftRef.current = updated;
+    dirtyTextRef.current = updatedDirty;
+    setTextDraft(updated);
+    setDirtyText(updatedDirty);
     const nextAuto = autoValues(issue);
     setAutoDraft((current) => {
       const updated = { ...current };
@@ -663,7 +669,19 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
       description: version.status === 'closed' ? t('closed') : version.dueDate || undefined,
       ...(version.status === 'closed' ? { disabled: true } : {}) }));
   const labelOptions = [...new Set([...board.labels, ...(board.labelOptions || []).map((option) => option.name), ...issue.labels])].sort((a, b) => a.localeCompare(b));
-  const activityItems = visibleJournals(activityJournals, activityVisibility, initialJournalId);
+  const activityItems = useMemo(() => visibleJournals(activityJournals, activityVisibility, initialJournalId), [activityJournals, activityVisibility, initialJournalId]);
+  const bufferedJournalIds = useMemo(() => new Set(bufferedActivity.map((journal) => journal.id)), [bufferedActivity]);
+  const excludedUnreadJournalIds = useMemo(() => new Set(initialJournalId === undefined ? [] : [initialJournalId]), [initialJournalId]);
+  useVisibleUnreadEvents({
+    issueId: issue.id,
+    projectId: issue.projectId,
+    notifications: unreadNotifications,
+    activity: activityItems,
+    bufferedJournalIds,
+    excludedJournalIds: excludedUnreadJournalIds,
+    rootRef: issueDialogScrollRef,
+    onVisible: onUnreadEventsVisible,
+  });
   const changeLookups = { statuses, people: issuePeople, priorities, versions: board.versions, labels: board.labelOptions || [] };
   const applyBufferedActivity = () => {
     const applyingIssueId = issue.id;
@@ -759,8 +777,8 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
               return <article className={`activity-item${forcedByPermalink ? ' activity-item-permalink-target' : ''}`} key={journal.id} id={`journal-${journal.id}`} tabIndex={-1} data-testid={`journal-item-${journal.id}`} data-permalink-override={forcedByPermalink || undefined}>
                 <Avatar person={journalUser} size="sm" />
                 <div className="activity-body">
-                  <div className="activity-heading"><strong>{journalUser.name}</strong><time>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}</time></div>
-                  {hasNote && (isEditing ? <form ref={journalEditFormRef} className="journal-editor" data-testid={`journal-editor-${journal.id}`} data-workspace-save onSubmit={(event) => { void saveJournalEdit(event, journal); }}>
+                  <div className="activity-heading" data-unread-event-heading={journal.id}><strong>{journalUser.name}</strong><time>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}</time></div>
+                  {hasNote && (isEditing ? <form ref={journalEditFormRef} className="journal-editor" data-unread-event-content={`${journal.id}:comment`} data-testid={`journal-editor-${journal.id}`} data-workspace-save onSubmit={(event) => { void saveJournalEdit(event, journal); }}>
                     <textarea ref={journalEditorTextareaRef} className="text-area journal-editor-area" aria-label={t('editComment')} data-testid={`journal-editor-textarea-${journal.id}`} value={journalEditDraft?.notes ?? ''} onChange={(event) => changeJournalEditText(event.target.value, journal.id)} />
                     <DraftStorageStatus meaningful={Boolean(journalEditDraft && (journalEditDraft.notes !== journalEditDraft.expectedNotes || journalEditDraft.operationId))} durable={journalDraftDurable} />
                     {isEditConflict && <div className="journal-edit-conflict" role="alert" data-testid={`journal-edit-conflict-${journal.id}`}>
@@ -776,8 +794,8 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
                       <Button size="sm" type="button" data-testid={`journal-cancel-${journal.id}`} disabled={savingJournalEdit} onClick={() => cancelJournalEdit(journal.id)}>{t('cancelCommentEdit')}</Button>
                       <Button size="sm" variant="primary" type="submit" data-testid={`journal-save-${journal.id}`} disabled={!canWrite || savingJournalEdit || isEditConflict || !journalEditDraft?.notes.trim() || journalEditDraft.notes === journalEditDraft.expectedNotes}>{savingJournalEdit ? <Spinner /> : <Save size={14} />}{t('saveCommentEdit')}</Button>
                     </div></div>
-                  </form> : <RichContent className="activity-rich-content" source={journal.notes} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} />)}
-                  {!!changes.length && <ul>{changes.map((change, index) => { const display = localizeJournalChange(change, changeLookups, t); return <li key={`${journal.id}-${index}`}><strong>{display.field}</strong><span>{display.oldValue}</span><span className="change-arrow">→</span><span>{display.newValue}</span></li>; })}</ul>}
+                  </form> : <div data-unread-event-content={`${journal.id}:comment`}><RichContent className="activity-rich-content" source={journal.notes} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} /></div>)}
+                  {!!changes.length && <ul>{changes.map((change, index) => { const kind = activityKindForField(change.field); const display = localizeJournalChange(change, changeLookups, t); return <li key={`${journal.id}-${index}`} data-activity-kind={kind} data-unread-event-content={`${journal.id}:${kind}`}><strong>{display.field}</strong><span>{display.oldValue}</span><span className="change-arrow">→</span><span>{display.newValue}</span></li>; })}</ul>}
                   {hasNote && <div className="journal-actions" role="group" aria-label={t('commentActions')}>
                     <button type="button" className="journal-action-button" data-testid={`journal-quote-${journal.id}`} aria-label={t('quoteComment')} title={t('quoteComment')} onClick={() => quoteJournal(journal)}><Quote size={13} /><span>{t('quoteComment')}</span></button>
                     <button type="button" className="journal-action-button" data-testid={`journal-permalink-${journal.id}`} aria-label={t('copyCommentLink')} title={t('copyCommentLink')} onClick={() => { void copyJournalPermalink(journal.id); }}><Link size={13} /><span>{t('commentLinkLabel')}</span></button>

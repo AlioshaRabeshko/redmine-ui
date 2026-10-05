@@ -375,6 +375,15 @@ Object.assign(es, {
   writeMode: 'Escritura activada', readOnlyNote: 'Los cambios en Redmine están desactivados para esta ejecución. Los ajustes locales y borradores siguen disponibles.', saveBlocked: 'Redmine está en modo de solo lectura.', errorReadOnly: 'Redmine está en modo de solo lectura. El borrador sigue disponible.', automationBlocked: 'La automatización de Redmine requiere el modo de escritura.', errorOutcomeUnknown: 'Se perdió la respuesta del servidor. Comprueba la tarea en Redmine antes de repetir esta acción.', errorUnsupported: 'Esta acción no está disponible mediante la API del Redmine conectado.',
 });
 
+Object.assign(en, { moveToTodo: 'Move to To Do', createdAt: 'Created', lastActivity: 'Last activity', moveStateCheckFailed: 'Could not verify the current issue state. The move is held until a fresh read succeeds.' });
+Object.assign(uk, { moveToTodo: 'У To Do', createdAt: 'Створено', lastActivity: 'Остання активність', moveStateCheckFailed: 'Не вдалося перевірити поточний стан задачі. Переміщення заблоковане до успішного перечитування.' });
+Object.assign(pl, { moveToTodo: 'Do To Do', createdAt: 'Utworzono', lastActivity: 'Ostatnia aktywność', moveStateCheckFailed: 'Nie można sprawdzić aktualnego stanu zadania. Przenoszenie jest wstrzymane do udanego odczytu.' });
+Object.assign(es, { moveToTodo: 'Mover a To Do', createdAt: 'Creado', lastActivity: 'Última actividad', moveStateCheckFailed: 'No se pudo verificar el estado actual de la tarea. El movimiento está bloqueado hasta completar una nueva lectura.' });
+Object.assign(en, { checkingIssue: 'Checking…' });
+Object.assign(uk, { checkingIssue: 'Перевірка…' });
+Object.assign(pl, { checkingIssue: 'Sprawdzanie…' });
+Object.assign(es, { checkingIssue: 'Verificando…' });
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },

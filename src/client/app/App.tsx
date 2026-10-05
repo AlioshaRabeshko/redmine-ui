@@ -11,6 +11,7 @@ import { api, ApiRequestError, friendlyError, issueUrl } from '../lib/api';
 import { useWorkspaceNavigation, type NavigationState, type Screen } from '../lib/workspaceNavigation';
 import { isEditableTarget, resolveIssueShortcutTarget, shortcutForEvent } from '../lib/shortcuts';
 import { toggleAssignedToMe } from '../../shared/domain';
+import { boardHasNewerIssueState, boardHasIssueState, mergeConfirmedIssue, moveIssueOptimistically, optimisticIssueMoveKey, overlayConfirmedIssueFloors, overlayOptimisticIssueMoves, type OptimisticIssueMoves } from '../lib/optimisticIssueMove';
 import { Avatar, Button, dispatchActiveFormSave, IconButton, Modal, ModalFocusScopeProvider, Notice, Spinner, Toast } from '../components/ui';
 import type { ModalFocusScope } from '../components/ui';
 import { BoardPage } from '../features/board/BoardPage';
@@ -21,6 +22,15 @@ import { SettingsPage } from '../features/settings/SettingsPage';
 
 const IssueDialog = lazy(() => import('../features/issues/IssueDialog').then(module => ({ default: module.IssueDialog })));
 const CreateIssueDialog = lazy(() => import('../features/issues/IssueDialog').then(module => ({ default: module.CreateIssueDialog })));
+
+class CommandExecutionError extends Error {
+  constructor(message: string, readonly command: WorkspaceCommand, readonly result?: CommandResult) { super(message); }
+}
+
+function isInaccessibleIssue(error: unknown): boolean {
+  const code = error instanceof ApiRequestError ? error.code : '';
+  return ['NOT_FOUND', 'ISSUE_NOT_FOUND', 'FORBIDDEN', 'PERMISSION_DENIED', 'REDMINE_FORBIDDEN', 'HTTP_403', 'HTTP_404'].includes(code);
+}
 
 function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): AppSettings {
   const { projectQa, subscriptions, projectActivity, personRoleOverrides, personAvatarOverrides, projectBackgrounds, ...simpleFields } = patch;
@@ -186,6 +196,15 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const [eventStreamConnected, setEventStreamConnected] = useState(false);
   const [pendingIssueIds, setPendingIssueIds] = useState<Set<number>>(() => new Set());
   const pendingIssueIdsRef = useRef(new Set<number>());
+  const [optimisticMoves, setOptimisticMoves] = useState<OptimisticIssueMoves>({});
+  const confirmedIssueFloorsRef = useRef(new Map<string, Issue>());
+  const visibleReadInFlightRef = useRef(new Set<string>());
+  const visibleReadAttemptedRef = useRef(new Set<string>());
+  const readAcknowledgementsRef = useRef(new Map<string, Promise<void>>());
+  const checkingMoveReadsRef = useRef(new Map<number, () => void>());
+  const confirmedMissingIssueKeysRef = useRef(new Map<string, number>());
+  const reportedFloorReadErrorsRef = useRef(new Set<string>());
+  const visibleReadScopeRef = useRef<number | undefined>(issueId);
   const issueOpenSequenceRef = useRef(0);
   const notificationOpenSequenceRef = useRef(0);
   const pendingNotificationReadRef = useRef<{ notification: Notification; sequence: number } | undefined>(undefined);
@@ -205,14 +224,85 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const notify = useCallback((text: string) => setToastText(text), []);
   const translateRef = useRef(t);
   translateRef.current = t;
+  const rememberMissingIssue = (key: string, issue: Issue) => {
+    const updatedOn = Date.parse(issue.updatedOn);
+    confirmedMissingIssueKeysRef.current.set(key, Number.isFinite(updatedOn) ? updatedOn : Date.now());
+    while (confirmedMissingIssueKeysRef.current.size > 256) {
+      const oldest = confirmedMissingIssueKeysRef.current.keys().next().value;
+      if (oldest === undefined) break;
+      confirmedMissingIssueKeysRef.current.delete(oldest);
+    }
+  };
 
-  const boardQuery = useQuery({ queryKey: ['board', selectedProjectId], queryFn: () => api.get<import('../../shared/types').BoardData>(`/api/projects/${selectedProjectId}/board`), enabled: !!selectedProjectId, staleTime: 15_000, retry: 1, refetchInterval: eventStreamConnected ? false : 10_000, refetchOnWindowFocus: 'always' });
+  const boardQuery = useQuery({ queryKey: ['board', selectedProjectId], queryFn: async ({ signal }) => {
+    let fetched = await api.get<BoardData>(`/api/projects/${selectedProjectId}/board`, signal);
+    for (const [key, missingOn] of confirmedMissingIssueKeysRef.current) {
+      const [rawProjectId, rawIssueId] = key.split(':');
+      if (Number(rawProjectId) !== selectedProjectId) continue;
+      const issue = fetched.issues.find(item => item.id === Number(rawIssueId) && item.projectId === selectedProjectId);
+      if (!issue) continue;
+      if (Date.parse(issue.updatedOn) <= missingOn) fetched = { ...fetched, issues: fetched.issues.filter(item => item.id !== issue.id), total: Math.max(0, fetched.total - 1) };
+      else confirmedMissingIssueKeysRef.current.delete(key);
+    }
+    for (const [key, floor] of [...confirmedIssueFloorsRef.current]) {
+      if (confirmedIssueFloorsRef.current.get(key) !== floor) continue;
+      if (floor.projectId !== selectedProjectId) continue;
+      const current = fetched.issues.find(issue => issue.id === floor.id && issue.projectId === floor.projectId);
+      const currentTime = current ? Date.parse(current.updatedOn) : Number.NaN;
+      const floorTime = Date.parse(floor.updatedOn);
+      const matchesFloor = current?.statusId === floor.statusId && current.fixedVersionId === floor.fixedVersionId;
+      if (current && Number.isFinite(currentTime) && Number.isFinite(floorTime) && (currentTime > floorTime || (currentTime === floorTime && matchesFloor))) {
+        if (confirmedIssueFloorsRef.current.get(key) === floor) confirmedIssueFloorsRef.current.delete(key);
+        reportedFloorReadErrorsRef.current.delete(key);
+        continue;
+      }
+      try {
+        const detail = await api.get<IssueDetail>(`/api/issues/${floor.id}`, signal);
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (confirmedIssueFloorsRef.current.get(key) !== floor) continue;
+        if (detail.issue.projectId !== selectedProjectId) {
+          confirmedIssueFloorsRef.current.delete(key);
+          rememberMissingIssue(key, floor);
+          if (current) fetched = { ...fetched, issues: fetched.issues.filter(issue => issue.id !== floor.id), total: Math.max(0, fetched.total - 1) };
+          continue;
+        }
+        const actualTime = Date.parse(detail.issue.updatedOn);
+        if (Number.isFinite(actualTime) && (!Number.isFinite(floorTime) || actualTime >= floorTime)) {
+          fetched = mergeConfirmedIssue(fetched, selectedProjectId, detail.issue) || fetched;
+          confirmedIssueFloorsRef.current.set(key, detail.issue);
+          reportedFloorReadErrorsRef.current.delete(key);
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        if (confirmedIssueFloorsRef.current.get(key) !== floor) continue;
+        if (isInaccessibleIssue(error)) {
+          confirmedIssueFloorsRef.current.delete(key);
+          rememberMissingIssue(key, floor);
+          if (current) fetched = { ...fetched, issues: fetched.issues.filter(issue => issue.id !== floor.id), total: Math.max(0, fetched.total - 1) };
+        } else if (!reportedFloorReadErrorsRef.current.has(key)) {
+          reportedFloorReadErrorsRef.current.add(key);
+          notify(t('moveStateCheckFailed'));
+        }
+      }
+    }
+    for (const [key, missingOn] of confirmedMissingIssueKeysRef.current) {
+      const [rawProjectId, rawIssueId] = key.split(':');
+      if (Number(rawProjectId) !== selectedProjectId) continue;
+      const issue = fetched.issues.find(item => item.id === Number(rawIssueId) && item.projectId === selectedProjectId);
+      if (!issue) continue;
+      if (Date.parse(issue.updatedOn) <= missingOn) fetched = { ...fetched, issues: fetched.issues.filter(item => item.id !== issue.id), total: Math.max(0, fetched.total - 1) };
+      else confirmedMissingIssueKeysRef.current.delete(key);
+    }
+    return overlayConfirmedIssueFloors(fetched, confirmedIssueFloorsRef.current, selectedProjectId, confirmedMissingIssueKeysRef.current)!;
+  }, enabled: !!selectedProjectId, staleTime: 15_000, retry: 1, refetchInterval: eventStreamConnected ? false : 10_000, refetchOnWindowFocus: 'always' });
   const unreadQuery = useQuery({ queryKey: ['notifications', 'unread'], queryFn: () => api.get<Notification[]>('/api/notifications'), staleTime: 15_000, refetchInterval: eventStreamConnected ? false : 10_000, refetchOnWindowFocus: 'always' });
   const archivedQuery = useQuery({ queryKey: ['notifications', 'archived'], queryFn: () => api.get<Notification[]>('/api/notifications?archived=true'), enabled: screen === 'inbox' && archived, staleTime: 15_000 });
   const operationsQuery = useQuery({ queryKey: ['operations'], queryFn: () => api.get<Operation[]>('/api/operations'), staleTime: 10_000, refetchInterval: 12_000 });
   const issueQuery = useQuery({ queryKey: ['issue', issueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${issueId}`), enabled: issueOpen && !!issueId, staleTime: 5_000, refetchInterval: eventStreamConnected ? false : issueOpen ? 10_000 : false, refetchOnWindowFocus: 'always' });
   const quickMoveQuery = useQuery({ queryKey: ['issue', quickMoveIssueId], queryFn: () => api.get<IssueDetail>(`/api/issues/${quickMoveIssueId}`), enabled: !!quickMoveIssueId, staleTime: 0, retry: false });
   const board = boardQuery.data;
+  const visibleBoard = overlayOptimisticIssueMoves(overlayConfirmedIssueFloors(board, confirmedIssueFloorsRef.current, selectedProjectId, confirmedMissingIssueKeysRef.current), selectedProjectId, optimisticMoves);
+  const checkingIssueIds = new Set(Object.values(optimisticMoves).filter(move => move.projectId === selectedProjectId && move.phase === 'checking').map(move => move.issue.id));
   const statuses = bootstrap.statuses;
   const canWrite = !bootstrap.readOnly && bootstrap.capabilities.canWrite && (bootstrap.mode === 'demo' || bootstrap.connected);
   const readOnlyMode = bootstrap.readOnly;
@@ -231,6 +321,116 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   const unreadCount = unreadQuery.data?.length || 0;
   const liveContextRef = useRef({ projectId: selectedProjectId, screen, issueId, versionId: selectedVersionId });
   liveContextRef.current = { projectId: selectedProjectId, screen, issueId, versionId: selectedVersionId };
+
+  useEffect(() => {
+    if (visibleReadScopeRef.current === issueId) return;
+    visibleReadScopeRef.current = issueId;
+    visibleReadAttemptedRef.current.clear();
+  }, [issueId]);
+  useEffect(() => {
+    const resetOnVisible = () => {
+      if (document.visibilityState === 'visible') visibleReadAttemptedRef.current.clear();
+    };
+    document.addEventListener('visibilitychange', resetOnVisible);
+    return () => document.removeEventListener('visibilitychange', resetOnVisible);
+  }, []);
+  useEffect(() => () => { for (const cancel of checkingMoveReadsRef.current.values()) cancel(); }, []);
+  useEffect(() => {
+    if (!board) return;
+    const absent = [...confirmedMissingIssueKeysRef.current.keys()].filter(key => {
+      const [rawProjectId, rawIssueId] = key.split(':');
+      return Number(rawProjectId) === selectedProjectId && !board.issues.some(issue => issue.projectId === selectedProjectId && issue.id === Number(rawIssueId));
+    });
+    if (!absent.length) return;
+    for (const key of absent) {
+      confirmedIssueFloorsRef.current.delete(key);
+      reportedFloorReadErrorsRef.current.delete(key);
+      const issueId = Number(key.split(':')[1]);
+      checkingMoveReadsRef.current.get(issueId)?.();
+      checkingMoveReadsRef.current.delete(issueId);
+      pendingIssueIdsRef.current.delete(issueId);
+    }
+    setOptimisticMoves(current => {
+      const next = { ...current };
+      for (const key of absent) delete next[key];
+      return next;
+    });
+    setPendingIssueIds(new Set(pendingIssueIdsRef.current));
+  }, [board, boardQuery.dataUpdatedAt, selectedProjectId]);
+  useEffect(() => {
+    if (!board) return;
+    setOptimisticMoves(current => {
+      let changed = false;
+      const next = { ...current };
+      for (const [key, move] of Object.entries(current)) {
+        const floor = confirmedIssueFloorsRef.current.get(key);
+        const replacedBySameSecondRead = floor && (floor.statusId !== move.issue.statusId || floor.fixedVersionId !== move.issue.fixedVersionId) && boardHasIssueState(board, floor);
+        if (move.phase === 'confirmed' && move.projectId === selectedProjectId && (boardHasIssueState(board, move.issue) || boardHasNewerIssueState(board, move.issue) || replacedBySameSecondRead)) {
+          delete next[key];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [board, boardQuery.dataUpdatedAt, selectedProjectId]);
+  useEffect(() => {
+    for (const move of Object.values(optimisticMoves)) {
+      if (move.phase !== 'checking' || checkingMoveReadsRef.current.has(move.issue.id)) continue;
+      const key = optimisticIssueMoveKey(move.projectId, move.issue.id);
+      let cancelled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let delayMs = 1_000;
+      const cancel = () => { cancelled = true; if (timer) clearTimeout(timer); };
+      checkingMoveReadsRef.current.set(move.issue.id, cancel);
+      const complete = () => {
+        checkingMoveReadsRef.current.delete(move.issue.id);
+        pendingIssueIdsRef.current.delete(move.issue.id);
+        setPendingIssueIds(new Set(pendingIssueIdsRef.current));
+      };
+      const removeUnavailable = async (error?: unknown) => {
+        confirmedIssueFloorsRef.current.delete(key);
+        rememberMissingIssue(key, move.issue);
+        await queryClient.cancelQueries({ queryKey: ['board', move.projectId] });
+        queryClient.setQueryData<BoardData>(['board', move.projectId], current => current ? { ...current, issues: current.issues.filter(issue => issue.id !== move.issue.id), total: Math.max(0, current.total - 1) } : current);
+        setOptimisticMoves(current => { const next = { ...current }; delete next[key]; return next; });
+        if (error) notify(friendlyError(error, t));
+        complete();
+        checkingMoveReadsRef.current.delete(move.issue.id);
+      };
+      const readActual = async (): Promise<void> => {
+        if (cancelled) return;
+        try {
+          const detail = await api.get<IssueDetail>(`/api/issues/${move.issue.id}`);
+          if (cancelled) return;
+          const actual = detail.issue;
+          if (actual.id !== move.issue.id || actual.projectId !== move.projectId) {
+            await removeUnavailable();
+            return;
+          }
+          confirmedIssueFloorsRef.current.set(key, actual);
+          reportedFloorReadErrorsRef.current.delete(key);
+          queryClient.setQueryData<IssueDetail>(['issue', actual.id], detail);
+          await queryClient.cancelQueries({ queryKey: ['board', move.projectId] });
+          queryClient.setQueryData<BoardData>(['board', move.projectId], current => mergeConfirmedIssue(current, move.projectId, actual));
+          setOptimisticMoves(current => ({ ...current, [key]: { projectId: move.projectId, issue: actual, phase: 'confirmed' } }));
+          complete();
+          checkingMoveReadsRef.current.delete(move.issue.id);
+        } catch (error) {
+          if (cancelled) return;
+          if (isInaccessibleIssue(error)) {
+            await removeUnavailable(error);
+            return;
+          }
+          if (!reportedFloorReadErrorsRef.current.has(key)) {
+            reportedFloorReadErrorsRef.current.add(key);
+            notify(t('moveStateCheckFailed'));
+          }
+          timer = setTimeout(() => { delayMs = Math.min(delayMs * 2, 30_000); void readActual(); }, delayMs);
+        }
+      };
+      void readActual();
+    }
+  }, [optimisticMoves, notify, queryClient, t]);
 
   const refreshLiveData = useCallback((eventName: string, eventData = '') => {
     const context = liveContextRef.current;
@@ -422,12 +622,12 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     const retryEnvelope = command.operationId && Object.keys(command.input || {}).length === 0;
     const pending = bootstrap.mode === 'redmine' && !retryEnvelope ? pendingCommandIntents.claim(scope, command) : command;
     try { result = await commandMutation.mutateAsync(pending); }
-    catch (error) { throw new Error(bootstrap.mode === 'redmine' && !(error instanceof ApiRequestError) ? t('errorOutcomeUnknown') : friendlyError(error, t)); }
+    catch (error) { throw new CommandExecutionError(bootstrap.mode === 'redmine' && !(error instanceof ApiRequestError) ? t('errorOutcomeUnknown') : friendlyError(error, t), pending); }
     if (result.operation.status === 'done' && bootstrap.mode === 'redmine') pendingCommandIntents.complete(scope, pending);
     if (result.operation.status === 'failed' || result.operation.status === 'blocked') {
       const code = result.operation.errorCode;
       const mapped = code ? friendlyError(new ApiRequestError({ code, message: '' }, '', 400), t) : t('errorGeneric');
-      throw new Error(mapped);
+      throw new CommandExecutionError(mapped, pending, result);
     }
     return result;
   }, [canWrite, commandMutation, t, bootstrap.mode, bootstrap.redmineUrl, bootstrap.me.id]);
@@ -495,7 +695,10 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     setNotificationRequestKey(undefined);
     closeNavigation({ issueId: undefined, journalId: undefined });
   }, [closeNavigation]);
-  const openCreateIssue = (defaults: NavigationState['createIssue'] = {}) => navigate({ ...clearForms, createIssue: defaults });
+  const openCreateIssue = (defaults: NavigationState['createIssue'] = {}) => {
+    const backlogStatus = screen === 'backlog' ? statuses.find(status => status.key === 'backlog')?.id : undefined;
+    navigate({ ...clearForms, createIssue: { ...defaults, statusId: defaults.statusId ?? backlogStatus } });
+  };
   const closeCreateIssue = () => { if (window.location.href === renderedHref) closeNavigation({ createIssue: undefined }); };
   const openScreen = (next: Screen, replace = false) => navigate({ ...clearForms, screen: next, archived: next === 'inbox' ? false : archived, versionId: next === 'releases' ? undefined : selectedVersionId }, { replace });
   const setFilters = (update: Filters | ((current: Filters) => Filters), replace = false) => navigate(current => ({ filters: typeof update === 'function' ? update(current.filters) : update }), { replace });
@@ -586,17 +789,89 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
   };
   const moveIssue = async (issue: Issue, target: { statusId?: number; fixedVersionId?: number | null }) => {
     if (pendingIssueIdsRef.current.has(issue.id)) return;
+    const key = optimisticIssueMoveKey(issue.projectId, issue.id);
+    const optimistic = moveIssueOptimistically(issue, target);
     pendingIssueIdsRef.current.add(issue.id);
     setPendingIssueIds(new Set(pendingIssueIdsRef.current));
+    setOptimisticMoves(current => ({ ...current, [key]: { projectId: issue.projectId, issue: optimistic, phase: 'saving' } }));
     const input: Record<string, unknown> = { ...target };
+    let stateKnown = false;
+    const showConfirmedUntilBoardIsCurrent = async (confirmed: Issue): Promise<boolean> => {
+      confirmedIssueFloorsRef.current.set(key, confirmed);
+      setOptimisticMoves(current => ({ ...current, [key]: { projectId: issue.projectId, issue: confirmed, phase: 'confirmed' } }));
+      queryClient.setQueryData<IssueDetail>(['issue', confirmed.id], current => current ? { ...current, issue: confirmed } : current);
+      await queryClient.cancelQueries({ queryKey: ['board', issue.projectId] });
+      try {
+        let fetchedBoard = await api.get<BoardData>(`/api/projects/${issue.projectId}/board`);
+        const listed = fetchedBoard.issues.some(item => item.id === confirmed.id && item.projectId === issue.projectId);
+        if (!listed) {
+          try {
+            const detail = await api.get<IssueDetail>(`/api/issues/${confirmed.id}`);
+            if (detail.issue.id !== confirmed.id || detail.issue.projectId !== issue.projectId) {
+              confirmedIssueFloorsRef.current.delete(key);
+              rememberMissingIssue(key, confirmed);
+              setOptimisticMoves(current => { const next = { ...current }; delete next[key]; return next; });
+              await queryClient.cancelQueries({ queryKey: ['board', issue.projectId] });
+              queryClient.setQueryData<BoardData>(['board', issue.projectId], { ...fetchedBoard, issues: fetchedBoard.issues.filter(item => item.id !== confirmed.id), total: Math.max(0, fetchedBoard.total - 1) });
+              return true;
+            }
+            confirmed = detail.issue;
+            confirmedIssueFloorsRef.current.set(key, confirmed);
+            queryClient.setQueryData<IssueDetail>(['issue', confirmed.id], detail);
+            fetchedBoard = mergeConfirmedIssue(fetchedBoard, issue.projectId, confirmed) || fetchedBoard;
+            setOptimisticMoves(current => ({ ...current, [key]: { projectId: issue.projectId, issue: confirmed, phase: 'confirmed' } }));
+          } catch (error) {
+            if (!isInaccessibleIssue(error)) throw error;
+            confirmedIssueFloorsRef.current.delete(key);
+            rememberMissingIssue(key, confirmed);
+            fetchedBoard = { ...fetchedBoard, issues: fetchedBoard.issues.filter(item => item.id !== confirmed.id), total: Math.max(0, fetchedBoard.total - 1) };
+            setOptimisticMoves(current => { const next = { ...current }; delete next[key]; return next; });
+          }
+        }
+        const latestBoard = overlayConfirmedIssueFloors(fetchedBoard, confirmedIssueFloorsRef.current, issue.projectId, confirmedMissingIssueKeysRef.current)!;
+        // An SSE/poll invalidation can start while the authoritative response is in flight.
+        // Cancel it before replacing the cache so an older result cannot clear our fence.
+        await queryClient.cancelQueries({ queryKey: ['board', issue.projectId] });
+        queryClient.setQueryData<BoardData>(['board', issue.projectId], latestBoard);
+        if (boardHasIssueState(latestBoard, confirmed) || boardHasNewerIssueState(latestBoard, confirmed) || confirmedMissingIssueKeysRef.current.has(key)) {
+          if (boardHasNewerIssueState(latestBoard, confirmed)) confirmedIssueFloorsRef.current.delete(key);
+          setOptimisticMoves(current => { const next = { ...current }; delete next[key]; return next; });
+          return true;
+        }
+        setOptimisticMoves(current => ({ ...current, [key]: { projectId: issue.projectId, issue: current[key]?.issue ?? confirmed, phase: 'checking' } }));
+        notify(t('moveStateCheckFailed'));
+        return false;
+      } catch {
+        setOptimisticMoves(current => ({ ...current, [key]: { projectId: issue.projectId, issue: current[key]?.issue ?? confirmed, phase: 'checking' } }));
+        notify(t('moveStateCheckFailed'));
+        return false;
+      }
+    };
     try {
       const result = await runCommand({ type: 'moveIssue', issueId: issue.id, input });
-      if (result.operation.status !== 'done') throw new Error(t('operationRunning'));
+      if (result.operation.status !== 'done') throw new CommandExecutionError(t('operationRunning'), { type: 'moveIssue', issueId: issue.id, input }, result);
+      let confirmed = result.issue;
+      if (!confirmed) confirmed = (await api.get<IssueDetail>(`/api/issues/${issue.id}`)).issue;
+      if (confirmed.id !== issue.id || confirmed.projectId !== issue.projectId) throw new Error(t('moveStateCheckFailed'));
+      stateKnown = await showConfirmedUntilBoardIsCurrent(confirmed);
       if (target.statusId && issue.fixedVersionId) notify(t('keepRoadmapHint'));
-      await refreshQueries();
+    } catch (error) {
+      try {
+        const actual = (await api.get<IssueDetail>(`/api/issues/${issue.id}`)).issue;
+        if (actual.id !== issue.id || actual.projectId !== issue.projectId) throw new Error(t('moveStateCheckFailed'));
+        stateKnown = await showConfirmedUntilBoardIsCurrent(actual);
+      } catch {
+        setOptimisticMoves(current => ({ ...current, [key]: { projectId: issue.projectId, issue: current[key]?.issue ?? optimistic, phase: 'checking' } }));
+        const message = error instanceof Error ? error.message : t('errorGeneric');
+        throw new CommandExecutionError(`${message} ${t('moveStateCheckFailed')}`, error instanceof CommandExecutionError ? error.command : { type: 'moveIssue', issueId: issue.id, input },
+          error instanceof CommandExecutionError ? error.result : undefined);
+      }
+      throw error;
     } finally {
-      pendingIssueIdsRef.current.delete(issue.id);
-      setPendingIssueIds(new Set(pendingIssueIdsRef.current));
+      if (stateKnown) {
+        pendingIssueIdsRef.current.delete(issue.id);
+        setPendingIssueIds(new Set(pendingIssueIdsRef.current));
+      }
     }
   };
   const createRelease = async (input: { name: string; dueDate?: string; description?: string; issueIds?: number[] }) => {
@@ -625,27 +900,37 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     await refreshQueries();
     notify(result.operation.status === 'done' ? t('saved') : t('operationRunning'));
   };
-  const markManyRead = async (selected: Notification[]) => {
-    const ids = [...new Set(selected.filter((notification) => !notification.readAt).map((notification) => notification.id))];
+  const markManyRead = useCallback(async (selected: Notification[]) => {
+    const ids = [...new Set(selected.filter(notification => !notification.readAt).map(notification => notification.id))];
     if (!ids.length) return;
-    const acknowledged: string[] = [];
-    try {
-      for (let offset = 0; offset < ids.length; offset += 500) {
-        const batch = ids.slice(offset, offset + 500);
-        await api.post('/api/notifications/read', { ids: batch });
-        acknowledged.push(...batch);
-      }
-    } finally {
-      if (acknowledged.length) {
-        // Cancel pre-read fetches before publishing the acknowledged state. A stale
-        // response must not restore an archived event or its favicon badge.
-        await queryClient.cancelQueries({ queryKey: ['notifications', 'unread'] });
-        const readIds = new Set(acknowledged);
-        queryClient.setQueryData<Notification[]>(['notifications', 'unread'], current => current?.filter(item => !readIds.has(item.id)));
-        await queryClient.invalidateQueries({ queryKey: ['notifications'] });
-      }
+    const jobs: Array<{ ids: string[]; promise: Promise<void> }> = [];
+    const newIds: string[] = [];
+    for (const id of ids) {
+      const existing = readAcknowledgementsRef.current.get(id);
+      if (existing) jobs.push({ ids: [id], promise: existing });
+      else newIds.push(id);
     }
-  };
+    for (let offset = 0; offset < newIds.length; offset += 500) {
+      const batch = newIds.slice(offset, offset + 500);
+      const promise = api.post('/api/notifications/read', { ids: batch }).then(() => undefined);
+      for (const id of batch) readAcknowledgementsRef.current.set(id, promise);
+      const clear = () => { for (const id of batch) if (readAcknowledgementsRef.current.get(id) === promise) readAcknowledgementsRef.current.delete(id); };
+      void promise.then(clear, clear);
+      jobs.push({ ids: batch, promise });
+    }
+    const settled = await Promise.allSettled(jobs.map(job => job.promise));
+    const acknowledged = jobs.flatMap((job, index) => settled[index].status === 'fulfilled' ? job.ids : []);
+    if (acknowledged.length) {
+      // Cancel pre-read fetches before publishing the acknowledged state. A stale
+      // response must not restore an archived event or its favicon badge.
+      await queryClient.cancelQueries({ queryKey: ['notifications', 'unread'] });
+      const readIds = new Set(acknowledged);
+      queryClient.setQueryData<Notification[]>(['notifications', 'unread'], current => current?.filter(item => !readIds.has(item.id)));
+      await queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    }
+    const rejected = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (rejected) throw rejected.reason;
+  }, [queryClient]);
   const markRead = async (notification: Notification) => markManyRead([notification]);
   const openNotification = async (notification: Notification) => {
     notificationIssueDetailRef.current = undefined;
@@ -691,6 +976,23 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
     setNotificationRequestKey(undefined);
     void markRead(notification).catch(error => notify(friendlyError(error, t)));
   }, [markRead, notify, t]);
+  const acknowledgeVisibleUnreadEvents = useCallback((shownIssueId: number, ids: string[]) => {
+    if (!issueId || issueId !== shownIssueId || document.visibilityState !== 'visible') return;
+    const params = new URLSearchParams(window.location.search);
+    if (Number(params.get('issue')) !== shownIssueId) return;
+    const currentUnread = unreadQuery.data || [];
+    const requestedIds = [...new Set(ids)].filter(id => !visibleReadAttemptedRef.current.has(id) && !visibleReadInFlightRef.current.has(id));
+    const selected = requestedIds.map(id => currentUnread.find(notification => notification.id === id))
+      .filter((notification): notification is Notification => Boolean(notification && !notification.readAt && notification.issueId === shownIssueId));
+    if (!selected.length) return;
+    for (const notification of selected) {
+      visibleReadAttemptedRef.current.add(notification.id);
+      visibleReadInFlightRef.current.add(notification.id);
+    }
+    void markManyRead(selected).catch(error => notify(friendlyError(error, t))).finally(() => {
+      for (const notification of selected) visibleReadInFlightRef.current.delete(notification.id);
+    });
+  }, [issueId, markManyRead, notify, t, unreadQuery.data]);
   const manualSync = async () => {
     setBusySync(true);
     try { await api.post('/api/sync'); await refreshQueries(); notify(t('synced', { time: new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' }) })); }
@@ -723,7 +1025,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
       }
       if ((action === 'createIssue' || action === 'moveStatus') && !canWrite) return;
       const topModal = [...document.querySelectorAll<HTMLElement>('.modal[aria-modal="true"]')].at(-1);
-      const focusedCard = document.activeElement instanceof Element ? document.activeElement.closest<HTMLElement>('.issue-card') : null;
+      const focusedCard = document.activeElement instanceof Element ? document.activeElement.closest<HTMLElement>('.issue-card, .backlog-row') : null;
       const focusedCardIssueId = Number(focusedCard?.dataset.issueId) || undefined;
       const modalIssueId = topModal?.classList.contains('issue-dialog') && issueOpen ? issueId : undefined;
       const targetIssueId = resolveIssueShortcutTarget({ hasModal: Boolean(topModal), modalIssueId, focusedCardIssueId });
@@ -788,7 +1090,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
         </div>
       </header>
       <div className="content-scroll" ref={contentScrollRef} tabIndex={-1} onScroll={(event) => { scrollPositionsRef.current[`${selectedProjectId}:${screen}`] = event.currentTarget.scrollTop; }}>
-        {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} unreadNotifications={unreadQuery.data || []} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={selectView} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onOpenNotification={(notification) => { void openNotification(notification); }} onCreateIssue={openCreateIssue} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
+        {(screen === 'board' || screen === 'backlog') && <>{boardQuery.isLoading && <div className="page-loading"><Spinner label={t('loading')} /></div>}{boardQuery.isError && <div className="page-error"><Notice tone="error">{t('boardFailed')} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice></div>}{board && statusesReady && <BoardPage project={project} data={visibleBoard || board} statuses={statuses} priorities={bootstrap.priorities} me={bootstrap.me} settings={settings} view={screen === 'backlog' ? 'backlog' : view} filters={filters} unreadNotifications={unreadQuery.data || []} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} onFiltersChange={setFilters} onSettingsChange={(patch) => { void patchSettings(patch).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onViewChange={selectView} onSelectSavedView={selectSavedView} onDeleteSavedView={(saved) => { void removeSavedView(saved).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onOpenIssue={openIssue} onOpenNotification={(notification) => { void openNotification(notification); }} onCreateIssue={openCreateIssue} onMoveIssue={(issue, target) => { void moveIssue(issue, target).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onSaveView={(name, nextFilters, savedView) => { void onSaveView(name, nextFilters, savedView).catch((error) => notify(error instanceof Error ? error.message : t('error'))); }} onToast={notify} savedViews={customViews} />}</>}
         {screen === 'inbox' && <InboxPage notifications={notifications} projects={bootstrap.projects} archived={archived} onToggleArchived={() => navigate({ archived: !archived })} onMarkRead={(notification) => { void markRead(notification).catch((error) => notify(friendlyError(error, t))); }} onMarkManyRead={(items) => { void markManyRead(items).catch((error) => notify(friendlyError(error, t))); }} onOpenIssue={(notification) => { void openNotification(notification); }} />}
         {screen === 'releases' && !board && <div className="page-loading">{boardQuery.isError ? <Notice tone="error">{friendlyError(boardQuery.error, t)} <Button size="sm" onClick={() => boardQuery.refetch()}>{t('retry')}</Button></Notice> : <Spinner label={t('loading')} />}</div>}
         {screen === 'releases' && board && <ReleasesPage project={project} board={board} statuses={statuses} priorities={bootstrap.priorities} members={members} versions={board.versions} selectedVersionId={selectedVersionId} canWrite={canWrite} readOnlyMode={readOnlyMode} onSelectVersion={selectVersion} form={location.releaseForm} onFormChange={changeReleaseForm} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`}  onOpenIssue={openIssue} onCreateRelease={createRelease} onAssign={assignRelease} onUpdateRelease={updateRelease} onFinish={finishRelease} onToast={notify} />}
@@ -798,7 +1100,7 @@ function Workspace({ bootstrap, onReload }: { bootstrap: Bootstrap; onReload: ()
 
     {issueOpen && issueId && <ModalFocusScopeProvider scope={issueFocusSessionRef.current.scope}>
       <>
-        {issueDetail && freshIssueDetailId === issueId && <Suspense fallback={<div className="modal-backdrop"><Spinner label={t('loading')} /></div>}><IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} currentUserId={bootstrap.me.id} activityVisibility={settings.projectActivity[String(issueDetail.issue.projectId)] ?? defaultActivityVisibility} onActivityVisibilityChange={(visibility) => { void patchSettings({ projectActivity: { [String(issueDetail.issue.projectId)]: visibility } }).catch((error) => notify(friendlyError(error, t))); }} readOnlyMode={readOnlyMode} initialJournalId={initialJournalId} notificationRequestKey={notificationRequestKey} onNotificationTargetShown={acknowledgeNotificationTargetShown} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onEditJournal={editJournal} onDeleteJournal={deleteJournal} onSetJournalLike={setJournalLike} onToast={notify} /></Suspense>}
+        {issueDetail && freshIssueDetailId === issueId && <Suspense fallback={<div className="modal-backdrop"><Spinner label={t('loading')} /></div>}><IssueDialog key={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}:${issueId}`} draftScope={`${bootstrap.mode}:${bootstrap.redmineUrl}:${bootstrap.me.id}`} detail={issueDetail} board={queryClient.getQueryData<import('../../shared/types').BoardData>(['board', issueDetail.issue.projectId]) || board || emptyBoard()} statuses={statuses} priorities={bootstrap.priorities} redmineUrl={bootstrap.redmineUrl} canWrite={canWrite} currentUserId={bootstrap.me.id} activityVisibility={settings.projectActivity[String(issueDetail.issue.projectId)] ?? defaultActivityVisibility} unreadNotifications={unreadQuery.data || []} onUnreadEventsVisible={acknowledgeVisibleUnreadEvents} onActivityVisibilityChange={(visibility) => { void patchSettings({ projectActivity: { [String(issueDetail.issue.projectId)]: visibility } }).catch((error) => notify(friendlyError(error, t))); }} readOnlyMode={readOnlyMode} initialJournalId={initialJournalId} notificationRequestKey={notificationRequestKey} onNotificationTargetShown={acknowledgeNotificationTargetShown} onClose={closeIssue} onSave={saveIssue} onComment={commentIssue} onSaveRoles={saveIssueRoles} onEditJournal={editJournal} onDeleteJournal={deleteJournal} onSetJournalLike={setJournalLike} onToast={notify} /></Suspense>}
         {(freshIssueDetailId !== issueId || !issueDetail) && <Modal title={`#${issueId}`} onClose={closeIssue} size="sm"><div className="center-loading">{issueLoadError ? <><Notice tone="error">{issueLoadError}</Notice><Button size="sm" onClick={() => setIssueLoadAttempt(attempt => attempt + 1)}>{t('retry')}</Button></> : <Spinner label={t('loading')} />}</div></Modal>}
       </>
     </ModalFocusScopeProvider>}

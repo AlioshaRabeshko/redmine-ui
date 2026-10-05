@@ -8,7 +8,9 @@ import { filterIssues, groupBoard, sortIssues, toggleAssignedToMe } from '../../
 import { Avatar, Button, IconButton } from '../../components/ui';
 import { MultiPicker, PeoplePicker, Picker, Popover } from '../../components/pickers';
 import { groupUnreadNotifications, oldestUnreadNotification } from './unreadNotifications';
+import { BacklogList } from './BacklogList';
 import './board-round3.css';
+import './board-round4.css';
 
 export interface BoardPageProps {
   project: Project;
@@ -22,6 +24,7 @@ export interface BoardPageProps {
   unreadNotifications: Notification[];
   canWrite: boolean;
   pendingIssueIds: ReadonlySet<number>;
+  checkingIssueIds?: ReadonlySet<number>;
   onFiltersChange: (filters: Filters) => void;
   onSettingsChange: (patch: Partial<AppSettings>) => void;
   onViewChange: (view: View) => void;
@@ -53,8 +56,8 @@ function labelTone(label: string): number {
   return Math.abs(hash) % 6;
 }
 
-function BoardCard({ issue, data, statuses, priorities, canWrite, pending = false, onOpen, isDragging = false, unreadCount = 0, oldestUnread, onOpenNotification }: {
-  issue: Issue; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pending?: boolean; onOpen: (issue: Issue) => void; isDragging?: boolean;
+function BoardCard({ issue, data, statuses, priorities, canWrite, pending = false, checking = false, onOpen, isDragging = false, unreadCount = 0, oldestUnread, onOpenNotification }: {
+  issue: Issue; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pending?: boolean; checking?: boolean; onOpen: (issue: Issue) => void; isDragging?: boolean;
   unreadCount?: number; oldestUnread?: Notification; onOpenNotification?: (notification: Notification) => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -69,11 +72,11 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
   const { attributes, listeners, setNodeRef, transform, isDragging: dragging } = useDraggable({ id: `issue:${issue.id}`, disabled: !canWrite || pending });
   const style = { transform: CSS.Translate.toString(transform), opacity: (dragging || isDragging) ? 0.35 : 1 };
   const pinnedInStatusLane = activeVersion && status?.key !== 'deploy';
-  return <article ref={setNodeRef} style={style} className={`issue-card${activeVersion ? ` issue-card-roadmap ${releaseToneClass(activeVersion.id)}` : ''}${isDragging ? ' issue-card-overlay' : ''}${pending ? ' issue-card-pending' : ''}`} data-testid={`issue-card-${issue.id}`} data-issue-id={issue.id} aria-busy={pending || undefined}>
+  return <article ref={setNodeRef} style={style} className={`issue-card${activeVersion ? ` issue-card-roadmap ${releaseToneClass(activeVersion.id)}` : ''}${isDragging ? ' issue-card-overlay' : ''}${pending ? ' issue-card-pending' : ''}${unreadCount > 0 ? ' has-unread' : ''}`} data-testid={`issue-card-${issue.id}`} data-issue-id={issue.id} aria-busy={pending || undefined}>
     <div className="card-hit-area" {...attributes} {...listeners} role="button" tabIndex={pending ? -1 : 0} aria-disabled={pending} aria-label={`#${issue.id} ${issue.subject}`} onClick={() => !pending && onOpen(issue)} onKeyDown={(event) => { if (!pending && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpen(issue); } }}>
       <div className="card-topline">
         <span className="issue-ref">{issue.trackerName} <span>#{issue.id}</span></span>
-        <span className={`card-topline-actions${unreadCount > 0 ? ' has-unread' : ''}`}>
+        <span className="card-topline-actions">
           {priority && <span className={`priority-mark priority-${Math.max(0, Math.min(4, priority.rank))}`} title={`${t('priorityField')}: ${priority.name}`}><CircleDot size={13} />{priority.name}</span>}
         </span>
       </div>
@@ -88,7 +91,7 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
           {author && ![assigned?.id, developer?.id, qa?.id].includes(author.id) && <span className="person-mini author-mini" title={`${t('author')}: ${author.name}`}><Avatar person={author} size="xs" /></span>}
         </div>
         <div className="card-meta">
-          {pending && <span className="actual-status">{t('savingIssue')}</span>}
+          {pending && <span className="actual-status">{checking ? t('checkingIssue') : t('savingIssue')}</span>}
           {overdue && <span className="due-chip due-overdue"><Clock3 size={12} />{t('overdue')}</span>}
           {!!issue.dueDate && !overdue && <span className="due-chip"><Clock3 size={12} />{new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' }).format(new Date(`${issue.dueDate}T00:00:00`))}</span>}
         </div>
@@ -101,8 +104,8 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
   </article>;
 }
 
-function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, onOpenIssue, onOpenNotification, notificationsByIssue, onCreateIssue, activeIssueId }: {
-  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onOpenNotification: (notification: Notification) => void; notificationsByIssue: Map<number, Notification[]>; onCreateIssue: BoardPageProps['onCreateIssue']; activeIssueId?: number;
+function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, checkingIssueIds, onOpenIssue, onOpenNotification, notificationsByIssue, onCreateIssue, activeIssueId }: {
+  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; checkingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onOpenNotification: (notification: Notification) => void; notificationsByIssue: Map<number, Notification[]>; onCreateIssue: BoardPageProps['onCreateIssue']; activeIssueId?: number;
 }) {
   const { t, i18n } = useTranslation();
   const { isOver, setNodeRef } = useDroppable({ id: `lane:${column.id}`, disabled: !canWrite });
@@ -123,7 +126,7 @@ function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, o
       <div className="lane-dropzone" ref={setNodeRef}>
         {column.issues.map((issue) => {
           const unread = notificationsByIssue.get(issue.id) || [];
-          return <BoardCard key={issue.id} issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pending={pendingIssueIds.has(issue.id)} onOpen={onOpenIssue} isDragging={activeIssueId === issue.id} unreadCount={unread.length} oldestUnread={oldestUnreadNotification(unread)} onOpenNotification={onOpenNotification} />;
+          return <BoardCard key={issue.id} issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pending={pendingIssueIds.has(issue.id)} checking={checkingIssueIds.has(issue.id)} onOpen={onOpenIssue} isDragging={activeIssueId === issue.id} unreadCount={unread.length} oldestUnread={oldestUnreadNotification(unread)} onOpenNotification={onOpenNotification} />;
         })}
         {column.issues.length === 0 && <div className="lane-empty">{isOver ? <span>{t('moveTo')} {column.name}</span> : <span className="lane-empty-mark">· · ·</span>}</div>}
       </div>
@@ -131,7 +134,9 @@ function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, o
   </section>;
 }
 
-export function BoardPage({ project, data, statuses, priorities, me, settings, view, filters, unreadNotifications, canWrite, pendingIssueIds, onFiltersChange, onSettingsChange, onViewChange, onSelectSavedView, onDeleteSavedView, onOpenIssue, onOpenNotification, onCreateIssue, onMoveIssue, onSaveView, savedViews }: BoardPageProps) {
+const noPendingIssues: ReadonlySet<number> = new Set();
+
+export function BoardPage({ project, data, statuses, priorities, me, settings, view, filters, unreadNotifications, canWrite, pendingIssueIds, checkingIssueIds = noPendingIssues, onFiltersChange, onSettingsChange, onViewChange, onSelectSavedView, onDeleteSavedView, onOpenIssue, onOpenNotification, onCreateIssue, onMoveIssue, onSaveView, savedViews }: BoardPageProps) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
   const [savingView, setSavingView] = useState(false);
@@ -202,6 +207,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     label: `${t(field === 'id' ? 'issueId' : field === 'subject' ? 'subject' : field)} · ${t(direction)}`,
   })));
   const viewLabelKeys: Record<View, string> = { all: 'viewAll', mine: 'viewMine', watching: 'viewWatching', backlog: 'viewBacklog' };
+  const createDefaults = view === 'backlog' ? { statusId: statuses.find(status => status.key === 'backlog')?.id } : undefined;
   const background = settings.projectBackgrounds?.[project.id];
   const backgroundStyle = background ? { '--project-background': `url("${background}")` } as CSSProperties : undefined;
   return <main className={`page board-page${background ? ' has-project-background' : ''}`} style={backgroundStyle} data-testid="board" data-modal-focus-fallback tabIndex={-1}>
@@ -233,16 +239,17 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
           </div>
         </Popover>
         <div className="board-sort-picker"><Picker label={t('sort')} options={sortOptions} value={`${settings.sort.field}:${settings.sort.direction}`} onChange={changeSort} /></div>
-        <Button variant="primary" onClick={() => onCreateIssue()} disabled={!canWrite} data-testid="new-issue"><Plus size={16} />{t('create')}</Button>
+        <Button variant="primary" onClick={() => onCreateIssue(createDefaults)} disabled={!canWrite} data-testid="new-issue"><Plus size={16} />{t('create')}</Button>
       </div>
     </div>
 
     {activeChips.length > 0 && <div className="board-active-filters" aria-label={t('activeFilters')}><span className="active-filter-label">{t('activeFilters')}:</span>{activeChips.map(chip => <button key={chip.key} type="button" className="filter-chip" onClick={chip.remove} aria-label={`${t('clear')} · ${chip.label}`} title={`${t('clear')} · ${chip.label}`}>{chip.label}<X size={12} /></button>)}<Button size="sm" variant="quiet" onClick={clearFilters}>{t('clear')}</Button></div>}
 
-    {filtered.length === 0 && columns.length > 0 && <p className="board-empty-hint" role="status">{hasFilters ? t('emptySearch') : t('noIssues')} · {t('noIssuesHint')}</p>}
-    {columns.length === 0 ? <div className="empty-state board-empty"><div className="empty-illustration"><Search size={24} /></div><h2>{hasFilters ? t('emptySearch') : t('noIssues')}</h2><p>{t('noIssuesHint')}</p>{!hasFilters && canWrite && <Button variant="primary" onClick={() => onCreateIssue()}><Plus size={15} />{t('createFirstIssue')}</Button>}</div> : <DndContext sensors={sensors} onDragStart={(event) => setDraggedId(Number(String(event.active.id).replace('issue:', '')))} onDragCancel={() => setDraggedId(undefined)} onDragEnd={onDragEnd}>
+    {view !== 'backlog' && filtered.length === 0 && columns.length > 0 && <p className="board-empty-hint" role="status">{hasFilters ? t('emptySearch') : t('noIssues')} · {t('noIssuesHint')}</p>}
+    {view === 'backlog' ? <BacklogList issues={filtered} data={data} priorities={priorities} statuses={statuses} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} notificationsByIssue={notificationsByIssue} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} onMoveIssue={onMoveIssue} />
+      : columns.length === 0 ? <div className="empty-state board-empty"><div className="empty-illustration"><Search size={24} /></div><h2>{hasFilters ? t('emptySearch') : t('noIssues')}</h2><p>{t('noIssuesHint')}</p>{!hasFilters && canWrite && <Button variant="primary" onClick={() => onCreateIssue()}><Plus size={15} />{t('createFirstIssue')}</Button>}</div> : <DndContext sensors={sensors} onDragStart={(event) => setDraggedId(Number(String(event.active.id).replace('issue:', '')))} onDragCancel={() => setDraggedId(undefined)} onDragEnd={onDragEnd}>
       <div className="board-scroll"><div className="board-lanes">
-        {columns.map((column) => <Lane key={column.id} column={column} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} notificationsByIssue={notificationsByIssue} onCreateIssue={onCreateIssue} activeIssueId={draggedId} />)}
+        {columns.map((column) => <Lane key={column.id} column={column} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} notificationsByIssue={notificationsByIssue} onCreateIssue={onCreateIssue} activeIssueId={draggedId} />)}
       </div></div>
       <DragOverlay>{draggedId ? (() => { const issue = data.issues.find((entry) => entry.id === draggedId); return issue ? <BoardCard issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={false} onOpen={onOpenIssue} isDragging /> : null; })() : null}</DragOverlay>
     </DndContext>}
