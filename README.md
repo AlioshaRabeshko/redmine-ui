@@ -1,86 +1,102 @@
 # Redmine Workspace
 
-Персональний клієнт Redmine з канбаном, релізами й inbox. Запуск локально в Docker, SQLite у постійному volume.
+Redmine Workspace is a self-hosted, desktop-first web client for managing Redmine issues on a kanban board. It brings project work, releases, backlog items, issue activity, and notifications into one local app.
 
-Дошка підтримує drag and drop, швидкі фільтри «Усі / Мої / Спостерігаю / Беклог», власні збережені фільтри та сортування за пріоритетом. Релізи мають окремі колонки для Deploy; інші їхні задачі залишаються у статусній колонці, закріплені вгорі й позначені кольором релізу. Є вікно задачі, branch, призначення ролей розробника й QA, релізи, архів сповіщень, favicon із непрочитаними, налаштовувані shortcuts та фоновий worker. Мови інтерфейсу: українська, польська, іспанська, англійська; теми: світла, темна, системна; палітри: синя, фіолетова, зелена, бурштинова.
+The app is built with TypeScript, React, Fastify, and SQLite. Docker Compose is the easiest way to run it. The interface supports English, Ukrainian, Polish, and Spanish.
 
-## Швидкі дії
+## Features
 
-Фільтри відкриваються поверх дошки. Збережені набори доступні кнопками поруч із «Усі / Мої / Спостерігаю / Беклог». Селектори підтримують пошук і вибір клавіатурою; люди показуються з фото або ініціалами та рамкою ролі. Ролі надходять із membership проєкту Redmine й можуть перевизначатися локально. Успішні ручні вибори людей формують персональні рекомендації окремо для проєкту й поля.
+- Kanban board with project, assignee, watched, and backlog filters, plus saved filters and sorting.
+- Issue details for status, priority, assignee, labels, roles, comments, and activity.
+- Release views that keep workflow status separate from version membership.
+- Inbox with unread activity and per-project activity filters.
+- Local preferences, keyboard shortcuts, and drafts.
+- Isolated demo mode, Redmine read-only mode, and an explicit opt-in for supported writes to Redmine.
 
-«+» у заголовку колонки відкриває створення з її статусом. У колонці релізу підставляється реліз і початковий статус To Do. Назва й опис із чернетки зберігаються, а властивості можна змінити перед створенням.
+## Quick start
 
-Пріоритет і тип задачі вибираються кольоровими плитками. Виконавця можна призначити одним кліком на рекомендований аватар; «+» відкриває повний список із пошуком. Ці контролі є і при створенні, і при редагуванні картки.
+You need Docker with the Docker Compose plugin. From the repository root, run:
 
-Статус, пріоритет, тип, виконавець, реліз, мітки та ролі наявної картки зберігаються після вибору. Текстові зміни й коментарі надсилаються явно; чернетки зберігаються локально після закриття та перезавантаження. Тема, палітра, мова та інші налаштування зберігаються автоматично. Шорткати мають окреме явне збереження.
-
-Коментарі мають цитування й копіювання точного посилання Redmine. У demo можна редагувати власні коментарі прямо в картці, видаляти з підтвердженням і ставити/прибирати лайки. Чернетки редагування зберігаються після закриття; конфлікт із новішим текстом потребує явного рішення. Cmd/Ctrl+S зберігає активний редактор або надсилає відповідь із поля коментаря. Редагування й видалення реальних коментарів та спільні лайки поки недоступні: потрібна перевірка API й прав цієї інсталяції. Нові коментарі підтримуються у режимі запису.
-
-- **Q:** увімкнути / вимкнути «Призначено мені», зберігши інші фільтри.
-- **B:** вибрати проєкт; **N:** створити картку.
-- **S:** змінити статус активної картки.
-- **Cmd/Ctrl+S:** зберегти поточну форму.
-- **Cmd/Ctrl+B:** згорнути / розгорнути сайдбар; стан зберігається в localStorage.
-- **Shift+I:** відкрити сповіщення.
-- **Shift+P:** відкрити налаштування.
-- **Cmd/Ctrl+C:** копіювати URL Redmine активної картки.
-- **Cmd/Ctrl+Shift+C:** копіювати branch.
-
-Текстові поля зберігають звичайне введення й копіювання. На дошці активною є картка з фокусом; у вікні задачі — відкрита задача. Призначення шорткатів можна змінювати в налаштуваннях.
-
-## Режими
-
-Власний фон дошки: у **Налаштування → Фон проєкту** завантажте PNG/JPEG/WebP до 5 МіБ. Вибір зберігається одразу, окремо для кожного проєкту, разом із зображенням у локальному Docker volume. Там само можна замінити або прибрати фон.
-
-Навігація зберігається в URL: проєкт, розділ, фільтри, відкрита картка, конкретний коментар, реліз і форма створення/редагування. Наприклад, `/?project=1&tab=releases&release=12` або `/?project=1&issue=1001`. Пряме посилання та перезавантаження відновлюють екран; кнопки браузера Назад/Вперед відкривають попередній/наступний стан. Чернетки текстів залишаються в localStorage, їхній вміст не потрапляє в URL. Шорткат копіювання посилання картки, як і раніше, копіює оригінальний URL Redmine для колег.
-
-- **Demo:** ізольовані приклади задач; створення, редагування, коментарі, переходи й завершення релізів змінюють лише локальні демодані.
-- **Redmine, лише читання:** справжні дані через API; це безпечне значення за замовчуванням навіть із токеном. Локальні налаштування, чернетки й прочитання сповіщень доступні.
-- **Redmine, запис увімкнено:** явне `REDMINE_WRITE_ENABLED=true` у `.env` дозволяє справжні команди задач, нові коментарі й релізи через backend. Інтерфейс показує «Запис увімкнено». Права й workflow Redmine продовжують діяти.
-
-Без токена `APP_MODE=auto` вибирає demo; з токеном — Redmine. `APP_MODE=demo` явно вибирає демодані навіть за наявності токена. Збій справжнього підключення відображається як помилка, не як успішна demo-сесія.
-
-Після зміни режиму перестворіть контейнер: `docker compose up -d --force-recreate`. Щоб повернути лише читання, встановіть `REDMINE_WRITE_ENABLED=false`. Історичні заблоковані операції автоматично не повторюються. Увімкнені автоматизації обробляють тільки нові події; невідомий результат мережевого запису потребує перевірки Redmine перед новою дією. Створення зберігає отриманий ID до запису Branch, щоб відновлення не створювало дублікати.
-
-Повернення до demo: `APP_MODE=demo REDMINE_API_TOKEN='' REDMINE_WRITE_ENABLED=false docker compose --env-file /dev/null up -d`.
-
-
-## Docker
-
-```sh
+~~~sh
 cp .env.example .env
-# Для свого Redmine замініть REDMINE_URL і додайте REDMINE_API_TOKEN у локальному .env.
 docker compose up --build -d
-```
+~~~
 
-У зразку використано зарезервовану адресу `redmine.example.invalid`; реальну адресу й токен зберігайте тільки в локальному `.env`. Для автоматизації задайте там `REDMINE_CI_IN_PROGRESS_LABEL` і `REDMINE_CI_FAILED_LABEL` так, як ці мітки називаються у вашому Redmine. Числові ID проєктів, статусів, полів і опцій адаптер отримує з Redmine під час синхронізації.
+If you already have a local .env file, edit it instead of copying over it. With the default configuration, no API token is set and APP_MODE is auto, so the app starts with isolated demo data. No Redmine account is needed to try the demo.
 
-Відкрийте [127.0.0.1:3010](http://127.0.0.1:3010). Docker публікує порт лише на loopback; `HOST_PORT` у `.env` змінює зовнішній порт (за замовчуванням 3010). `.env` не відстежується Git і не включається в Docker image. API token доступний лише backend. Не надсилайте в чат і не публікуйте в логах вміст `.env` або результат `docker compose config`, що може містити підставлені секрети.
+Open [http://127.0.0.1:3010](http://127.0.0.1:3010).
 
-Зупинка: `docker compose down`. Звичайна зупинка зберігає volume. Після зміни токена перестворіть контейнер: `docker compose up -d --force-recreate`. Не використовуйте `down -v`, якщо потрібно зберегти локальний стан.
+Useful commands:
 
-## Розробка
+~~~sh
+docker compose logs -f app
+docker compose down
+~~~
 
-Потрібен підтримуваний Node.js LTS (Docker використовує Node.js 24).
+The SQLite database is stored in the persistent workspace-data Docker volume. Stopping the app with docker compose down keeps your data. To remove the database as well, use docker compose down --volumes.
 
-```sh
+## Connect to Redmine
+
+Edit the local .env file and set your Redmine URL and API token:
+
+~~~dotenv
+APP_MODE=auto
+REDMINE_URL=https://redmine.example.invalid
+REDMINE_API_TOKEN=replace-with-your-api-token
+REDMINE_WRITE_ENABLED=false
+~~~
+
+Replace the example URL and token with values for your Redmine instance. In auto mode, an empty token starts the demo and a configured token selects Redmine. You can set APP_MODE=redmine to explicitly select Redmine or APP_MODE=demo to keep using the demo.
+
+The app is read-only by default, even when connected to Redmine. To allow supported user actions to write to Redmine, set REDMINE_WRITE_ENABLED=true. This sends those actions to your Redmine instance; leave it false if you only want to browse. The API token is used by the backend and is not sent to the browser.
+
+If your CI automation uses different label names, set REDMINE_CI_IN_PROGRESS_LABEL and REDMINE_CI_FAILED_LABEL in .env. Project, status, custom-field, and option IDs are discovered from Redmine; they do not need to be copied into configuration.
+
+Recreate the container after changing environment variables:
+
+~~~sh
+docker compose up -d --force-recreate app
+~~~
+
+### Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| APP_MODE | auto | Use demo when no token is set and Redmine when a token is set. Can also be set to demo or redmine. |
+| REDMINE_URL | https://redmine.example.invalid | Base URL of your Redmine instance. |
+| REDMINE_API_TOKEN | empty | Redmine API token used by the backend. |
+| REDMINE_WRITE_ENABLED | false | Enables supported writes to Redmine only when APP_MODE selects Redmine. |
+| REDMINE_CI_IN_PROGRESS_LABEL | Build: Running | Label that marks a CI job as in progress. |
+| REDMINE_CI_FAILED_LABEL | Build: Failed | Label that marks a CI job as failed. |
+| HOST_PORT | 3010 | Local port used to open the app. |
+| POLL_INTERVAL_SECONDS | 10 | Background sync interval, in seconds. |
+
+The Compose configuration binds the app to 127.0.0.1 by default. The .env file is excluded from Git and the Docker build context; do not commit it or paste its contents into logs or support requests.
+
+## Run without Docker
+
+Use Node.js 24, the version used by the Docker image. From the repository root:
+
+~~~sh
 npm ci
 APP_MODE=demo npm run dev
-```
+~~~
 
-UI: [127.0.0.1:5173](http://127.0.0.1:5173); backend: 127.0.0.1:3000. Локальна SQLite за замовчуванням: `data/workspace.sqlite`. Реальні й демодані мають бути ізольовані. Інструкції агента: [AGENTS.md](AGENTS.md).
+Open the UI at [http://127.0.0.1:5173](http://127.0.0.1:5173). The development server runs the API on port 3000. The local SQLite database defaults to data/workspace.sqlite.
 
-```sh
+Common project commands:
+
+~~~sh
 npm run typecheck
 npm test
 npm run build
 npm run test:e2e
-```
+~~~
 
-Деталі поведінки й інтеграційні межі: [RESEARCH.md](RESEARCH.md), [REVIEW.md](REVIEW.md), [TECHNICAL.md](TECHNICAL.md). Підтвердження приватної інтеграції потребує read-only перевірки фактичних прав, полів та workflow після підключення токена. Мутаційні сценарії перевіряються лише в demo / mocks.
+## Notes and limitations
 
-Поточні межі: реальні команди залежать від прав токена та доступного workflow. Редагування/видалення коментарів і спільні лайки поки недоступні. Опис і коментарі зберігаються та показуються як безпечний вихідний текст, доки не підтверджено форматування інсталяції (Textile / Markdown). Наявні вкладення відкриваються в Redmine через браузерну сесію; завантаження нових файлів не реалізовано. Чернетки UI зберігаються в браузері окремо за інсталяцією / користувачем; налаштування, inbox, ролі, операції та кеш — у SQLite. Початкове підключення створює тихий baseline історії; inbox збирає нові події наступних синхронізацій. Не вважайте успіх demo перевіркою приватного workflow.
-
-## Міграції й backup
-
-Схема описана через Drizzle; SQL-міграції зберігаються в `drizzle/`. Перед зміною схеми потрібен backup наявної SQLite. Не копіюйте лише основний файл БД під час активних записів у WAL. Для простого узгодженого backup зупиніть застосунок і скопіюйте весь каталог даних / Docker volume; відновлюйте його також при зупиненому застосунку. Не використовуйте `drizzle-kit push` для штатного оновлення збережених даних.
+- In Redmine mode, the app uses the projects and data available to the configured API token. Redmine permissions and workflow rules still apply.
+- Creating and editing issues, changing status, posting comments, and release actions can write to Redmine only when write mode is explicitly enabled and the action is supported by the instance.
+- Editing or deleting existing comments and shared comment likes are not available for real Redmine instances.
+- Demo mutations affect only local demo data. A Redmine connection failure is shown as an error and does not switch the app to demo mode.
+- Browser preferences and drafts are stored locally; server-side settings, notifications, operations, and cached Redmine data are stored in SQLite.
