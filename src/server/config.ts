@@ -9,6 +9,8 @@ export interface AppConfig {
   token?: string;
   tokenConfigured: boolean;
   writeEnabled: boolean;
+  ciInProgressLabel: string;
+  ciFailedLabel: string;
   redmineUrl: string;
   databasePath: string;
   scope: string;
@@ -23,6 +25,8 @@ export interface ConfigInput {
   REDMINE_URL?: string;
   REDMINE_API_TOKEN?: string;
   REDMINE_WRITE_ENABLED?: string;
+  REDMINE_CI_IN_PROGRESS_LABEL?: string;
+  REDMINE_CI_FAILED_LABEL?: string;
   DATABASE_PATH?: string;
   HOST?: string;
   PORT?: string | number;
@@ -37,6 +41,8 @@ export function createConfig(input: ConfigInput = process.env): AppConfig {
   const token = input.REDMINE_API_TOKEN?.trim() || undefined;
   const mode = modeSetting === 'auto' ? (token ? 'redmine' : 'demo') : modeSetting;
   const writeEnabled = mode === 'redmine' && input.REDMINE_WRITE_ENABLED === 'true';
+  const ciInProgressLabel = input.REDMINE_CI_IN_PROGRESS_LABEL?.trim() || 'Build: Running';
+  const ciFailedLabel = input.REDMINE_CI_FAILED_LABEL?.trim() || 'Build: Failed';
   const requestedUrl = input.REDMINE_URL ?? 'https://redmine.example.invalid';
   let redmineUrl = 'https://invalid-redmine-url.local';
   let configurationError: string | undefined;
@@ -61,6 +67,8 @@ export function createConfig(input: ConfigInput = process.env): AppConfig {
     token,
     tokenConfigured: Boolean(token),
     writeEnabled,
+    ciInProgressLabel,
+    ciFailedLabel,
     redmineUrl,
     databasePath: db,
     scope: mode === 'demo' ? 'demo:isolated' : `redmine:${instanceKey}`,

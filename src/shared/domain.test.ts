@@ -91,9 +91,9 @@ describe('board and release rules', () => {
 });
 
 describe('branch names', () => {
-  it('uses real ID, Unicode title and safe hyphenated Git ref components', () => {
-    expect(branchForIssue(4243, ' Fix Grid Export ')).toBe('4243-fix-grid-export');
-    expect(branchForIssue(4243, 'Оновити пошук')).toBe('4243-оновити-пошук');
+  it('uses the supplied issue ID, Unicode title and safe hyphenated Git ref components', () => {
+    expect(branchForIssue(42, ' Clean Navigation ')).toBe('42-clean-navigation');
+    expect(branchForIssue(42, 'Оновити пошук')).toBe('42-оновити-пошук');
     expect(branchForIssue(42, '.. ~a^b:c?d*e[f]\\g@{h/i.lock')).toBe('42-a-b-c-d-e-f-g-h-i-lock');
     expect(branchForIssue(1, ' ')).toBe('1-issue');
     expect(() => branchForIssue(0, 'title')).toThrow();

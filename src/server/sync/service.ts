@@ -139,9 +139,9 @@ export class SyncService {
         const added = await this.processJournal(item.issueId, item.journal, { ...snapshot, people: [...people.values()] });
         if (added) notificationsAdded++;
         const issue = snapshot.issues.find(candidate => candidate.id === item.issueId);
-        if (!wasSeen && automationEnabled && issue && issue.labels.includes('Build: Failed')
+        if (!wasSeen && automationEnabled && issue && issue.labels.includes(this.config.ciFailedLabel)
           && snapshot.statuses.find(status => status.key === 'review')?.id === issue.statusId
-          && hasCiFailureTransition(item.journal.changes)) {
+          && hasCiFailureTransition(item.journal.changes, this.config.ciInProgressLabel, this.config.ciFailedLabel)) {
           await this.recordAutomation(issue, `journal-${item.journal.id}`, previousIssues.get(issue.id)?.developerId);
           ciTransitions.add(issue.id);
         }
@@ -151,7 +151,7 @@ export class SyncService {
         for (const issue of snapshot.issues) {
           const previous = previousIssues.get(issue.id);
           if (!ciTransitions.has(issue.id) && previous && previous.statusId === this.statusId(snapshot.statuses, 'review')
-            && previous.labels.includes('Build: Running') && issue.labels.includes('Build: Failed')
+            && previous.labels.includes(this.config.ciInProgressLabel) && issue.labels.includes(this.config.ciFailedLabel)
             && issue.statusId === this.statusId(snapshot.statuses, 'review')) {
             await this.recordAutomation(issue, `snapshot-${issue.updatedOn.replace(/[^0-9]/g, '')}`, previous?.developerId);
           }
@@ -212,7 +212,7 @@ export class SyncService {
     const command: Command = { type: 'runAutomation', issueId: issue.id, operationId: id, input: {} };
     const signature = createHash('sha256').update(JSON.stringify(sortObject({ type: command.type, issueId: command.issueId, input: command.input }))).digest('hex');
     const steps: OperationStep[] = [
-      { name: 'Виявлено Build: Running → Build: Failed у Review', status: 'done' },
+      { name: 'Виявлено налаштовані CI labels у Review', status: 'done' },
       ...(enabled ? [{ name: 'Повернути задачу в To Do розробнику', status: 'pending' as const }]
         : [{ name: 'Повернути задачу в To Do розробнику', status: 'blocked' as const, error: 'Для запису потрібне REDMINE_WRITE_ENABLED=true на backend.' }]),
     ];
@@ -298,12 +298,14 @@ function safeErrorMessage(error: unknown): string {
   return 'Синхронізація з Redmine не вдалася.';
 }
 
-function hasCiFailureTransition(changes: { field: string; oldValue?: string; newValue?: string }[]): boolean {
+function hasCiFailureTransition(changes: { field: string; oldValue?: string; newValue?: string }[],
+  inProgressLabel: string, failedLabel: string): boolean {
   const labels = (value: string | undefined) => (value ?? '').split(/[\n,;]+/).map(item => item.trim());
   return changes.some(change => {
     const oldLabels = labels(change.oldValue);
     const newLabels = labels(change.newValue);
-    const isLabelField = /label|tag/i.test(change.field) || oldLabels.some(label => label.startsWith('CI:')) || newLabels.some(label => label.startsWith('CI:'));
-    return isLabelField && oldLabels.includes('Build: Running') && newLabels.includes('Build: Failed');
+    const isLabelField = /label|tag/i.test(change.field) || oldLabels.includes(inProgressLabel)
+      || newLabels.includes(inProgressLabel) || oldLabels.includes(failedLabel) || newLabels.includes(failedLabel);
+    return isLabelField && oldLabels.includes(inProgressLabel) && newLabels.includes(failedLabel);
   });
 }

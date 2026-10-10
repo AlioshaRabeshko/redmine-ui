@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Command, CommandResult, Issue, LabelOption, Operation, OperationStep, Person, Status, Version } from '../../shared/types.js';
 import { branchForIssue, releaseReadiness } from '../../shared/domain.js';
+import type { AppConfig } from '../config.js';
 import type { WorkspaceStore, OperationRecord } from '../db/store.js';
 import type { RedmineAdapter } from '../redmine/adapter.js';
 import { RedmineRequestError } from '../redmine/transport.js';
@@ -15,7 +16,7 @@ const now = () => new Date().toISOString();
 export class RealCommandExecutor {
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly adapter: RedmineAdapter, private readonly store: WorkspaceStore,
+  constructor(private readonly config: AppConfig, private readonly adapter: RedmineAdapter, private readonly store: WorkspaceStore,
     private readonly events?: { publish(event: string, data?: unknown): void }) {}
 
   async execute(command: Command): Promise<CommandResult> {
@@ -654,7 +655,7 @@ export class RealCommandExecutor {
         record.operation.error = 'Redmine не підтвердив призначення розробника після повернення задачі.';
         await this.store.saveOperationRecord(record); results.push(record.operation); continue;
       }
-      if (!issue || !review || !todo || issue.statusId !== review.id || issue.updatedOn !== trigger.expectedUpdatedOn || !issue.labels.includes('Build: Failed')) {
+      if (!issue || !review || !todo || issue.statusId !== review.id || issue.updatedOn !== trigger.expectedUpdatedOn || !issue.labels.includes(this.config.ciFailedLabel)) {
         record.operation.status = 'blocked'; record.operation.errorCode = 'STALE'; record.operation.error = 'Подія CI застаріла; автоматизацію зупинено.';
         await this.store.saveOperationRecord(record); results.push(record.operation); continue;
       }

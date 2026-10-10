@@ -29,7 +29,7 @@ export class CommandService {
   private readonly realExecutor?: RealCommandExecutor;
 
   constructor(private readonly config: AppConfig, readonly store: WorkspaceStore, private readonly events?: EventHub, adapter?: RedmineAdapter) {
-    if (config.mode === 'redmine' && adapter) this.realExecutor = new RealCommandExecutor(adapter, store, events);
+    if (config.mode === 'redmine' && adapter) this.realExecutor = new RealCommandExecutor(config, adapter, store, events);
   }
 
   async execute(command: Command): Promise<CommandResult> {
@@ -370,7 +370,7 @@ export class CommandService {
       return;
     }
     if (this.config.mode === 'demo' && issue.statusId === updated.statusId
-      && issue.labels.includes('Build: Running') && updated.labels.includes('Build: Failed')) {
+      && issue.labels.includes(this.config.ciInProgressLabel) && updated.labels.includes(this.config.ciFailedLabel)) {
       await this.queueCiAutomation(issue, updated);
     }
     record.operation.status = 'done';
@@ -699,9 +699,9 @@ export class CommandService {
     for (const record of pending) {
       const issue = await this.store.getIssue(record.operation.issueId ?? 0);
       const trigger = record.context!.automationTrigger as { expectedUpdatedOn: string; reviewStatusId: number; fixedVersionId?: number };
-      if (!issue || !todo || issue.statusId !== trigger.reviewStatusId || issue.updatedOn !== trigger.expectedUpdatedOn || !issue.labels.includes('Build: Failed')) {
+      if (!issue || !todo || issue.statusId !== trigger.reviewStatusId || issue.updatedOn !== trigger.expectedUpdatedOn || !issue.labels.includes(this.config.ciFailedLabel)) {
         record.operation.status = 'blocked';
-        record.operation.error = 'Подія CI застаріла: задача більше не відповідає умовам Review і Build: Failed.';
+        record.operation.error = 'Подія CI застаріла: задача більше не відповідає умовам Review і налаштованій мітці помилки.';
         record.operation.errorCode = 'STALE';
         record.operation.steps.push({ name: 'Перевірити актуальний стан', status: 'blocked', error: record.operation.error });
         await this.store.saveOperationRecord(record);
@@ -741,9 +741,9 @@ export class CommandService {
     if (await this.store.getOperationRecord(id)) return;
     const record: OperationRecord = {
       operation: { id, type: 'runAutomation', issueId: updated.id, status: 'pending',
-        steps: [{ name: 'Виявлено Build: Running → Build: Failed', status: 'done' },
+        steps: [{ name: 'Виявлено налаштовані CI labels', status: 'done' },
           { name: 'Повернути задачу в To Do розробнику', status: 'pending' }], createdOn: now() },
-      context: { automationTrigger: { from: 'Build: Running', to: 'Build: Failed', expectedUpdatedOn: updated.updatedOn,
+      context: { automationTrigger: { from: this.config.ciInProgressLabel, to: this.config.ciFailedLabel, expectedUpdatedOn: updated.updatedOn,
         reviewStatusId, fixedVersionId: previous.fixedVersionId, developerId: previous.developerId } },
     };
     await this.store.saveOperationRecord(record);
