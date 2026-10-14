@@ -20,18 +20,20 @@ export function filterIssues(issues: Issue[], statuses: Status[], view: View, me
     if (!filters.includeClosed && !explicitlyFiltered && status?.key !== 'deploy' && (status?.isClosed || status?.key === 'done' || status?.key === 'rejected')) return false;
     if (view === 'backlog' && status?.key !== 'backlog') return false;
     if (view !== 'backlog' && !explicitlyFiltered && status?.key === 'backlog') return false;
-    if (view === 'mine' && issue.assignedToId !== meId) return false;
-    if (filters.assignedToMe && issue.assignedToId !== meId) return false;
+    const assignedToMe = issue.assignedToType !== 'group' && issue.assignedToId === meId;
+    if (view === 'mine' && !assignedToMe) return false;
+    if (filters.assignedToMe && !assignedToMe) return false;
     if (view === 'watching' && !issue.watcherIds.includes(meId)) return false;
+    if (filters.watcherId !== undefined && !issue.watcherIds.includes(filters.watcherId)) return false;
     if (query) {
-      const issuePeople = [issue.authorId, issue.assignedToId, issue.developerId, issue.qaId, ...issue.watcherIds]
+      const issuePeople = [issue.authorId, ...(issue.assignedToType === 'group' ? [] : [issue.assignedToId]), issue.primaryAssigneeId ?? issue.developerId, issue.qaId, ...issue.watcherIds]
         .filter((id): id is number => id !== undefined)
         .map(id => personById.get(id)?.name || '')
         .join(' ');
-      const searchable = `${issue.id} ${issue.subject} ${issue.description} ${issue.branch} ${issue.labels.join(' ')} ${issuePeople}`;
+      const searchable = `${issue.id} ${issue.subject} ${issue.description} ${issue.branch} ${issue.assignedToName ?? ''} ${issue.labels.join(' ')} ${issuePeople}`;
       if (!searchable.toLocaleLowerCase().includes(query)) return false;
     }
-    if (filters.assigneeId !== undefined && issue.assignedToId !== filters.assigneeId) return false;
+    if (filters.assigneeId !== undefined && (issue.assignedToType === 'group' || issue.assignedToId !== filters.assigneeId)) return false;
     const selectedLabels = [...new Set([...(filters.labels || []), ...(filters.label ? [filters.label] : [])])];
     if (selectedLabels.length && !selectedLabels.some(label => issue.labels.includes(label))) return false;
     if (filters.versionId !== undefined && issue.fixedVersionId !== filters.versionId) return false;
@@ -72,6 +74,7 @@ export interface BoardColumn { id: string; name: string; status?: Status; versio
 /** Versions only affect presentation; status still decides whether an issue appears in a release lane. */
 export function issueColumnId(issue: Issue, versions: Version[], statuses: Status[] = []): string {
   const status = statuses.find(s => s.id === issue.statusId);
+  if (!status) return 'status:unknown';
   const version = versions.find(v => v.id === issue.fixedVersionId && v.projectId === issue.projectId && v.status !== 'closed');
   return version && status?.key === 'deploy' ? `version:${version.id}` : `status:${issue.statusId}`;
 }
@@ -92,8 +95,16 @@ export function groupBoard(issues: Issue[], statuses: Status[], versions: Versio
     let column = columns.find(c => c.id === id);
     if (!column) {
       const status = statuses.find(s => s.id === issue.statusId);
-      column = { id, name: status?.name ?? `#${issue.statusId}`, status, issues: [] };
-      columns.push(column);
+      if (id === 'status:unknown') {
+        column = columns.find(c => c.id === id);
+        if (!column) {
+          column = { id, name: 'Unknown status', issues: [] };
+          columns.push(column);
+        }
+      } else {
+        column = { id, name: status?.name ?? 'Unknown status', status, issues: [] };
+        columns.push(column);
+      }
     }
     if (column.version) {
       column.issues.push(issue);

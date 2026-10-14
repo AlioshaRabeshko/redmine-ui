@@ -1,0 +1,64 @@
+{
+  "environment": {
+    "browser": "Chrome",
+    "mode": "demo",
+    "database": "temporary SQLite per Playwright run",
+    "externalMutations": false
+  },
+  "coverage": {
+    "fullChromeRun": {
+      "total": 138,
+      "passed": 135,
+      "failed": 3,
+      "note": "The three failures were stale E2E expectations; their corrected scenarios passed in the targeted rerun. No single full 138/138 run was performed."
+    },
+    "finalAffectedAndCorrectionsRun": {
+      "total": 20,
+      "passed": 20,
+      "durationSeconds": 50.3
+    },
+    "ordinaryClickDeleteRepeat": {
+      "repeats": 3,
+      "passed": 3,
+      "durationSeconds": 11.1,
+      "testSideEditorFocus": false,
+      "artificialDelay": false
+    }
+  },
+  "issueOpenStructuralChecks": {
+    "issueDetailResponseObserved": true,
+    "issueDialogVisibleBeforeBoardRefreshCompleted": true,
+    "boardResponsesCompletedWhenDialogVisible": 0,
+    "mentionUsersRequests": 1,
+    "timingFieldsMeasuredByTest": [
+      "navigationToDialogVisibleMs",
+      "issueResponseToDialogVisibleMs"
+    ],
+    "latencyBudgetAsserted": false
+  },
+  "lazyComposerStructuralChecks": {
+    "richEditorSourceMarkerPresentBeforeActivation": false,
+    "richEditorChunkFetchedAfterActivation": true,
+    "chunkPath": "/assets/RichEditor-W5j181yM.js",
+    "delayedChunkTextCharactersEnteredBeforeRelease": 58,
+    "visualTextPreservedAfterRelease": true,
+    "sourceTextPreservedAfterRelease": true
+  },
+  "longContentGeometryChecks": {
+    "quoteCharacters": 797,
+    "bulletCharacters": 336,
+    "bulletCount": 3,
+    "descriptionPreviewChecked": true,
+    "activityRichContentChecked": true,
+    "whiteSpace": "normal",
+    "listMarker": "disc",
+    "listMarkerPositionInActivity": "outside",
+    "minimumListPaddingPixels": 18,
+    "maximumAdjacentBulletGapPixels": 28,
+    "hrAndLinkPresent": true
+  },
+  "persistedScreenshots": [
+    "docs/assets/ux-round5-corrections-preview.png",
+    "docs/assets/ux-round5-corrections-activity.png"
+  ]
+}

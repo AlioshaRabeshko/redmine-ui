@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray } from 'drizzle-orm';
-import type { AppSettings, Issue, Journal, Notification, Operation, PeopleField, Person, Project, Status, Priority, Version } from '../../shared/types.js';
+import type { AppSettings, Issue, Journal, Notification, Operation, PeopleField, Person, Project, Status, Priority, SubscriptionEvent, Version } from '../../shared/types.js';
 import { demoIssues, demoJournalIssues, demoJournals, demoMe, demoPeople, demoPriorities, demoProjectMembers, demoProjects, demoStatuses, demoVersions } from '../demo/fixtures.js';
 import { defaultSettings } from '../settings.js';
+import { issueCreatedSubscriptionCursorKey } from '../notifications.js';
 import { navigationShortcuts, normalizeShortcutKeys } from '../../shared/shortcuts.js';
 import type { AppDatabase } from './connection.js';
 import { drafts, issues, issueRoles, journals, keyValues, notifications, operations, peopleSelections, projects, sourceEvents, syncCursors, versions } from './schema.js';
@@ -27,13 +28,14 @@ export interface StoredPersonAvatar { version: string; contentType: PersonAvatar
 
 const encode = (value: unknown) => JSON.stringify(value);
 const decode = <T>(value: string): T => JSON.parse(value) as T;
+const knownSubscriptionEvents = new Set<SubscriptionEvent>(['comment', 'status', 'assignee', 'labels', 'field', 'issue_created']);
 const demoMembershipRoles = {
   '10': { '2': [{ id: 1, name: 'Developer' }], '3': [{ id: 2, name: 'QA' }], '4': [{ id: 3, name: 'Support' }], '5': [{ id: 1, name: 'Developer' }, { id: 2, name: 'QA' }] },
   '20': { '3': [{ id: 2, name: 'QA' }], '4': [{ id: 1, name: 'Developer' }], '5': [{ id: 3, name: 'Support' }] },
 };
 
 export class WorkspaceStore {
-  constructor(readonly db: AppDatabase, public scope: string) {}
+  constructor(readonly db: AppDatabase, public scope: string, readonly redmineMode = false) {}
 
   adoptInitialSettingsIntoUserScope(userScope: string, initialScope: string): void {
     if (this.scope === initialScope) {
@@ -68,6 +70,9 @@ export class WorkspaceStore {
     await this.setValue('projectMembers', demoProjectMembers);
     await this.setValue('projectMembershipIds', demoProjectMembers);
     await this.setValue('projectMembershipRoles', demoMembershipRoles);
+    // Group and user ID namespaces can overlap in Redmine; the demo exercises the typed identity.
+    await this.setValue('projectGroupIds', { '10': [2], '20': [] });
+    await this.setValue('projectGroups', { '10': [{ id: 2, name: 'Platform group', memberIds: [2, 3] }], '20': [] });
     for (let i = 0; i < demoJournals.length; i++) {
       const journal = demoJournals[i]!;
       await this.saveJournal(demoJournalIssues[String(journal.id)]!, journal);
@@ -146,14 +151,15 @@ export class WorkspaceStore {
     if (!settings) {
       const initial = structuredClone(defaultSettings);
       await this.setSettings(initial);
-      await this.setValue('settingsSchemaVersion', 3);
+      await this.setValue('settingsSchemaVersion', 4);
       return initial;
     }
     let compatible: AppSettings = {
       ...structuredClone(defaultSettings), ...settings,
-      projectQa: settings.projectQa ?? {}, subscriptions: settings.subscriptions ?? {},
+      projectQa: settings.projectQa ?? {}, subscriptions: normalizeSubscriptions(settings.subscriptions),
       projectBackgrounds: settings.projectBackgrounds ?? {},
       projectActivity: settings.projectActivity ?? {},
+      collapsedBoardColumns: settings.collapsedBoardColumns ?? {},
       personRoleOverrides: settings.personRoleOverrides ?? {},
       personAvatarOverrides: settings.personAvatarOverrides ?? {},
       shortcuts: settings.shortcuts ?? structuredClone(defaultSettings.shortcuts), savedViews: settings.savedViews ?? [],
@@ -171,10 +177,101 @@ export class WorkspaceStore {
       await this.setSettings(compatible);
       await this.setValue('settingsSchemaVersion', 3);
     }
+    // Older clients allowed arbitrary event strings. Remove unknown values at read time and
+    // persist the sanitized mask so a later toggle does not make the entire PATCH invalid.
+    if (schemaVersion < 4) {
+      await this.setSettings(compatible);
+      await this.setValue('settingsSchemaVersion', 4);
+    }
     return compatible;
   }
 
   async setSettings(settings: AppSettings): Promise<void> { await this.setValue('settings', settings); }
+
+  /** Persist a subscription opt-in time with the settings change that activates it. */
+  async setSettingsWithIssueCreatedCutoffs(settings: AppSettings, projectCutoffs: Record<string, string>): Promise<void> {
+    const settingsValue = encode(settings);
+    const savedOn = new Date().toISOString();
+    const transaction = this.db.$client.transaction(() => {
+      this.db.$client.prepare(`INSERT INTO key_values (scope, key, value) VALUES (?, 'settings', ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`).run(this.scope, settingsValue);
+      const insertCursor = this.db.$client.prepare(`INSERT INTO sync_cursors (scope, key, value, updated_on) VALUES (?, ?, ?, ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_on = excluded.updated_on`);
+      for (const [projectId, value] of Object.entries(projectCutoffs)) {
+        insertCursor.run(this.scope, issueCreatedSubscriptionCursorKey(Number(projectId)), value, savedOn);
+      }
+    });
+    transaction();
+  }
+
+  /** Merge only missing project defaults into the newest persisted settings snapshot. */
+  async ensureSubscriptionDefaults(projectIds: number[]): Promise<AppSettings> {
+    // Normalize/migrate the existing value first, then merge inside SQLite's write transaction so
+    // a PATCH that lands after this read cannot be overwritten by a stale sync snapshot.
+    await this.getSettings();
+    const transaction = this.db.$client.transaction(() => {
+      const row = this.db.$client.prepare('SELECT value FROM key_values WHERE scope = ? AND key = ?')
+        .get(this.scope, 'settings') as { value: string } | undefined;
+      const current = row ? decode<AppSettings>(row.value) : structuredClone(defaultSettings);
+      const subscriptions = { ...current.subscriptions };
+      let changed = false;
+      for (const projectId of projectIds) {
+        const key = String(projectId);
+        if (subscriptions[key] !== undefined) continue;
+        subscriptions[key] = { enabled: true, events: ['comment'] };
+        changed = true;
+      }
+      const next = changed ? { ...current, subscriptions } : current;
+      if (changed) this.db.$client.prepare(`INSERT INTO key_values (scope, key, value) VALUES (?, 'settings', ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`).run(this.scope, encode(next));
+      return next;
+    });
+    return transaction();
+  }
+
+  /** Atomically decide issue-created eligibility against the latest subscription and opt-in cursor. */
+  async commitIssueCreatedEvent(id: string, projectId: number, createdOn: string, previousSyncAt: string,
+    notification?: Notification): Promise<boolean> {
+    const seenAt = new Date().toISOString();
+    const createdTime = Date.parse(createdOn);
+    const previousSyncTime = Date.parse(previousSyncAt);
+    const transaction = this.db.$client.transaction(() => {
+      const inserted = this.db.$client.prepare('INSERT OR IGNORE INTO source_events(scope, id, seen_at) VALUES (?, ?, ?)')
+        .run(this.scope, id, seenAt);
+      if (inserted.changes === 0) return false;
+
+      const settingsRow = this.db.$client.prepare('SELECT value FROM key_values WHERE scope = ? AND key = ?')
+        .get(this.scope, 'settings') as { value: string } | undefined;
+      const settings = settingsRow ? decode<AppSettings>(settingsRow.value) : undefined;
+      const subscription = settings?.subscriptions?.[String(projectId)];
+      const cutoffRow = this.db.$client.prepare('SELECT value FROM sync_cursors WHERE scope = ? AND key = ?')
+        .get(this.scope, issueCreatedSubscriptionCursorKey(projectId)) as { value: string } | undefined;
+      const activationTime = cutoffRow ? Date.parse(cutoffRow.value) : Number.NaN;
+      if (!notification || !subscription?.enabled || !subscription.events.includes('issue_created')
+        || !Number.isFinite(createdTime) || !Number.isFinite(previousSyncTime) || !Number.isFinite(activationTime)
+        || createdTime < Math.max(previousSyncTime, activationTime)) return false;
+
+      const saved = this.db.$client.prepare(`INSERT INTO notifications
+        (scope, id, project_id, issue_id, created_on, read_at, payload) VALUES (?, ?, ?, ?, ?, NULL, ?)
+        ON CONFLICT(scope, id) DO NOTHING`).run(this.scope, notification.id, notification.projectId,
+          notification.issueId, notification.createdOn, encode(notification));
+      return saved.changes > 0;
+    });
+    return transaction();
+  }
+
+  /** Commit event baseline and project scope only after all sync work completed successfully. */
+  async commitSuccessfulSync(projectIds: number[], baseline: string): Promise<void> {
+    const timestamp = new Date().toISOString();
+    const transaction = this.db.$client.transaction(() => {
+      this.db.$client.prepare(`INSERT INTO key_values (scope, key, value) VALUES (?, 'successfulProjectIds', ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`).run(this.scope, encode([...new Set(projectIds)]));
+      this.db.$client.prepare(`INSERT INTO sync_cursors (scope, key, value, updated_on) VALUES (?, 'baseline', ?, ?)
+        ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_on = excluded.updated_on`)
+        .run(this.scope, baseline, timestamp);
+    });
+    transaction();
+  }
 
   async isProjectMember(projectId: number, personId: number): Promise<boolean> {
     const memberships = await this.getValue<Record<string, number[]>>('projectMembershipIds');
@@ -223,7 +320,13 @@ export class WorkspaceStore {
     return rows.map(row => {
       const issue = decode<Issue>(row.payload);
       const role = roleMap.get(row.id);
-      if (role) {
+      if (this.redmineMode) {
+        // The old local Developer role is deliberately ignored in Redmine mode. Only the
+        // Primary Assignee value read from the issue custom field may populate this alias.
+        delete issue.developerId;
+        if (issue.primaryAssigneeId !== undefined) issue.developerId = issue.primaryAssigneeId;
+        if (role) issue.qaId = role.qaId ?? undefined;
+      } else if (role) {
         issue.developerId = role.developerId ?? undefined;
         issue.qaId = role.qaId ?? undefined;
       }
@@ -232,18 +335,25 @@ export class WorkspaceStore {
   }
   async getIssue(id: number): Promise<Issue | undefined> { return (await this.getIssues()).find(issue => issue.id === id); }
   async saveIssue(issue: Issue): Promise<void> {
+    if (this.redmineMode) {
+      issue = { ...issue };
+      delete issue.developerId;
+      if (issue.primaryAssigneeId !== undefined) issue.developerId = issue.primaryAssigneeId;
+    }
     await this.db.insert(issues).values({ scope: this.scope, id: issue.id, projectId: issue.projectId, statusId: issue.statusId,
       fixedVersionId: issue.fixedVersionId ?? null, updatedOn: issue.updatedOn, payload: encode(issue) })
       .onConflictDoUpdate({ target: [issues.scope, issues.id], set: { projectId: issue.projectId, statusId: issue.statusId,
         fixedVersionId: issue.fixedVersionId ?? null, updatedOn: issue.updatedOn, payload: encode(issue) } });
     const existingRole = (await this.db.select().from(issueRoles).where(and(eq(issueRoles.scope, this.scope), eq(issueRoles.issueId, issue.id))).limit(1))[0];
-    if (issue.developerId !== undefined || issue.qaId !== undefined || existingRole) {
+    if (this.redmineMode) {
+      if (issue.qaId !== undefined || existingRole) await this.setIssueRoles(issue.id, undefined, issue.qaId);
+    } else if (issue.developerId !== undefined || issue.qaId !== undefined || existingRole) {
       await this.setIssueRoles(issue.id, issue.developerId, issue.qaId);
     }
   }
   async setIssueRoles(issueId: number, developerId: number | null | undefined, qaId: number | null | undefined): Promise<void> {
     const previous = (await this.db.select().from(issueRoles).where(and(eq(issueRoles.scope, this.scope), eq(issueRoles.issueId, issueId))).limit(1))[0];
-    const nextDeveloper = developerId === undefined ? previous?.developerId ?? null : developerId;
+    const nextDeveloper = this.redmineMode ? null : developerId === undefined ? previous?.developerId ?? null : developerId;
     const nextQa = qaId === undefined ? previous?.qaId ?? null : qaId;
     await this.db.insert(issueRoles).values({ scope: this.scope, issueId, developerId: nextDeveloper, qaId: nextQa })
       .onConflictDoUpdate({ target: [issueRoles.scope, issueRoles.issueId], set: {
@@ -251,7 +361,10 @@ export class WorkspaceStore {
       } });
     const issue = await this.getIssue(issueId);
     if (issue) {
-      issue.developerId = nextDeveloper ?? undefined;
+      if (this.redmineMode) {
+        delete issue.developerId;
+        if (issue.primaryAssigneeId !== undefined) issue.developerId = issue.primaryAssigneeId;
+      } else issue.developerId = nextDeveloper ?? undefined;
       issue.qaId = nextQa ?? undefined;
       await this.db.update(issues).set({ payload: encode(issue) }).where(and(eq(issues.scope, this.scope), eq(issues.id, issueId)));
     }
@@ -424,6 +537,14 @@ export class WorkspaceStore {
     await this.db.insert(syncCursors).values({ scope: this.scope, key, value, updatedOn: new Date().toISOString() })
       .onConflictDoUpdate({ target: [syncCursors.scope, syncCursors.key], set: { value, updatedOn: new Date().toISOString() } });
   }
+  async setCursorIfAbsent(key: string, value: string): Promise<boolean> {
+    return this.db.$client.prepare('INSERT OR IGNORE INTO sync_cursors (scope, key, value, updated_on) VALUES (?, ?, ?, ?)')
+      .run(this.scope, key, value, new Date().toISOString()).changes > 0;
+  }
+  async replaceCursorIfValue(key: string, expectedValue: string, nextValue: string): Promise<boolean> {
+    return this.db.$client.prepare('UPDATE sync_cursors SET value = ?, updated_on = ? WHERE scope = ? AND key = ? AND value = ?')
+      .run(nextValue, new Date().toISOString(), this.scope, key, expectedValue).changes > 0;
+  }
 
   async getOperationRecord(id: string): Promise<OperationRecord | undefined> {
     const row = (await this.db.select({ payload: operations.payload }).from(operations)
@@ -448,6 +569,19 @@ export class WorkspaceStore {
       .where(eq(operations.scope, this.scope)).orderBy(asc(operations.createdOn)))
       .map(row => decode<OperationRecord>(row.payload));
   }
+}
+
+function normalizeSubscriptions(value: unknown): AppSettings['subscriptions'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([projectId, raw]) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const entry = raw as { enabled?: unknown; events?: unknown };
+    if (typeof entry.enabled !== 'boolean') return [];
+    const events = Array.isArray(entry.events)
+      ? [...new Set(entry.events.filter((event): event is SubscriptionEvent => typeof event === 'string' && knownSubscriptionEvents.has(event as SubscriptionEvent)))]
+      : [];
+    return [[projectId, { enabled: entry.enabled, events }]];
+  }));
 }
 
 function ensureSaveFormShortcut(shortcuts: AppSettings['shortcuts']): AppSettings['shortcuts'] {

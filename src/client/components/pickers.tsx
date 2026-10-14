@@ -2,8 +2,9 @@ import { useLayoutEffect, useId, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Plus, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { Person } from '../../shared/types';
+import type { AssigneeOption, GroupAvatarOverride, Person } from '../../shared/types';
 import { Avatar } from './ui';
+import { GroupAvatar } from './GroupAvatar';
 
 export interface PickerOption { value: string; label: string; description?: string; person?: Person; disabled?: boolean; icon?: ReactNode }
 interface CommonProps { options: PickerOption[]; label: string; placeholder?: string; searchPlaceholder?: string; disabled?: boolean; className?: string; clearable?: boolean; iconOnly?: boolean }
@@ -93,7 +94,7 @@ function ChoicePicker({ options, label, placeholder, searchPlaceholder, disabled
   }}>
     {!iconOnly && selected.length === 1 && selected[0].person && <Avatar person={selected[0].person} size="sm" />}
     {!iconOnly && selected.length === 1 && selected[0].icon}
-    {iconOnly ? <Plus size={16} /> : <><span className="picker-value">{selectedLabel}</span>{multiple && selected.length > 1 && <span className="picker-count">{selected.length}</span>}<ChevronDown size={14} /></>}
+    {iconOnly ? selected.length === 1 ? selected[0].person ? <Avatar person={selected[0].person} size="sm" /> : selected[0].icon || <Plus size={16} /> : <Plus size={16} /> : <><span className="picker-value">{selectedLabel}</span>{multiple && selected.length > 1 && <span className="picker-count">{selected.length}</span>}<ChevronDown size={14} /></>}
   </button>;
   return <Popover trigger={trigger} label={label} open={open} onOpenChange={disabled ? () => undefined : setExpanded} className="picker-popover">
     <div className="picker-search"><Search size={15} /><input ref={search} data-popover-autofocus aria-label={`${t('search')} · ${label}`} placeholder={searchPlaceholder || t('searchOptions')} value={query} onChange={event => { setQuery(event.target.value); setActive(0); }} onKeyDown={onKeyDown} role="combobox" aria-controls={`${id}-list`} aria-expanded="true" aria-autocomplete="list" aria-activedescendant={filtered[active] ? `${id}-option-${active}` : undefined} /></div>
@@ -125,4 +126,49 @@ export function PeoplePicker({ members, value, onChange, label, placeholder, dis
     return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi) || a.name.localeCompare(b.name);
   }), [members, recommendations]);
   return <Picker label={label} iconOnly={compact} placeholder={placeholder || t('noAssignee')} className={`people-picker ${className}`} value={value === undefined ? undefined : String(value)} onChange={next => onChange(next ? Number(next) : undefined)} disabled={disabled} clearable options={ranked.map(person => ({ value: String(person.id), label: person.name, person, description: recommendations.includes(person.id) ? t('frequentPerson') : undefined }))} />;
+}
+
+export interface AssigneeSelection { type: 'user' | 'group'; id: number }
+
+/**
+ * Redmine user and group IDs share the same numeric namespace, so the value
+ * remains tagged all the way through selection and save.
+ */
+export function AssigneePicker({ options, members, value, currentOption, onChange, label, placeholder, disabled, recommendations = [], className = '', compact = false, groupAvatarOverrides = {} }: {
+  options?: AssigneeOption[]; members: Person[]; value?: AssigneeSelection; onChange: (value?: AssigneeSelection) => void;
+  currentOption?: AssigneeOption; label: string; placeholder?: string; disabled?: boolean; recommendations?: number[]; className?: string; compact?: boolean;
+  groupAvatarOverrides?: Record<string, GroupAvatarOverride>;
+}) {
+  const { t } = useTranslation();
+  const peopleById = useMemo(() => new Map(members.map(person => [person.id, person])), [members]);
+  const liveOptions = useMemo<AssigneeOption[]>(() => options ?? members.map(person => ({
+    type: 'user', id: person.id, name: person.name, avatar: person.avatar,
+  })), [members, options]);
+  const selectedKey = value ? `${value.type}:${value.id}` : undefined;
+  const currentIsMissing = Boolean(selectedKey && !liveOptions.some(option => `${option.type}:${option.id}` === selectedKey));
+  const source = useMemo<AssigneeOption[]>(() => {
+    if (!currentIsMissing || !value) return liveOptions;
+    const fallback = currentOption && currentOption.type === value.type && currentOption.id === value.id
+      ? currentOption
+      : { type: value.type, id: value.id, name: `#${value.id}` } as AssigneeOption;
+    return [...liveOptions, fallback];
+  }, [currentIsMissing, currentOption, liveOptions, value]);
+  const pickerOptions = useMemo<PickerOption[]>(() => source.map(option => {
+    const unavailableCurrent = currentIsMissing && selectedKey === `${option.type}:${option.id}`;
+    if (option.type === 'group') return {
+      value: `group:${option.id}`, label: option.name, disabled: unavailableCurrent,
+      icon: <GroupAvatar group={option} override={groupAvatarOverrides[String(option.id)]} size="sm" label={`${t('group')}: ${option.name}`} />,
+      description: unavailableCurrent ? t('assigneeUnavailable') : t('group'),
+    };
+    const person = peopleById.get(option.id) || { id: option.id, name: option.name, avatar: option.avatar };
+    return {
+      value: `user:${option.id}`, label: option.name, person, disabled: unavailableCurrent,
+      description: unavailableCurrent ? t('assigneeUnavailable') : recommendations.includes(option.id) ? t('frequentPerson') : undefined,
+    };
+  }), [currentIsMissing, groupAvatarOverrides, peopleById, recommendations, selectedKey, source, t]);
+  const selectedValue = selectedKey;
+  return <Picker label={label} iconOnly={compact} placeholder={placeholder || t('noAssignee')} className={`people-picker assignee-picker ${className}`} value={selectedValue} disabled={disabled} clearable options={pickerOptions} onChange={next => {
+    const match = /^(user|group):(\d+)$/.exec(next);
+    onChange(match ? { type: match[1] as AssigneeSelection['type'], id: Number(match[2]) } : undefined);
+  }} />;
 }

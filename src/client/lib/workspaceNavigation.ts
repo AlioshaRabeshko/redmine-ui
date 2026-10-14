@@ -64,6 +64,8 @@ function parseFilters(params: URLSearchParams): Filters {
   if (parseBoolean(params.get('mine'))) filters.assignedToMe = true;
   const assigneeId = parsePositiveId(params.get('assignee'));
   if (assigneeId !== undefined) filters.assigneeId = assigneeId;
+  const watcherId = parsePositiveId(params.get('watcher'));
+  if (watcherId !== undefined) filters.watcherId = watcherId;
   const labels = [...new Set(params.getAll('label').map(value => value.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (labels.length) filters.labels = labels;
   const statusIds = parseIdList(params, 'statusFilter');
@@ -84,6 +86,8 @@ function normalizeFilters(value: unknown): Filters {
   if (raw.assignedToMe === true) filters.assignedToMe = true;
   const assigneeId = positiveId(raw.assigneeId);
   if (assigneeId !== undefined) filters.assigneeId = assigneeId;
+  const watcherId = positiveId(raw.watcherId);
+  if (watcherId !== undefined) filters.watcherId = watcherId;
   const rawLabels = [...(Array.isArray(raw.labels) ? raw.labels : []), ...(typeof raw.label === 'string' ? [raw.label] : [])];
   const labels = [...new Set(rawLabels.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
@@ -235,6 +239,7 @@ export function navigationUrl(stateValue: NavigationState, pathname = '/'): stri
   if (filters.search?.trim()) params.set('q', filters.search);
   if (filters.assignedToMe) params.set('mine', '1');
   appendId(params, 'assignee', filters.assigneeId);
+  appendId(params, 'watcher', filters.watcherId);
   for (const label of filters.labels ?? []) params.append('label', label);
   for (const id of filters.statusIds ?? []) params.append('statusFilter', String(id));
   for (const id of filters.priorityIds ?? []) params.append('priorityFilter', String(id));

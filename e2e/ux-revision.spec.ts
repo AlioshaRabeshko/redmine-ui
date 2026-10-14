@@ -1,8 +1,13 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { Bootstrap, CommandResult, Issue, IssueDetail } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 async function bootstrap(request: APIRequestContext) {
-  await request.patch('/api/settings', { data: { locale: 'uk', theme: 'light', palette: 'blue' } });
+  const initial = await (await request.get('/api/bootstrap')).json() as Bootstrap;
+  await request.patch('/api/settings', { data: {
+    locale: 'uk', theme: 'light', palette: 'blue',
+    collapsedBoardColumns: Object.fromEntries(initial.projects.map(project => [String(project.id), null])),
+  } });
   return await (await request.get('/api/bootstrap')).json() as Bootstrap;
 }
 async function create(request: APIRequestContext, boot: Bootstrap, subject: string, input: Record<string, unknown> = {}) {
@@ -36,7 +41,7 @@ test('column creation preselects status or roadmap over old property drafts and 
   await page.getByTestId('lane-version:100').locator('.lane-create').click();
   await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('NEXT');
   await dialog.getByTestId('issue-title').fill('Draft carried between columns');
-  await dialog.getByTestId('issue-description').fill('Keep this text when another column is chosen');
+  await (await sourceEditor(page, 'issue-description-editor')).fill('Keep this text when another column is chosen');
   await choose(page, dialog, 'Статус', String(boot.statuses.find(status => status.key === 'qa')!.id));
   await page.keyboard.press('Escape');
   for (const key of ['suspended', 'todo', 'progress', 'review', 'qa', 'deploy']) {
@@ -46,7 +51,7 @@ test('column creation preselects status or roadmap over old property drafts and 
     await expect(dialog.getByRole('combobox', { name: 'Статус', exact: true })).toContainText(status.name);
     await expect(dialog.getByRole('combobox', { name: 'Реліз', exact: true })).toContainText('Без релізу');
     await expect(dialog.getByTestId('issue-title')).toHaveValue('Draft carried between columns');
-    await expect(dialog.getByTestId('issue-description')).toHaveValue('Keep this text when another column is chosen');
+    await expect(await sourceEditor(page, 'issue-description-editor')).toHaveValue('Keep this text when another column is chosen');
     await page.keyboard.press('Escape');
   }
   const review = boot.statuses.find(status => status.key === 'review')!;
@@ -165,8 +170,8 @@ test('property autosave preserves text/comment drafts; Cmd+S explicitly saves on
   await start(page, boot);
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
-  await dialog.locator('.description-area').fill('My description draft');
-  await dialog.locator('.comment-area').fill('My comment draft');
+  await (await editDescriptionSource(page)).fill('My description draft');
+  await (await sourceEditor(page, 'comment-composer')).fill('My comment draft');
   const priority = boot.priorities.find(p => p.id !== issue.priorityId)!;
   await choose(page, dialog, 'Пріоритет', String(priority.id));
   await expect.poll(async () => (await detail(request, issue.id)).priorityId).toBe(priority.id);
@@ -177,14 +182,14 @@ test('property autosave preserves text/comment drafts; Cmd+S explicitly saves on
   await page.keyboard.press('Escape');
   await page.reload();
   await page.getByTestId(`issue-card-${issue.id}`).click();
-  await expect(dialog.locator('.description-area')).toHaveValue('My description draft');
-  await expect(dialog.locator('.comment-area')).toHaveValue('My comment draft');
-  await dialog.locator('.description-area').focus();
+  await expect(await editDescriptionSource(page)).toHaveValue('My description draft');
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue('My comment draft');
+  await (await editDescriptionSource(page)).focus();
   await page.keyboard.press('Meta+s');
   await expect.poll(async () => (await detail(request, issue.id)).description).toBe('My description draft');
   await expect(dialog.locator('.text-save-row')).not.toBeVisible();
   expect(commands.filter(command => command.type === 'comment')).toHaveLength(0);
-  await expect(dialog.locator('.comment-area')).toHaveValue('My comment draft');
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue('My comment draft');
   expect(commands).toHaveLength(2);
 });
 
@@ -200,7 +205,7 @@ test('reopening a cached card after an outside status change cannot revert that 
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
   await expect(dialog.getByRole('combobox', { name: 'Статус', exact: true })).toContainText(review.name);
-  await dialog.locator('.description-area').fill('Save text after status change');
+  await (await editDescriptionSource(page)).fill('Save text after status change');
   await page.keyboard.press('Meta+s');
   await expect.poll(async () => (await detail(request, issue.id)).description).toBe('Save text after status change');
   expect((await detail(request, issue.id)).statusId).toBe(review.id);
@@ -212,12 +217,12 @@ test('failed property write shows an inline error, restores confirmed value and 
   await start(page, boot);
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
-  await dialog.locator('.description-area').fill('Draft survives error');
+  await (await editDescriptionSource(page)).fill('Draft survives error');
   await page.route('**/api/commands', route => route.fulfill({ status: 503, json: { code: 'CONNECTION_FAILED', message: 'Test unavailable' } }));
   await choose(page, dialog, 'Пріоритет', String(boot.priorities.find(p => p.id !== issue.priorityId)!.id));
   await expect(dialog.locator('.field-save-error')).toBeVisible();
   await expect(dialog.getByRole('radiogroup', { name: 'Пріоритет', exact: true }).locator(`[data-value="${issue.priorityId}"]`)).toHaveAttribute('aria-checked', 'true');
-  await expect(dialog.locator('.description-area')).toHaveValue('Draft survives error');
+  await expect(await editDescriptionSource(page)).toHaveValue('Draft survives error');
   expect((await detail(request, issue.id)).description).toBe('');
 });
 
@@ -227,11 +232,11 @@ test('successful people choices rise in the list with role avatars', async ({ pa
   await start(page, boot);
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
-  await choose(page, dialog, 'Виконавець', '2');
+  await choose(page, dialog, 'Виконавець', 'user:2');
   await expect.poll(async () => (await detail(request, issue.id)).assignedToId).toBe(2);
   await expect.poll(async () => (await (await request.get(`/api/projects/${boot.projects[0].id}/board`)).json()).peopleRecommendations.assignee.includes(2)).toBe(true);
   await dialog.getByRole('combobox', { name: 'Виконавець', exact: true }).click();
-  const option = page.locator('.picker-popover [role="option"][data-value="2"]');
+  const option = page.locator('.picker-popover [role="option"][data-value="user:2"]');
   await expect(option).toContainText('Часто обираєте');
   await expect(option.locator('.avatar-role-developer')).toBeVisible();
   await page.keyboard.press('Escape');
@@ -277,7 +282,7 @@ test('creation uses colored priority and type tiles, suggested avatars and searc
   await dialog.getByRole('combobox', { name: 'Виконавець', exact: true }).click();
   const menu = page.locator('.picker-popover').last();
   await menu.locator('input').fill('Example Person A');
-  await menu.locator('[role=option][data-value="3"]').click();
+  await menu.locator('[role=option][data-value="user:3"]').click();
   await expect(dialog.locator('.assignee-avatar-option[data-person-id="3"]')).toHaveAttribute('aria-pressed', 'true');
   const colors = await dialog.locator('.choice-tiles-priority .choice-tile').evaluateAll(elements => elements.map(element => getComputedStyle(element).backgroundColor));
   expect(new Set(colors).size).toBeGreaterThan(1);
@@ -310,10 +315,22 @@ test('background CI automation runs with the browser page closed', async ({ page
   try {
     const result = await (await request.post('/api/commands', { data: { type: 'updateIssue', issueId: issue.id, input: { labels: ['Build: Failed'] } } })).json() as CommandResult;
     expect(result.operation.status).toBe('done');
-    await expect.poll(async () => {
-      const current = await detail(request, issue.id);
-      return { statusId: current.statusId, assignedToId: current.assignedToId, fixedVersionId: current.fixedVersionId };
-    }, { timeout: 45_000, intervals: [500, 1000, 2000] }).toEqual({ statusId: todo.id, assignedToId: 2, fixedVersionId: 100 });
+    try {
+      await expect.poll(async () => {
+        const current = await detail(request, issue.id);
+        return { statusId: current.statusId, assignedToId: current.assignedToId, fixedVersionId: current.fixedVersionId };
+      }, { timeout: 45_000, intervals: [500, 1000, 2000] }).toEqual({ statusId: todo.id, assignedToId: 2, fixedVersionId: 100 });
+    } catch (error) {
+      const operations = await (await request.get('/api/operations')).json() as Array<{
+        id: string; type: string; status: string; issueId?: number; error?: string; errorCode?: string;
+        steps?: Array<{ name: string; status: string; error?: string }>;
+      }>;
+      const related = operations.filter(operation => operation.issueId === issue.id).map(({ id, type, status, error: operationError, errorCode, steps }) => ({
+        id, type, status, error: operationError, errorCode, steps,
+      }));
+      console.log(`CI automation operations for issue ${issue.id}: ${JSON.stringify(related)}`);
+      throw error;
+    }
   } finally {
     await request.patch('/api/settings', { data: { pollIntervalSeconds: boot.settings.pollIntervalSeconds } });
   }
@@ -408,7 +425,7 @@ test('typing during an in-flight text save does not discard newer draft content'
   await start(page, boot);
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
-  const textarea = dialog.locator('.description-area');
+  const textarea = await editDescriptionSource(page);
   await textarea.fill('Submitted description');
   let releaseResponse!: () => void;
   const responseHeld = new Promise<void>(resolve => { releaseResponse = resolve; });
@@ -430,7 +447,7 @@ test('typing during an in-flight text save does not discard newer draft content'
   expect((await detail(request, issue.id)).description).toBe('Submitted description');
   await page.keyboard.press('Escape');
   await page.getByTestId(`issue-card-${issue.id}`).click();
-  await expect(dialog.locator('.description-area')).toHaveValue('Newer description typed during save');
+  await expect(await editDescriptionSource(page)).toHaveValue('Newer description typed during save');
 });
 
 test('all palettes keep compact text readable in light and dark themes', async ({ page, request }) => {

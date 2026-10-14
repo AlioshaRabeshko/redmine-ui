@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import type { Bootstrap, CommandResult, Issue } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 async function bootstrap(request: APIRequestContext) {
   await request.patch('/api/settings', { data: { locale: 'uk' } });
@@ -78,7 +79,7 @@ test('legacy new-issue text survives blocked scoped writes and migrates after st
 
   let dialog = await openDialog();
   await expect(dialog.getByTestId('issue-title')).toHaveValue(legacyText.subject);
-  await expect(dialog.getByTestId('issue-description')).toHaveValue(legacyText.description);
+  await expect(await sourceEditor(page, 'issue-description-editor')).toHaveValue(legacyText.description);
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('issue-dialog')).not.toBeVisible();
 
@@ -86,7 +87,7 @@ test('legacy new-issue text survives blocked scoped writes and migrates after st
   await expect(page.getByTestId('board')).toBeVisible();
   dialog = await openDialog();
   await expect(dialog.getByTestId('issue-title')).toHaveValue(legacyText.subject);
-  await expect(dialog.getByTestId('issue-description')).toHaveValue(legacyText.description);
+  await expect(await sourceEditor(page, 'issue-description-editor')).toHaveValue(legacyText.description);
   await expect.poll(() => page.evaluate(key => {
     const value = localStorage.getItem(key);
     return value ? JSON.parse(value) as Record<string, unknown> : null;
@@ -95,7 +96,7 @@ test('legacy new-issue text survives blocked scoped writes and migrates after st
   const recovered = { subject: 'Recovered create title', description: 'Recovered create description' };
   await page.evaluate(() => localStorage.setItem('__allowNewDraftScopedWrites', 'yes'));
   await dialog.getByTestId('issue-title').fill(recovered.subject);
-  await dialog.getByTestId('issue-description').fill(recovered.description);
+  await (await sourceEditor(page, 'issue-description-editor')).fill(recovered.description);
   await expect.poll(() => page.evaluate(keys => ({
     subject: localStorage.getItem(keys.subject),
     description: localStorage.getItem(keys.description),
@@ -112,7 +113,7 @@ test('legacy new-issue text survives blocked scoped writes and migrates after st
   await page.reload();
   dialog = await openDialog();
   await expect(dialog.getByTestId('issue-title')).toHaveValue(recovered.subject);
-  await expect(dialog.getByTestId('issue-description')).toHaveValue(recovered.description);
+  await expect(await sourceEditor(page, 'issue-description-editor')).toHaveValue(recovered.description);
 });
 
 test('issue legacy text stays available while scoped migration is blocked, then clears after recovery', async ({ page, request }) => {
@@ -144,17 +145,17 @@ test('issue legacy text stays available while scoped migration is blocked, then 
   await page.goto(url);
   let dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.description-area')).toHaveValue(legacyDescription);
+  await expect(await editDescriptionSource(page)).toHaveValue(legacyDescription);
   await page.keyboard.press('Escape');
   await page.reload();
   await page.goto(url);
   dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.description-area')).toHaveValue(legacyDescription);
+  await expect(await editDescriptionSource(page)).toHaveValue(legacyDescription);
 
   const recoveredDescription = 'Recovered issue description';
   await page.evaluate(() => localStorage.setItem('__allowIssueDraftScopedWrites', 'yes'));
-  await dialog.locator('.description-area').fill(recoveredDescription);
+  await (await editDescriptionSource(page)).fill(recoveredDescription);
   await expect.poll(() => page.evaluate(key => localStorage.getItem(key), descriptionKey)).toBe(recoveredDescription);
   await expect.poll(() => page.evaluate(key => localStorage.getItem(key), legacyKey)).toBeNull();
 
@@ -163,7 +164,7 @@ test('issue legacy text stays available while scoped migration is blocked, then 
   await page.goto(url);
   dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.description-area')).toHaveValue(recoveredDescription);
+  await expect(await editDescriptionSource(page)).toHaveValue(recoveredDescription);
 });
 
 test('an issue draft tombstone suppresses older legacy text and keeps the server baseline', async ({ page, request }) => {
@@ -188,10 +189,10 @@ test('an issue draft tombstone suppresses older legacy text and keeps the server
   await page.goto(url);
   let dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.description-area')).toHaveValue(baseline);
+  await expect(await editDescriptionSource(page)).toHaveValue(baseline);
   await expect.poll(() => page.evaluate(key => localStorage.getItem(key), legacyKey)).toBeNull();
   await page.reload();
   dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.description-area')).toHaveValue(baseline);
+  await expect(await editDescriptionSource(page)).toHaveValue(baseline);
 });

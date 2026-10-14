@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { BoardData, Bootstrap } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 const param = (page: Page, key: string) => new URL(page.url()).searchParams.get(key);
 const nav = (page: Page, text: string) => page.locator('.nav-item').filter({ hasText: text });
@@ -47,18 +48,19 @@ test('card URL, Back, Forward and reload restore the card and unsent text', asyn
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
   const issueId = param(page, 'issue');
   expect(issueId).toBeTruthy();
-  const description = page.locator('.description-area');
+  const description = await editDescriptionSource(page);
   await description.fill('Navigation description draft');
-  await page.locator('.comment-area').fill('Navigation comment draft');
+  const comment = await sourceEditor(page, 'comment-composer');
+  await comment.fill('Navigation comment draft');
   await page.goBack();
   await expect(page.getByTestId('issue-dialog')).not.toBeVisible();
   await expect.poll(() => param(page, 'issue')).toBeNull();
   await page.goForward();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
-  await expect(description).toHaveValue('Navigation description draft');
-  await expect(page.locator('.comment-area')).toHaveValue('Navigation comment draft');
+  await expect(await editDescriptionSource(page)).toHaveValue('Navigation description draft');
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue('Navigation comment draft');
   await page.reload();
-  await expect(description).toHaveValue('Navigation description draft');
+  await expect(await editDescriptionSource(page)).toHaveValue('Navigation description draft');
   await page.keyboard.press('Escape');
   await expect.poll(() => param(page, 'issue')).toBeNull();
   await page.goForward();
@@ -77,14 +79,14 @@ test('column creation URL restores defaults and drafts without submitting on his
   expect(param(page, 'status')).toBe(String(review.id));
   expect(param(page, 'roadmap')).toBe('none');
   await page.getByTestId('issue-title').fill('History creation draft');
-  await page.getByTestId('issue-description').fill('Unsent creation description');
+  await (await sourceEditor(page, 'issue-description-editor')).fill('Unsent creation description');
   await page.reload();
   await expect(page.getByTestId('issue-title')).toHaveValue('History creation draft');
   await expect(page.locator('.create-issue-dialog').getByRole('combobox', { name: 'Статус', exact: true })).toContainText(review.name);
   await page.goBack();
   await expect(page.getByTestId('issue-title')).not.toBeVisible();
   await page.goForward();
-  await expect(page.getByTestId('issue-description')).toHaveValue('Unsent creation description');
+  await expect(await sourceEditor(page, 'issue-description-editor')).toHaveValue('Unsent creation description');
   expect(commands).toBe(0);
 });
 

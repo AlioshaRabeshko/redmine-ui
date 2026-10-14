@@ -1,9 +1,12 @@
 import { expect, test, type APIRequestContext, type Page, type Route } from '@playwright/test';
 import type { Bootstrap, CommandResult, Issue, IssueDetail } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 const mixedJournalId = 98101;
 const attachmentId = 98102;
 const brokenAttachmentId = 98103;
+const screenshotMarkup = `![screenshot.png](https://redmine.example.test/attachments/download/${attachmentId}/screenshot.png)`;
+const brokenImageMarkup = `![broken.png](https://redmine.example.test/attachments/download/${brokenAttachmentId}/broken.png)`;
 const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p+0AAAAASUVORK5CYII=', 'base64');
 
 async function createDemoIssue(request: APIRequestContext, boot: Bootstrap, subject: string, description: string) {
@@ -36,7 +39,7 @@ async function installIssueResponse(page: Page, issue: Issue, notes = 'Visible j
       '| --- | --- |',
       '| Markdown | Ready |',
       '',
-      '!screenshot.png! !broken.png!',
+      `${screenshotMarkup} ${brokenImageMarkup}`,
       '',
       '```js',
       'const answer = 42;',
@@ -95,9 +98,9 @@ test('description preview renders Markdown and known images safely while preserv
   });
   await openIssue(page, issue);
   const dialog = page.getByTestId('issue-dialog');
-  const raw = await dialog.locator('.description-area').inputValue();
-  expect(raw).toContain('!screenshot.png!');
-  await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+  const raw = await (await editDescriptionSource(page)).inputValue();
+  expect(raw).toContain(screenshotMarkup);
+  await dialog.locator('.description-head .segmented').getByRole('button', { name: 'Preview', exact: true }).click();
   const preview = dialog.locator('.description-preview');
   await expect(preview.locator('h1')).toHaveText('Audit description');
   await expect(preview.locator('table')).toBeVisible();
@@ -112,10 +115,10 @@ test('description preview renders Markdown and known images safely while preserv
   await releasePicker.click();
   await expect(page.locator('.picker-popover').last().getByRole('option', { name: /2026\.09 Core/ })).toBeDisabled();
   await page.keyboard.press('Escape');
-  expect(await dialog.locator('.description-area').count()).toBe(0);
+  expect(await dialog.getByTestId('issue-description-editor').count()).toBe(0);
 
-  await dialog.getByRole('button', { name: 'Edit', exact: true }).click();
-  expect(await dialog.locator('.description-area').inputValue()).toBe(raw);
+  const source = await editDescriptionSource(page);
+  expect(await source.inputValue()).toBe(raw);
   expect(boot.capabilities.canWrite).toBe(true); // The application server for this test is isolated demo mode.
 });
 
@@ -179,20 +182,20 @@ test('real read-only opens the formatted description, while edits stay as local 
   await expect(preview).toBeVisible();
   await expect(preview.locator('img').first()).toHaveAttribute('src', `/api/issues/${issue.id}/attachments/${attachmentId}/content`);
   await expect.poll(() => imageRouteCalled).toBe(true);
-  await expect(dialog.locator('.description-area')).toHaveCount(0);
+  await expect(dialog.getByTestId('issue-description-editor')).toHaveCount(0);
 
-  await dialog.getByRole('button', { name: 'Edit', exact: true }).click();
-  const editor = dialog.locator('.description-area');
+  await dialog.getByTestId('issue-description-edit-toggle').click();
+  const editor = await sourceEditor(page, 'issue-description-editor');
   const original = await editor.inputValue();
-  expect(original).toContain('!screenshot.png!');
-  await editor.fill('Read-only local draft\n\n!screenshot.png!');
-  await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+  expect(original).toContain(screenshotMarkup);
+  await editor.fill(`Read-only local draft\n\n${screenshotMarkup}`);
+  await dialog.locator('.description-head .segmented').getByRole('button', { name: 'Preview', exact: true }).click();
   await expect(preview).toContainText('Read-only local draft');
-  await dialog.getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(editor).toHaveValue('Read-only local draft\n\n!screenshot.png!');
+  await dialog.getByTestId('issue-description-edit-toggle').click();
+  await expect(await sourceEditor(page, 'issue-description-editor')).toHaveValue(`Read-only local draft\n\n${screenshotMarkup}`);
   await page.reload();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
-  await expect(page.locator('.description-area')).toHaveValue('Read-only local draft\n\n!screenshot.png!');
+  await expect(await editDescriptionSource(page)).toHaveValue(`Read-only local draft\n\n${screenshotMarkup}`);
   await expect(page.locator('.description-preview')).toHaveCount(0);
   expect(commands).toBe(0);
 });

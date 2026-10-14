@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { AlertTriangle, ArrowUpRight, CalendarDays, Check, Clock3, Copy, FileText, GitBranch, Heart, History, Link, MessageSquare, MoreHorizontal, Paperclip, Pencil, Quote, Save, Send, Trash2, UserRound, Users, WandSparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { defaultActivityVisibility, type ActivityVisibility, type BoardData, type Issue, type IssueDetail, type Journal, type Notification, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
+import { defaultActivityVisibility, type GroupAvatarOverride, type ActivityVisibility, type AssigneeOption, type BoardData, type Issue, type IssueDetail, type Journal, type Notification, type PeopleField, type Person, type Priority, type Project, type Status, type Version } from '../../../shared/types';
 import { branchForIssue } from '../../../shared/domain';
 import { Avatar, Button, Field, IconButton, Modal, Notice, Spinner } from '../../components/ui';
-import { Picker, PeoplePicker, type PickerOption } from '../../components/pickers';
+import { AssigneePicker, Picker, PeoplePicker, type AssigneeSelection, type PickerOption } from '../../components/pickers';
 import { ChoiceTiles, type ChoiceTileOption } from '../../components/choiceTiles';
 import { AttachmentPreview, RichContent, attachmentContentPath, isPreviewableImage } from '../../components/RichContent';
+import { GroupAvatar } from '../../components/GroupAvatar';
+
+const LazyRichEditor = lazy(() => import('../../components/RichEditor').then(module => ({ default: module.RichEditor })));
+function RichEditor({ loadingFallback, ...props }: ComponentProps<typeof import('../../components/RichEditor').RichEditor> & { loadingFallback?: ReactNode }) {
+  return <Suspense fallback={loadingFallback ?? <Spinner />}><LazyRichEditor {...props} /></Suspense>;
+}
 import { api, issueUrl } from '../../lib/api';
 import { createIssueTextDraftKey, enqueueFieldWrite, issueTextDraftKey, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
 import { clearDraftStorage, readDraftStorage, writeDraftStorage } from '../../lib/draftStorage';
@@ -106,7 +112,8 @@ function suggestedAssignees(members: Person[], selectedId?: number, recommendati
   return candidates;
 }
 
-export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, draftScope, initialJournalId, currentUserId, notificationRequestKey, onNotificationTargetShown, unreadNotifications, onUnreadEventsVisible, activityVisibility = defaultActivityVisibility, canWrite, readOnlyMode, onActivityVisibilityChange, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
+export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, groupAvatarOverrides, draftScope, initialJournalId, currentUserId, notificationRequestKey, onNotificationTargetShown, unreadNotifications, onUnreadEventsVisible, activityVisibility = defaultActivityVisibility, canWrite, readOnlyMode, onActivityVisibilityChange, onClose, onSave, onComment, onSaveRoles, onEditJournal, onDeleteJournal, onSetJournalLike, onToast }: {
+  groupAvatarOverrides?: Record<string, GroupAvatarOverride>;
   detail: IssueDetail; board: BoardData; statuses: Status[]; priorities: Priority[]; redmineUrl: string; canWrite: boolean; onClose: () => void;
   draftScope: string; initialJournalId?: number; currentUserId?: number; notificationRequestKey?: string; onNotificationTargetShown?: (issueId: number, journalId?: number) => void; activityVisibility?: ActivityVisibility; readOnlyMode: boolean; onActivityVisibilityChange: (visibility: ActivityVisibility) => void;
   unreadNotifications: Notification[]; onUnreadEventsVisible: (issueId: number, ids: string[]) => void | Promise<void>;
@@ -169,6 +176,9 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const dirtyTextRef = useRef(dirtyText);
   const [textDraftDurability, setTextDraftDurability] = useState<Record<keyof IssueText, boolean>>(initialDraftState.durability);
   const [autoDraft, setAutoDraft] = useState<AutoValues>(() => autoValues(issue));
+  const [assigneeSelection, setAssigneeSelection] = useState<AssigneeSelection | undefined>(() => issue.assignedToId === undefined ? undefined : { type: issue.assignedToType || 'user', id: issue.assignedToId });
+  const assigneeSelectionRef = useRef(assigneeSelection);
+  const confirmedAssigneeRef = useRef(assigneeSelection);
   const confirmedAutoRef = useRef<AutoValues>(autoValues(issue));
   const fieldQueuesRef = useRef(new Map<string, Promise<unknown>>());
   const updatedOnRef = useRef(issue.updatedOn);
@@ -191,6 +201,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const commentRef = useRef(comment);
   const [commentError, setCommentError] = useState('');
   const [sendingComment, setSendingComment] = useState(false);
+  const [mentionPeople, setMentionPeople] = useState<Person[]>([]);
   const [editingJournalId, setEditingJournalId] = useState<number>();
   const [journalEditDraft, setJournalEditDraft] = useState<JournalEditDraft>();
   const journalEditDraftRef = useRef<JournalEditDraft | undefined>(undefined);
@@ -202,7 +213,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const [deletingJournal, setDeletingJournal] = useState(false);
   const [likingJournalIds, setLikingJournalIds] = useState<Set<number>>(() => new Set());
   const [journalLikeErrors, setJournalLikeErrors] = useState<Record<number, string>>({});
-  const [preview, setPreview] = useState(() => !canWrite && !initialDirty.description);
+  const [preview, setPreview] = useState(true);
   const [activityJournals, setActivityJournals] = useState<Journal[]>(() => detail.journals);
   const activityJournalsRef = useRef(activityJournals);
   const [bufferedActivity, setBufferedActivity] = useState<Journal[]>([]);
@@ -216,10 +227,13 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const textFormRef = useWorkspaceFormSave<HTMLFormElement>();
   const commentFormRef = useWorkspaceFormSave<HTMLFormElement>();
   const journalEditFormRef = useRef<HTMLFormElement>(null);
-  const journalEditorTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [journalEditorFocusRequest, setJournalEditorFocusRequest] = useState(0);
   const journalEditButtonRefs = useRef(new Map<number, HTMLButtonElement>());
   const activityHeadingRef = useRef<HTMLHeadingElement>(null);
-  const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [commentFocusRequest, setCommentFocusRequest] = useState(0);
+  const [commentEditorActive, setCommentEditorActive] = useState(() => Boolean(comment));
+  const changeCommentDraft = (next: string) => { commentRef.current = next; setComment(next); setCommentError(''); if (!next.trim()) { clearDraftStorage(legacyCommentKey); setLegacyCommentDurable(false); } };
+
 
   useEffect(() => {
     const form = journalEditFormRef.current;
@@ -237,22 +251,41 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   const selectedClosedVersion = board.versions.find((version) => version.id === autoDraft.fixedVersionId && version.projectId === issue.projectId && version.status === 'closed');
   const issuePeople = mergePeopleById(board.members, detail.people || [], detail.watchers, detail.journals.map((journal) => journal.user));
   const issueWatchers = detail.watchers.map((watcher) => personFrom(issuePeople, watcher.id) || watcher);
+  useEffect(() => {
+    const controller = new AbortController();
+    void api.get<Person[]>(`/api/projects/${issue.projectId}/mention-users`, controller.signal)
+      .then((people) => { if (!controller.signal.aborted) setMentionPeople(people.filter((person) => Boolean(person.mentionToken))); })
+      .catch(() => { if (!controller.signal.aborted) setMentionPeople([]); });
+    return () => controller.abort();
+  }, [issue.projectId]);
   const trackers = useMemo(() => board.trackers
     ? [...board.trackers, ...(!board.trackers.some(tracker => tracker.id === issue.trackerId) ? [{ id: issue.trackerId, name: issue.trackerName }] : [])]
     : [...new Map([...board.issues, issue].map(entry => [entry.trackerId, { id: entry.trackerId, name: entry.trackerName }])).values()], [board.trackers, board.issues, issue]);
   const trackerOptions: ChoiceTileOption[] = trackers.map((tracker) => ({ value: String(tracker.id), label: tracker.name }));
   const textFormId = 'issue-text-form-' + issue.id;
   const author = personFrom(issuePeople, issue.authorId);
-  const assignee = personFrom(issuePeople, autoDraft.assignedToId);
+  const assigneeOptions = detail.assigneeOptions ?? board.assigneeOptions;
+  const assignee = assigneeSelection?.type === 'user' ? personFrom(issuePeople, assigneeSelection.id) : undefined;
+  const assigneeCurrentOption: AssigneeOption | undefined = assigneeSelection ? (() => {
+    const selected = assigneeOptions?.find((option) => option.type === assigneeSelection.type && option.id === assigneeSelection.id);
+    if (selected) return selected;
+    if (assigneeSelection.type === 'group') return { type: 'group', id: assigneeSelection.id, name: issue.assignedToId === assigneeSelection.id && issue.assignedToType === 'group' ? issue.assignedToName || `#${assigneeSelection.id}` : `#${assigneeSelection.id}` };
+    const person = personFrom(issuePeople, assigneeSelection.id);
+    const assignedName = issue.assignedToId === assigneeSelection.id && (issue.assignedToType || 'user') === 'user' ? issue.assignedToName : undefined;
+    return { type: 'user', id: assigneeSelection.id, name: person?.name || assignedName || `#${assigneeSelection.id}`, ...(person?.avatar ? { avatar: person.avatar } : {}) };
+  })() : undefined;
   const developer = personFrom(issuePeople, autoDraft.developerId);
   const qa = personFrom(issuePeople, autoDraft.qaId);
-  const assigneeCandidates = useMemo(() => suggestedAssignees(board.members, autoDraft.assignedToId, board.peopleRecommendations?.assignee), [board.members, board.peopleRecommendations?.assignee, autoDraft.assignedToId]);
+  const assigneeCandidates = useMemo(() => suggestedAssignees(board.members, assigneeSelection?.type === 'user' ? assigneeSelection.id : undefined, board.peopleRecommendations?.assignee), [board.members, board.peopleRecommendations?.assignee, assigneeSelection]);
   const anyTextDirty = Object.values(dirtyText).some(Boolean);
   const textDraftDurable = (Object.keys(dirtyText) as (keyof IssueText)[]).every((key) =>
     !dirtyText[key] || textDraftDurability[key] || (legacyIssueTextDurable && legacyDraft[key] === textDraft[key]));
   const commentDurable = commentDraftDurable || (legacyCommentDurable && comment === initialCommentState.legacyValue);
   const legacyTextMigrationPending = (Object.keys(dirtyText) as (keyof IssueText)[]).some((key) => dirtyText[key] && !textDraftDurability[key]);
-  const hasTextConflict = (Object.keys(dirtyText) as (keyof IssueText)[]).some((key) => dirtyText[key] && serverText[key] !== baselineTextRef.current[key]);
+  const cardFields: (keyof IssueText)[] = ['subject', 'description', 'dueDate'];
+  const hasCardTextDraft = cardFields.some(key => dirtyText[key]);
+  const hasCardTextConflict = cardFields.some((key) => dirtyText[key] && serverText[key] !== baselineTextRef.current[key]);
+  const hasBranchTextConflict = dirtyText.branch && serverText.branch !== baselineTextRef.current.branch;
 
   useEffect(() => {
     const next = issueText(issue);
@@ -275,6 +308,12 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     setTextDraft(updated);
     setDirtyText(updatedDirty);
     const nextAuto = autoValues(issue);
+    if (pendingCountRef.current.assignedToId === 0) {
+      const nextAssignee = issue.assignedToId === undefined ? undefined : { type: issue.assignedToType || 'user', id: issue.assignedToId } as AssigneeSelection;
+      assigneeSelectionRef.current = nextAssignee;
+      confirmedAssigneeRef.current = nextAssignee;
+      setAssigneeSelection(nextAssignee);
+    }
     setAutoDraft((current) => {
       const updated = { ...current };
       for (const key of autoFields) {
@@ -403,6 +442,46 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     setTextError('');
   };
 
+  const discardTextDrafts = (fields: (keyof IssueText)[]) => {
+    if (textSaving || !fields.length) return;
+    const discarded = new Set(fields);
+    const nextText = { ...textDraftRef.current };
+    const nextDirty = { ...dirtyTextRef.current };
+    const nextDurability = { ...textDraftDurability };
+    for (const field of fields) {
+      nextText[field] = serverTextRef.current[field];
+      nextDirty[field] = false;
+      nextDurability[field] = true;
+      clearDraftStorage(textKeys[field]);
+    }
+    // If a legacy aggregate draft still carries unrelated dirty text, migrate
+    // only those fields before clearing that aggregate. This keeps branch text
+    // when the user discards the issue-card draft, and vice versa.
+    for (const field of Object.keys(nextText) as (keyof IssueText)[]) {
+      if (discarded.has(field) || !nextDirty[field]) continue;
+      nextDurability[field] = writeDraftStorage(textKeys[field], nextText[field]);
+    }
+    clearDraftStorage(legacyDraftKey);
+    setLegacyIssueTextDurable(false);
+    baselineTextRef.current = { ...baselineTextRef.current, ...Object.fromEntries(fields.map((field) => [field, serverTextRef.current[field]])) };
+    textDraftRef.current = nextText;
+    dirtyTextRef.current = nextDirty;
+    setTextDraft(nextText);
+    setDirtyText(nextDirty);
+    setTextDraftDurability(nextDurability);
+    setTextError('');
+  };
+
+  const discardCommentDraft = () => {
+    if (sendingComment) return;
+    commentRef.current = '';
+    setComment('');
+    setCommentDraftDurable(clearDraftStorage(commentKey));
+    clearDraftStorage(legacyCommentKey);
+    setLegacyCommentDurable(false);
+    setCommentError('');
+  };
+
   const recordPersonChoice = async (field: PeopleField, personId: number, operationId: string) => {
     try { await api.post('/api/people/selection', { projectId: issue.projectId, personId, field, operationId }); }
     catch { /* Recommendation history never changes the result of the successful issue update. */ }
@@ -453,6 +532,57 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     }).finally(() => {
       if (generationRef.current[field] !== generation && pendingCountRef.current[field] > 0) {
         setFieldSave((current) => current[field]?.state === 'error' ? { ...current, [field]: { state: 'pending' } } : current);
+      }
+    });
+  };
+
+  const saveAssignee = (value?: AssigneeSelection) => {
+    const current = assigneeSelectionRef.current;
+    if (!canWrite || (current?.type === value?.type && current?.id === value?.id)) return;
+    const field: AutoField = 'assignedToId';
+    const generation = ++generationRef.current[field];
+    const operationId = crypto.randomUUID();
+    pendingCountRef.current[field] += 1;
+    assigneeSelectionRef.current = value;
+    setAssigneeSelection(value);
+    setAutoDraft((draft) => ({ ...draft, assignedToId: value?.id }));
+    setFieldSave((state) => ({ ...state, [field]: { state: 'pending' } }));
+    const patch: IssueEditPatch = {
+      ...(value ? { assignedToType: value.type } : {}),
+      assignedToId: value?.id ?? null,
+      expectedUpdatedOn: updatedOnRef.current,
+    };
+    const job = enqueueFieldWrite(fieldQueuesRef.current, `issue:${issue.id}`, async () => {
+      const saved = await onSave(issue, patch, operationId);
+      if (saved?.updatedOn) updatedOnRef.current = saved.updatedOn;
+      const savedId = saved && Object.prototype.hasOwnProperty.call(saved, 'assignedToId') ? saved.assignedToId : value?.id;
+      const savedType = saved?.assignedToType || value?.type || 'user';
+      const savedSelection = savedId === undefined || savedId === null ? undefined : { type: savedType, id: savedId } as AssigneeSelection;
+      confirmedAssigneeRef.current = savedSelection;
+      (confirmedAutoRef.current as Record<AutoField, unknown>)[field] = savedId ?? undefined;
+      if (value?.type === 'user' && typeof value.id === 'number') await recordPersonChoice('assignee', value.id, operationId);
+      return savedSelection;
+    });
+    void job.then((savedSelection) => {
+      pendingCountRef.current[field] = Math.max(0, pendingCountRef.current[field] - 1);
+      if (generationRef.current[field] === generation) {
+        assigneeSelectionRef.current = savedSelection;
+        setAssigneeSelection(savedSelection);
+        setAutoDraft((draft) => ({ ...draft, assignedToId: savedSelection?.id }));
+        setFieldSave((state) => ({ ...state, [field]: { state: 'saved' } }));
+      }
+    }).catch((error: unknown) => {
+      pendingCountRef.current[field] = Math.max(0, pendingCountRef.current[field] - 1);
+      if (generationRef.current[field] === generation) {
+        const confirmed = confirmedAssigneeRef.current;
+        assigneeSelectionRef.current = confirmed;
+        setAssigneeSelection(confirmed);
+        setAutoDraft((draft) => ({ ...draft, assignedToId: confirmed?.id }));
+        setFieldSave((state) => ({ ...state, [field]: { state: 'error', error: error instanceof Error ? error.message : t('error') } }));
+      }
+    }).finally(() => {
+      if (generationRef.current[field] !== generation && pendingCountRef.current[field] > 0) {
+        setFieldSave((state) => state[field]?.state === 'error' ? { ...state, [field]: { state: 'pending' } } : state);
       }
     });
   };
@@ -546,7 +676,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     setJournalDraftDurable(stored.durable);
     setEditingJournalId(journal.id);
     setJournalEditError('');
-    requestAnimationFrame(() => journalEditorTextareaRef.current?.focus());
+    setJournalEditorFocusRequest((current) => current + 1);
   };
 
   const cancelJournalEdit = (journalId: number) => {
@@ -641,7 +771,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
     finally { setLikingJournalIds((current) => { const next = new Set(current); next.delete(journal.id); return next; }); }
   };
 
-  const journalPermalink = (journalId: number) => `${issueUrl(redmineUrl, issue.id)}#change-${journalId}`;
+  const journalPermalink = (journalId: number) => `${issueUrl(redmineUrl, issue.id)}#journal-${journalId}-notes`;
   const copyJournalPermalink = async (journalId: number) => {
     try { await navigator.clipboard.writeText(journalPermalink(journalId)); onToast(t('copied')); }
     catch { onToast(t('error')); }
@@ -649,20 +779,33 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
 
   const quoteJournal = (journal: IssueDetail['journals'][number]) => {
     if (!journal.notes) return;
-    const quoteLines = journal.notes.split('\n').map((line) => line ? `> ${line}` : '>').join('\n');
-    const attribution = `> — ${journal.user.name} · ${new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}\n> ${journalPermalink(journal.id)}`;
+    const format = detail.textFormat?.trim().toLocaleLowerCase().replace(/[ -]/g, '_');
+    const quoteLines = journal.notes.split('\n').map((line) => format === 'textile' ? `bq. ${line}` : format === 'markdown' || format === 'common_mark' ? `> ${line}` : line).join('\n');
+    const date = new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn));
+    const attributionText = `— ${journal.user.name} · ${date}\n${journalPermalink(journal.id)}`;
+    const attribution = format === 'textile' ? attributionText.split('\n').map((line) => `bq. ${line}`).join('\n')
+      : format === 'markdown' || format === 'common_mark' ? attributionText.split('\n').map((line) => `> ${line}`).join('\n') : attributionText;
     const quoteText = `${quoteLines}\n${attribution}`;
     const separator = !comment ? '' : comment.endsWith('\n\n') ? '' : comment.endsWith('\n') ? '\n' : '\n\n';
     const next = `${comment}${separator}${quoteText}`;
     commentRef.current = next;
     setComment(next);
     setCommentError('');
-    requestAnimationFrame(() => commentTextareaRef.current?.focus());
+    setCommentFocusRequest((current) => current + 1);
   };
 
   const onCopyUrl = async () => { try { await navigator.clipboard.writeText(issueUrl(redmineUrl, issue.id)); onToast(t('copied')); } catch { onToast(t('error')); } };
   const onGenerateBranch = () => setTextValue('branch', branchForIssue(issue.id, textDraft.subject));
-  const statusOptions: PickerOption[] = statuses.map((entry) => ({ value: String(entry.id), label: entry.name }));
+  const allowedStatusIds = new Set(issue.allowedStatusIds ?? []);
+  const visibleStatusChoices = statuses.filter((entry) => entry.id === issue.statusId || allowedStatusIds.has(entry.id));
+  if (!visibleStatusChoices.some((entry) => entry.id === issue.statusId)) {
+    visibleStatusChoices.unshift({ id: issue.statusId, name: issue.statusName || `#${issue.statusId}`, key: 'unknown', isClosed: false });
+  }
+  const statusOptions: PickerOption[] = visibleStatusChoices.map((entry) => ({
+    value: String(entry.id), label: entry.name,
+    ...(entry.id === issue.statusId && issue.allowedStatusIds !== undefined && !allowedStatusIds.has(entry.id) ? { disabled: true } : {}),
+  }));
+  const statusChoicesVerified = issue.allowedStatusIds !== undefined;
   const priorityOptions: ChoiceTileOption[] = priorities.map((entry) => ({ value: String(entry.id), label: entry.name, rank: entry.rank }));
   const versionOptions: PickerOption[] = [...activeVersions, ...(selectedClosedVersion ? [selectedClosedVersion] : [])]
     .map((version) => ({ value: String(version.id), label: version.name,
@@ -738,12 +881,15 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
         <div className="issue-main-fields">
           <form id={textFormId} ref={textFormRef} className="issue-text-form" data-workspace-save onSubmit={saveText}>
             <Field label={t('issueTitle')}><input className="text-input input-title" value={textDraft.subject} onChange={(e) => setTextValue('subject', e.target.value)} /></Field>
-            <div className="description-head"><span className="field-label">{t('description')}</span><div className="segmented"><button type="button" className={!preview ? 'selected' : ''} onClick={() => setPreview(false)}>{t('edit')}</button><button type="button" className={preview ? 'selected' : ''} onClick={() => setPreview(true)}>{t('preview')}</button></div></div>
-            {preview ? <div className="description-preview"><div className="raw-preview-label">{t('preview')}</div>{textDraft.description ? <RichContent source={textDraft.description} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} /> : <span className="placeholder-text">{t('noDescription')}</span>}</div> : <Field label=""><textarea className="text-area description-area" aria-label={t('description')} value={textDraft.description} onChange={(e) => setTextValue('description', e.target.value)} placeholder={t('noDescription')} /></Field>}
+            <div className="description-head"><span className="field-label">{t('description')}{dirtyText.description && <span className="description-draft-label"> · {t('textChanges')}</span>}</span><div className="segmented"><button type="button" className={!preview ? 'selected' : ''} onClick={() => setPreview(false)} data-testid="issue-description-edit-toggle">{t('edit')}</button><button type="button" className={preview ? 'selected' : ''} onClick={() => setPreview(true)}>{t('preview')}</button></div></div>
+            {preview ? <div className="description-preview" data-testid="issue-description-preview" onClick={(event) => { if (!(event.target as HTMLElement).closest('a,button')) setPreview(false); }}>
+              {textDraft.description ? <RichContent source={textDraft.description} format={detail.textFormat} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} retryImageText={t('retry')} /> : <span className="placeholder-text">{t('noDescription')}</span>}
+            </div> : <Field as="div" label=""><RichEditor source={textDraft.description} format={detail.textFormat} onChange={(value) => setTextValue('description', value)} label={t('description')} placeholder={t('noDescription')} testId="issue-description-editor" people={mentionPeople} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} retryImageText={t('retry')} /></Field>}
             <Field label={t('branch')}><div className="input-with-actions"><GitBranch size={16} /><input className="text-input" value={textDraft.branch} onChange={(e) => setTextValue('branch', e.target.value)} /><Button size="sm" variant="outline" onClick={onGenerateBranch}><WandSparkles size={14} />{t('generate')}</Button><IconButton label={t('copyBranchShortcut')} onClick={async () => { try { await navigator.clipboard.writeText(textDraft.branch); onToast(t('copied')); } catch { onToast(t('error')); } }}><Copy size={15} /></IconButton></div></Field>
-            {hasTextConflict && <Notice tone="warning" className="text-draft-conflict">{t('errorConflict')}</Notice>}
+            {hasCardTextConflict && <Notice tone="warning" className="text-draft-conflict">{t('errorConflict')}</Notice>}
+            {hasBranchTextConflict && <Notice tone="warning" className="text-draft-conflict">{t('errorConflict')}</Notice>}
             {textError && <Notice tone="error" className="text-save-error">{textError}</Notice>}
-            {anyTextDirty && <div className="text-save-row"><span>{t('textChanges')}</span><Button type="submit" variant="primary" disabled={!canWrite || textSaving || !textDraft.subject.trim()}>{textSaving ? <Spinner /> : <Save size={15} />}{t('saveChanges')}</Button></div>}
+            {anyTextDirty && <div className="text-save-row"><span>{t('textChanges')}</span>{hasCardTextDraft && <Button size="sm" variant="outline" disabled={textSaving} onClick={() => discardTextDrafts(cardFields)} data-testid="discard-card-draft">{t('discardDraft')}: {t('issueTitle')}, {t('description')}, {t('dueDate')}</Button>}{dirtyText.branch && <Button size="sm" variant="outline" disabled={textSaving} onClick={() => discardTextDrafts(['branch'])} data-testid="discard-branch-draft">{t('discardDraft')}: {t('branch')}</Button>}<Button type="submit" variant="primary" disabled={!canWrite || textSaving || !textDraft.subject.trim()}>{textSaving ? <Spinner /> : <Save size={15} />}{t('saveChanges')}</Button></div>}
           </form>
           <div className="activity-toolbar" data-testid="activity-toolbar">
             <div className="activity-toolbar-heading"><History size={15} /><h3 ref={activityHeadingRef} tabIndex={-1}>{t('activity')}</h3><span>{activityItems.length}</span></div>
@@ -754,10 +900,10 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
           {activityItems.some((item) => item.forcedByPermalink) && <div className="activity-target-override" role="status"><strong>{t('activityTargetOverride')}</strong><span>{t('activityTargetOverrideHint')}</span></div>}
           <form ref={commentFormRef} className="comment-composer" data-workspace-save onSubmit={sendComment}>
             <div className="section-title"><MessageSquare size={15} /><h3>{t('comments')}</h3></div>
-            <textarea ref={commentTextareaRef} className="text-area comment-area" aria-label={t('comments')} data-testid="comment-composer" value={comment} onChange={(e) => { const next = e.target.value; commentRef.current = next; setComment(next); setCommentError(''); if (!next.trim()) { clearDraftStorage(legacyCommentKey); setLegacyCommentDurable(false); } }} placeholder={t('commentPlaceholder')} />
+            {commentEditorActive || Boolean(comment) || commentFocusRequest > 0 ? <RichEditor loadingFallback={<textarea autoFocus className="text-area comment-area" aria-label={t('comments')} data-testid="comment-composer-loading" value={comment} placeholder={t('commentPlaceholder')} onChange={event => changeCommentDraft(event.target.value)} />} source={comment} format={detail.textFormat} onChange={changeCommentDraft} label={t('comments')} placeholder={t('commentPlaceholder')} testId="comment-composer" people={mentionPeople} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} retryImageText={t('retry')} focusRequest={commentFocusRequest} /> : <textarea className="text-area comment-editor-activate" aria-label={t('comments')} data-testid="comment-composer-activate" value={comment} placeholder={t('commentPlaceholder')} onChange={event => changeCommentDraft(event.target.value)} onFocus={() => { setCommentEditorActive(true); setCommentFocusRequest(current => current + 1); }} />}
             <DraftStorageStatus meaningful={Boolean(comment.trim())} durable={commentDurable} />
             {commentError && <Notice tone="error" className="comment-save-error">{commentError}</Notice>}
-            <div className="comment-footer"><span>{!canWrite ? t('readOnlyBadge') : ''}</span><Button type="submit" size="sm" variant="primary" disabled={!canWrite || !comment.trim() || sendingComment}>{sendingComment ? <Spinner /> : <Send size={14} />}{t('addComment')}</Button></div>
+            <div className="comment-footer"><span>{!canWrite ? t('readOnlyBadge') : ''}</span><div>{comment.trim() && <Button size="sm" variant="outline" disabled={sendingComment} onClick={discardCommentDraft}>{t('discardDraft')}: {t('comments')}</Button>}<Button type="submit" size="sm" variant="primary" disabled={!canWrite || !comment.trim() || sendingComment}>{sendingComment ? <Spinner /> : <Send size={14} />}{t('addComment')}</Button></div></div>
           </form>
           <div className="activity-new-events-slot" data-testid="activity-new-events-slot">
             {bufferedActivity.length > 0 && <div className="activity-new-events-banner" role="status" data-testid="activity-new-events">
@@ -779,7 +925,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
                 <div className="activity-body">
                   <div className="activity-heading" data-unread-event-heading={journal.id}><strong>{journalUser.name}</strong><time>{new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(journal.createdOn))}</time></div>
                   {hasNote && (isEditing ? <form ref={journalEditFormRef} className="journal-editor" data-unread-event-content={`${journal.id}:comment`} data-testid={`journal-editor-${journal.id}`} data-workspace-save onSubmit={(event) => { void saveJournalEdit(event, journal); }}>
-                    <textarea ref={journalEditorTextareaRef} className="text-area journal-editor-area" aria-label={t('editComment')} data-testid={`journal-editor-textarea-${journal.id}`} value={journalEditDraft?.notes ?? ''} onChange={(event) => changeJournalEditText(event.target.value, journal.id)} />
+                    <RichEditor source={journalEditDraft?.notes ?? ''} format={detail.textFormat} onChange={(value) => changeJournalEditText(value, journal.id)} label={t('editComment')} testId={`journal-editor-textarea-${journal.id}`} people={mentionPeople} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} retryImageText={t('retry')} focusRequest={journalEditorFocusRequest} />
                     <DraftStorageStatus meaningful={Boolean(journalEditDraft && (journalEditDraft.notes !== journalEditDraft.expectedNotes || journalEditDraft.operationId))} durable={journalDraftDurable} />
                     {isEditConflict && <div className="journal-edit-conflict" role="alert" data-testid={`journal-edit-conflict-${journal.id}`}>
                       <p>{t('commentEditConflict')}</p>
@@ -787,6 +933,7 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
                       <div className="journal-conflict-actions">
                         <Button size="sm" variant="outline" type="button" data-testid={`journal-keep-draft-${journal.id}`} onClick={() => resolveJournalConflict(journal, true)}>{t('continueWithDraft')}</Button>
                         <Button size="sm" type="button" data-testid={`journal-use-latest-${journal.id}`} onClick={() => resolveJournalConflict(journal, false)}>{t('useLatest')}</Button>
+                        <Button size="sm" variant="outline" type="button" data-testid={`journal-discard-draft-${journal.id}`} disabled={savingJournalEdit} onClick={() => cancelJournalEdit(journal.id)}>{t('discardDraft')}</Button>
                       </div>
                     </div>}
                     {journalEditError && <div className="journal-edit-error" role="alert">{journalEditError}</div>}
@@ -794,16 +941,16 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
                       <Button size="sm" type="button" data-testid={`journal-cancel-${journal.id}`} disabled={savingJournalEdit} onClick={() => cancelJournalEdit(journal.id)}>{t('cancelCommentEdit')}</Button>
                       <Button size="sm" variant="primary" type="submit" data-testid={`journal-save-${journal.id}`} disabled={!canWrite || savingJournalEdit || isEditConflict || !journalEditDraft?.notes.trim() || journalEditDraft.notes === journalEditDraft.expectedNotes}>{savingJournalEdit ? <Spinner /> : <Save size={14} />}{t('saveCommentEdit')}</Button>
                     </div></div>
-                  </form> : <div data-unread-event-content={`${journal.id}:comment`}><RichContent className="activity-rich-content" source={journal.notes} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} /></div>)}
-                  {!!changes.length && <ul>{changes.map((change, index) => { const kind = activityKindForField(change.field); const display = localizeJournalChange(change, changeLookups, t); return <li key={`${journal.id}-${index}`} data-activity-kind={kind} data-unread-event-content={`${journal.id}:${kind}`}><strong>{display.field}</strong><span>{display.oldValue}</span><span className="change-arrow">→</span><span>{display.newValue}</span></li>; })}</ul>}
+                  </form> : <div data-unread-event-content={`${journal.id}:comment`}><RichContent className="activity-rich-content" source={journal.notes} format={detail.textFormat} issueId={issue.id} attachments={issue.attachments} redmineUrl={redmineUrl} imageUnavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} retryImageText={t('retry')} /></div>)}
+                  {!!changes.length && <ul className="journal-field-changes">{changes.map((change, index) => { const kind = activityKindForField(change.field); const display = localizeJournalChange(change, changeLookups, t); return <li key={`${journal.id}-${index}`} data-activity-kind={kind} data-unread-event-content={`${journal.id}:${kind}`}><strong>{display.field}</strong><span>{display.oldValue}</span><span className="change-arrow">→</span><span>{display.newValue}</span></li>; })}</ul>}
                   {hasNote && <div className="journal-actions" role="group" aria-label={t('commentActions')}>
                     <button type="button" className="journal-action-button" data-testid={`journal-quote-${journal.id}`} aria-label={t('quoteComment')} title={t('quoteComment')} onClick={() => quoteJournal(journal)}><Quote size={13} /><span>{t('quoteComment')}</span></button>
                     <button type="button" className="journal-action-button" data-testid={`journal-permalink-${journal.id}`} aria-label={t('copyCommentLink')} title={t('copyCommentLink')} onClick={() => { void copyJournalPermalink(journal.id); }}><Link size={13} /><span>{t('commentLinkLabel')}</span></button>
-                    <button ref={(element) => { if (element) journalEditButtonRefs.current.set(journal.id, element); else journalEditButtonRefs.current.delete(journal.id); }} type="button" className="journal-action-button" data-testid={`journal-edit-${journal.id}`} aria-label={t('editComment')} title={editAllowed ? t('editComment') : canWrite ? t('commentEditUnavailable') : t('saveBlocked')} disabled={!editAllowed || savingJournalEdit || (editingJournalId !== undefined && editingJournalId !== journal.id)} onClick={() => beginJournalEdit(journal)}>{isEditing ? <Check size={13} /> : <Pencil size={13} />}<span>{isEditing ? t('editingComment') : t('edit')}</span></button>
-                    <button type="button" className="journal-action-button journal-action-danger" data-testid={`journal-delete-${journal.id}`} aria-label={t('deleteComment')} title={deleteAllowed ? t('deleteComment') : canWrite ? t('commentDeleteUnavailable') : t('saveBlocked')} disabled={!deleteAllowed || deletingJournal || savingJournalEdit} onClick={() => openJournalDelete(journal)}><Trash2 size={13} /><span>{t('deleteComment')}</span></button>
-                    <button type="button" className="journal-action-button" data-testid={`journal-like-${journal.id}`} aria-label={likeSupported ? `${journal.likedByMe ? t('unlikeComment') : t('likeComment')} (${journal.likes ?? 0})` : t('likesUnavailable')} title={likeSupported ? canWrite ? t('likeComment') : t('saveBlocked') : t('likesUnavailable')} aria-pressed={Boolean(journal.likedByMe)} disabled={!likeSupported || !canWrite || likingJournalIds.has(journal.id)} onClick={() => { void toggleJournalLike(journal); }}>
+                    {journal.canEdit === true && <button ref={(element) => { if (element) journalEditButtonRefs.current.set(journal.id, element); else journalEditButtonRefs.current.delete(journal.id); }} type="button" className="journal-action-button" data-testid={`journal-edit-${journal.id}`} aria-label={t('editComment')} title={editAllowed ? t('editComment') : canWrite ? t('commentEditUnavailable') : t('saveBlocked')} disabled={!editAllowed || savingJournalEdit || (editingJournalId !== undefined && editingJournalId !== journal.id)} onClick={() => beginJournalEdit(journal)}>{isEditing ? <Check size={13} /> : <Pencil size={13} />}<span>{isEditing ? t('editingComment') : t('edit')}</span></button>}
+                    {journal.canDelete === true && <button type="button" className="journal-action-button journal-action-danger" data-testid={`journal-delete-${journal.id}`} aria-label={t('deleteComment')} title={deleteAllowed ? t('deleteComment') : canWrite ? t('commentDeleteUnavailable') : t('saveBlocked')} disabled={!deleteAllowed || deletingJournal || savingJournalEdit} onClick={() => openJournalDelete(journal)}><Trash2 size={13} /><span>{t('deleteComment')}</span></button>}
+                    {likeSupported && <button type="button" className="journal-action-button" data-testid={`journal-like-${journal.id}`} aria-label={likeSupported ? `${journal.likedByMe ? t('unlikeComment') : t('likeComment')} (${journal.likes ?? 0})` : t('likesUnavailable')} title={likeSupported ? canWrite ? t('likeComment') : t('saveBlocked') : t('likesUnavailable')} aria-pressed={Boolean(journal.likedByMe)} disabled={!likeSupported || !canWrite || likingJournalIds.has(journal.id)} onClick={() => { void toggleJournalLike(journal); }}>
                       <Heart size={13} fill={journal.likedByMe ? 'currentColor' : 'none'} /><span>{likeSupported ? journal.likedByMe ? t('unlikeComment') : t('likeComment') : t('likesUnavailableShort')}</span>{journal.likes !== undefined && <span className="journal-like-count">{journal.likes}</span>}
-                    </button>
+                    </button>}
                     {journalLikeErrors[journal.id] && <span className="journal-like-error" role="alert">{journalLikeErrors[journal.id]}</span>}
                   </div>}
                 </div>
@@ -813,12 +960,12 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
         </div>
         <aside className="issue-side-fields">
           <div className="side-section"><div className="section-title"><Users size={15} /><h3>{t('details')}</h3></div>
-            <Field label={t('status')}><Picker className="issue-property-picker" options={statusOptions} label={t('status')} value={String(autoDraft.statusId)} onChange={(value) => saveAutoField('statusId', Number(value))} disabled={!canWrite} />{progress('statusId')}</Field>
+            <Field label={t('status')}><Picker className="issue-property-picker" options={statusOptions} label={t('status')} value={String(autoDraft.statusId)} onChange={(value) => saveAutoField('statusId', Number(value))} disabled={!canWrite || !statusChoicesVerified || !issue.allowedStatusIds?.some((id) => id !== issue.statusId)} />{!statusChoicesVerified && <span className="field-helper">{t('cannotMoveIssueStatus')}</span>}{progress('statusId')}</Field>
             <Field label={t('priorityField')} className="issue-choice-field"><ChoiceTiles className="issue-priority-tiles" kind="priority" options={priorityOptions} label={t('priorityField')} value={String(autoDraft.priorityId)} onChange={(value) => saveAutoField('priorityId', Number(value))} disabled={!canWrite} />{progress('priorityId')}</Field>
             {trackerOptions.length > 0 && <Field label={t('tracker')} className="issue-choice-field"><ChoiceTiles className="issue-tracker-tiles" kind="tracker" options={trackerOptions} label={t('tracker')} value={String(autoDraft.trackerId)} onChange={(value) => saveAutoField('trackerId', Number(value))} disabled={!canWrite} />{progress('trackerId')}</Field>}
             <Field label={t('assignee')} className="issue-assignee-field"><div className="assignee-avatar-row" role="group" aria-label={t('assignee')}>
-              {assigneeCandidates.map((person) => <button key={person.id} type="button" className={`assignee-avatar-option${autoDraft.assignedToId === person.id ? ' is-selected' : ''}`} aria-label={person.name} title={person.name} data-person-id={person.id} aria-pressed={autoDraft.assignedToId === person.id} disabled={!canWrite} onClick={() => saveAutoField('assignedToId', person.id)}><Avatar person={person} size="sm" /></button>)}
-              <PeoplePicker compact className="assignee-avatar-picker" members={board.members} value={autoDraft.assignedToId} onChange={(value) => saveAutoField('assignedToId', value)} label={t('assignee')} placeholder={t('noAssignee')} recommendations={board.peopleRecommendations?.assignee} disabled={!canWrite} />
+              {assigneeCandidates.map((person) => <button key={person.id} type="button" className={`assignee-avatar-option${assigneeSelection?.type === 'user' && assigneeSelection.id === person.id ? ' is-selected' : ''}`} aria-label={person.name} title={person.name} data-person-id={person.id} aria-pressed={assigneeSelection?.type === 'user' && assigneeSelection.id === person.id} disabled={!canWrite} onClick={() => saveAssignee({ type: 'user', id: person.id })}><Avatar person={person} size="sm" /></button>)}
+              <AssigneePicker groupAvatarOverrides={groupAvatarOverrides} compact className="assignee-avatar-picker" options={assigneeOptions} members={board.members} value={assigneeSelection} currentOption={assigneeCurrentOption} onChange={saveAssignee} label={t('assignee')} placeholder={t('noAssignee')} recommendations={board.peopleRecommendations?.assignee} disabled={!canWrite} />
             </div>{progress('assignedToId')}</Field>
             <Field label={t('release')}><Picker className="issue-property-picker" options={versionOptions} value={autoDraft.fixedVersionId === undefined ? undefined : String(autoDraft.fixedVersionId)} onChange={(value) => saveAutoField('fixedVersionId', value ? Number(value) : undefined)} label={t('release')} placeholder={t('noRelease')} clearable disabled={!canWrite} />{progress('fixedVersionId')}</Field>
             <Field label={t('labels')}><LabelsTiles options={labelOptions} values={autoDraft.labels} onChange={(values) => saveAutoField('labels', values)} label={t('labels')} disabled={!canWrite} />{progress('labels')}</Field>
@@ -830,10 +977,10 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
             <div className="role-helper">{developer ? <span><Avatar person={developer} size="xs" />{developer.name}</span> : <span>{t('unknown')}</span>}{qa && <span><Avatar person={qa} size="xs" />{qa.name}</span>}</div>
           </div>
           <div className="side-section people-section"><div className="section-title"><Users size={15} /><h3>{t('author')}</h3></div><div className="person-row"><Avatar person={author} size="sm" /><span>{author?.name || t('unknown')}</span></div>
-            <div className="section-title mini-section-title"><h3>{t('assignee')}</h3></div><div className="person-row"><Avatar person={assignee} size="sm" /><span>{assignee?.name || t('noAssignee')}</span></div>
+            <div className="section-title mini-section-title"><h3>{t('assignee')}</h3></div>{assigneeSelection?.type === 'group' ? <div className="person-row"><GroupAvatar group={{ type: 'group', id: assigneeSelection.id, name: assigneeCurrentOption?.name || t('unknown') }} override={groupAvatarOverrides?.[String(assigneeSelection.id)]} size="sm" /><span>{assigneeCurrentOption?.name || t('noAssignee')}</span></div> : <div className="person-row"><Avatar person={assignee} size="sm" /><span>{assignee?.name || t('noAssignee')}</span></div>}
             <div className="section-title mini-section-title"><h3>{t('watchers')}</h3><span>{issueWatchers.length}</span></div><div className="watcher-list">{issueWatchers.slice(0, 8).map((person) => <Avatar key={person.id} person={person} size="xs" />)}{issueWatchers.length > 8 && <span className="watcher-extra">+{issueWatchers.length - 8}</span>}</div>
           </div>
-          <div className="side-section"><div className="section-title"><Paperclip size={15} /><h3>{t('attachments')}</h3><span>{issue.attachments.length}</span></div>{issue.attachments.length === 0 ? <div className="muted-copy">—</div> : <ul className="attachment-list">{issue.attachments.map((attachment) => { const href = isPreviewableImage(attachment) ? attachmentContentPath(issue.id, attachment.id) : safeAttachmentUrl(attachment.url, redmineUrl); return <li key={attachment.id}>{isPreviewableImage(attachment) && <AttachmentPreview attachment={attachment} issueId={issue.id} unavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} />}{href ? <a href={href} target="_blank" rel="noreferrer"><FileText size={14} /><span>{attachment.filename}</span><ArrowUpRight size={12} /></a> : <span className="attachment-unavailable"><FileText size={14} /><span>{attachment.filename}</span></span>}<small>{formatBytes(attachment.size)}</small></li>; })}</ul>}</div>
+          <div className="side-section"><div className="section-title"><Paperclip size={15} /><h3>{t('attachments')}</h3><span>{issue.attachments.length}</span></div>{issue.attachments.length === 0 ? <div className="muted-copy">—</div> : <ul className="attachment-list">{issue.attachments.map((attachment) => { const href = isPreviewableImage(attachment) ? attachmentContentPath(issue.id, attachment.id) : safeAttachmentUrl(attachment.url, redmineUrl); return <li key={attachment.id}>{isPreviewableImage(attachment) && <AttachmentPreview attachment={attachment} issueId={issue.id} unavailableText={t('imageUnavailable')} openOriginalText={t('openImageOriginal')} retryText={t('retry')} />}{href ? <a href={href} target="_blank" rel="noreferrer"><FileText size={14} /><span>{attachment.filename}</span><ArrowUpRight size={12} /></a> : <span className="attachment-unavailable"><FileText size={14} /><span>{attachment.filename}</span></span>}<small>{formatBytes(attachment.size)}</small></li>; })}</ul>}</div>
           <div className="issue-dates"><span><CalendarDays size={13} />{new Intl.DateTimeFormat(i18n.language).format(new Date(issue.createdOn))}</span><span><Clock3 size={13} />{new Intl.DateTimeFormat(i18n.language).format(new Date(issue.updatedOn))}</span></div>
         </aside>
       </div>
@@ -848,8 +995,9 @@ export function IssueDialog({ detail, board, statuses, priorities, redmineUrl, d
   </Modal>;
 }
 
-export function CreateIssueDialog({ project, board, statuses, priorities, canWrite, readOnlyMode, draftScope, defaults, onClose, onCreate }: {
-  project: Project; board: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; readOnlyMode: boolean; draftScope: string; onClose: () => void; onCreate: (command: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; trackerName?: string; assignedToId?: number; fixedVersionId?: number }, operationId?: string) => Promise<void>;
+export function CreateIssueDialog({ project, board, statuses, priorities, canWrite, readOnlyMode, draftScope, defaults, textFormat, groupAvatarOverrides, onClose, onCreate }: {
+  groupAvatarOverrides?: Record<string, GroupAvatarOverride>;
+  project: Project; board: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; readOnlyMode: boolean; draftScope: string; textFormat?: string; onClose: () => void; onCreate: (command: { subject: string; description: string; statusId?: number; priorityId?: number; trackerId?: number; trackerName?: string; assignedToType?: 'user' | 'group'; assignedToId?: number; fixedVersionId?: number }, operationId?: string) => Promise<void>;
   defaults?: { statusId?: number; fixedVersionId?: number | null };
 }) {
   const { t } = useTranslation();
@@ -891,15 +1039,20 @@ export function CreateIssueDialog({ project, board, statuses, priorities, canWri
   const trackers = board.trackers ?? [...new Map(board.issues.map(issue => [issue.trackerId, { id: issue.trackerId, name: issue.trackerName }])).values()];
   const [trackerId, setTrackerId] = useState<number | undefined>(typeof legacyDraft.trackerId === 'number' ? legacyDraft.trackerId : trackers[0]?.id);
   const [assignedToId, setAssignedToId] = useState<number | undefined>(typeof legacyDraft.assignedToId === 'number' ? legacyDraft.assignedToId : undefined);
+  const [assignedToType, setAssignedToType] = useState<'user' | 'group' | undefined>(typeof legacyDraft.assignedToId === 'number' ? legacyDraft.assignedToType === 'group' ? 'group' : 'user' : undefined);
   const [fixedVersionId, setFixedVersionId] = useState<number | undefined>(defaults?.fixedVersionId !== undefined
     ? defaults.fixedVersionId ?? undefined : typeof legacyDraft.fixedVersionId === 'number' ? legacyDraft.fixedVersionId : undefined);
-  const propertiesRef = useRef({ statusId, priorityId, trackerId, assignedToId, fixedVersionId });
-  propertiesRef.current = { statusId, priorityId, trackerId, assignedToId, fixedVersionId };
+  const propertiesRef = useRef({ statusId, priorityId, trackerId, assignedToId, assignedToType, fixedVersionId });
+  propertiesRef.current = { statusId, priorityId, trackerId, assignedToId, assignedToType, fixedVersionId };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const formRef = useWorkspaceFormSave<HTMLFormElement>();
   const activeVersions = board.versions.filter((version) => version.status !== 'closed');
-  const assigneeCandidates = useMemo(() => suggestedAssignees(board.members, assignedToId, board.peopleRecommendations?.assignee), [board.members, board.peopleRecommendations?.assignee, assignedToId]);
+  const assigneeCandidates = useMemo(() => suggestedAssignees(board.members, assignedToType === 'user' ? assignedToId : undefined, board.peopleRecommendations?.assignee), [board.members, board.peopleRecommendations?.assignee, assignedToId, assignedToType]);
+  const createAssigneeSelection = assignedToId === undefined || assignedToType === undefined ? undefined : { type: assignedToType, id: assignedToId } as AssigneeSelection;
+  const createCurrentAssigneeOption: AssigneeOption | undefined = createAssigneeSelection ? board.assigneeOptions?.find((option) => option.type === createAssigneeSelection.type && option.id === createAssigneeSelection.id)
+    || (createAssigneeSelection.type === 'group' ? { type: 'group', id: createAssigneeSelection.id, name: `#${createAssigneeSelection.id}` }
+      : { type: 'user', id: createAssigneeSelection.id, name: personFrom(board.members, createAssigneeSelection.id)?.name || `#${createAssigneeSelection.id}` }) : undefined;
   const issueDraftDurable = (!subject.trim() || draftDurability.subject || (legacyBackup.durable && legacyBackup.text.subject === subject))
     && (!description.trim() || draftDurability.description || (legacyBackup.durable && legacyBackup.text.description === description));
   useEffect(() => {
@@ -922,7 +1075,7 @@ export function CreateIssueDialog({ project, board, statuses, priorities, canWri
     };
     const nextLegacy = { ...properties, ...(backupText.subject ? { subject: backupText.subject } : {}), ...(backupText.description ? { description: backupText.description } : {}) };
     setLegacyBackup({ durable: writeDraftStorage(legacyDraftKey, JSON.stringify(nextLegacy)), text: backupText });
-  }, [statusId, priorityId, trackerId, assignedToId, fixedVersionId, subject, description, draftDurability, legacyDraftKey]);
+  }, [statusId, priorityId, trackerId, assignedToId, assignedToType, fixedVersionId, subject, description, draftDurability, legacyDraftKey]);
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!subject.trim() || !canWrite || busy) return;
@@ -930,10 +1083,10 @@ export function CreateIssueDialog({ project, board, statuses, priorities, canWri
     const operationId = crypto.randomUUID();
     const submittedSubject = subject;
     const submittedDescription = description;
-    const submittedProperties = JSON.stringify({ statusId, priorityId, trackerId, assignedToId, fixedVersionId });
+    const submittedProperties = JSON.stringify({ statusId, priorityId, trackerId, assignedToId, assignedToType, fixedVersionId });
     try {
-      await onCreate({ subject: subject.trim(), description, statusId: statusId || undefined, priorityId: priorityId || undefined, trackerId, trackerName: trackers.find((tracker) => tracker.id === trackerId)?.name, assignedToId, fixedVersionId }, operationId);
-      if (assignedToId !== undefined) {
+      await onCreate({ subject: subject.trim(), description, statusId: statusId || undefined, priorityId: priorityId || undefined, trackerId, trackerName: trackers.find((tracker) => tracker.id === trackerId)?.name, assignedToType, assignedToId, fixedVersionId }, operationId);
+      if (assignedToId !== undefined && assignedToType === 'user') {
         try { await api.post('/api/people/selection', { projectId: project.id, personId: assignedToId, field: 'assignee', operationId }); } catch { /* Successful issue creation remains successful if local recommendation history is unavailable. */ }
       }
       const subjectDurable = subjectRef.current === submittedSubject
@@ -968,14 +1121,14 @@ export function CreateIssueDialog({ project, board, statuses, priorities, canWri
       {error && <Notice tone="error">{error}</Notice>}
       <DraftStorageStatus meaningful={Boolean(subject.trim() || description.trim())} durable={issueDraftDurable} />
       <Field label={t('issueTitle')}><input className="text-input input-title" autoFocus value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={t('issueTitlePlaceholder')} data-testid="issue-title" required /></Field>
-      <Field label={t('description')}><textarea className="text-area create-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t('noDescription')} data-testid="issue-description" /></Field>
+      <Field as="div" label={t('description')}><RichEditor source={description} format={textFormat} onChange={setDescription} label={t('description')} placeholder={t('noDescription')} testId="issue-description-editor" /></Field>
       <div className="create-issue-properties" aria-label={t('details')}>
         <Field label={t('status')} className="create-property-chip"><Picker className="create-property-picker" options={statusOptions} value={String(statusId)} onChange={(value) => setStatusId(Number(value))} label={t('status')} /></Field>
         <Field label={t('priorityField')} className="create-property-chip"><ChoiceTiles className="create-priority-tiles" kind="priority" options={priorityOptions} value={String(priorityId)} onChange={(value) => setPriorityId(Number(value))} label={t('priorityField')} /></Field>
         {trackerOptions.length > 0 && <Field label={t('tracker')} className="create-property-chip"><ChoiceTiles className="create-tracker-tiles" kind="tracker" options={trackerOptions} value={trackerId === undefined ? undefined : String(trackerId)} onChange={(value) => setTrackerId(value ? Number(value) : undefined)} label={t('tracker')} /></Field>}
         <Field label={t('assignee')} className="create-property-chip"><div className="assignee-avatar-row" role="group" aria-label={t('assignee')}>
-          {assigneeCandidates.map((person) => <button key={person.id} type="button" className={`assignee-avatar-option${assignedToId === person.id ? ' is-selected' : ''}`} aria-label={person.name} title={person.name} data-person-id={person.id} aria-pressed={assignedToId === person.id} onClick={() => setAssignedToId(person.id)}><Avatar person={person} size="sm" /></button>)}
-          <PeoplePicker compact className="assignee-avatar-picker" members={board.members} value={assignedToId} onChange={setAssignedToId} label={t('assignee')} placeholder={t('noAssignee')} recommendations={board.peopleRecommendations?.assignee} />
+          {assigneeCandidates.map((person) => <button key={person.id} type="button" className={`assignee-avatar-option${assignedToType === 'user' && assignedToId === person.id ? ' is-selected' : ''}`} aria-label={person.name} title={person.name} data-person-id={person.id} aria-pressed={assignedToType === 'user' && assignedToId === person.id} onClick={() => { setAssignedToId(person.id); setAssignedToType('user'); }}><Avatar person={person} size="sm" /></button>)}
+          <AssigneePicker groupAvatarOverrides={groupAvatarOverrides} compact className="assignee-avatar-picker" options={board.assigneeOptions} members={board.members} value={createAssigneeSelection} currentOption={createCurrentAssigneeOption} onChange={(value) => { setAssignedToId(value?.id); setAssignedToType(value?.type); }} label={t('assignee')} placeholder={t('noAssignee')} recommendations={board.peopleRecommendations?.assignee} />
         </div></Field>
         <Field label={t('release')} className="create-property-chip"><Picker className="create-property-picker" options={versionOptions} value={fixedVersionId === undefined ? undefined : String(fixedVersionId)} onChange={(value) => setFixedVersionId(value ? Number(value) : undefined)} label={t('release')} placeholder={t('noRelease')} clearable /></Field>
       </div>

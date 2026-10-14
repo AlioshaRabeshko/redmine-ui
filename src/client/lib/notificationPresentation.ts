@@ -9,6 +9,7 @@ export interface NotificationPresentation {
 
 /** Render structured source details through the same lookup and localization path as issue Activity. */
 export function presentNotification(notification: Notification, translate: (key: string) => string): NotificationPresentation {
+  if (notification.kind === 'issue_created') return { notes: translate('notificationIssueCreated'), changes: [] };
   const notes = (notification.notes ?? (notification.kind.toLocaleLowerCase().includes('comment') ? notification.text : '')).trim();
   const rawChanges = notification.changes ?? [];
   const lookups: ChangeLookups = {

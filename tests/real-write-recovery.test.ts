@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import type { Issue, Version } from '../src/shared/types.js';
 import { createConfig } from '../src/server/config.js';
@@ -38,7 +38,8 @@ describe('real Redmine command recovery with mocked adapter and SQLite', () => {
 
   function harness(issueIds: number[] = demoIssues.map(issue => issue.id)): AdapterHarness {
     const issues = new Map<number, Issue>(demoIssues.filter(issue => issueIds.includes(issue.id)).map(issue => [issue.id, {
-      ...structuredClone(issue), allowedStatusIds: demoStatuses.map(status => status.id),
+      ...structuredClone(issue), primaryAssigneeId: issue.developerId, primaryAssigneeFieldId: 70,
+      allowedStatusIds: demoStatuses.map(status => status.id),
     }]));
     const versions = new Map<number, Version>(demoVersions.map(version => [version.id, structuredClone(version)]));
     const updateCalls: Record<string, unknown>[] = [];
@@ -65,7 +66,7 @@ describe('real Redmine command recovery with mocked adapter and SQLite', () => {
           ...(typeof fields.assigned_to_id === 'number' ? { assignedToId: fields.assigned_to_id } : {}),
           ...(typeof fields.fixed_version_id === 'number' ? { fixedVersionId: fields.fixed_version_id } : {}),
           branch: '', labels: [], watcherIds: [], createdOn: new Date().toISOString(), updatedOn: new Date().toISOString(),
-          attachments: [], allowedStatusIds: demoStatuses.map(status => status.id),
+          attachments: [], primaryAssigneeFieldId: 70, allowedStatusIds: demoStatuses.map(status => status.id),
         };
         issues.set(id, issue);
         return structuredClone(issue);
@@ -85,6 +86,10 @@ describe('real Redmine command recovery with mocked adapter and SQLite', () => {
         if (Array.isArray(fields.custom_fields)) {
           for (const field of fields.custom_fields as { id: number; value: unknown }[]) {
             if (field.id === 50) issue.branch = String(field.value);
+            if (field.id === 70) {
+              issue.primaryAssigneeId = Number(field.value) || undefined;
+              issue.developerId = issue.primaryAssigneeId;
+            }
           }
         }
         issue.updatedOn = new Date().toISOString();
@@ -99,7 +104,7 @@ describe('real Redmine command recovery with mocked adapter and SQLite', () => {
         if (typeof fields.status === 'string') version.status = fields.status as Version['status'];
       },
       versionDetail: async (versionId: number) => structuredClone(versions.get(versionId)!),
-      writeFieldMetadata: async () => ({ branchFieldId: 50, labelFieldIds: [], labelOptions: [] }),
+      writeFieldMetadata: async () => ({ branchFieldId: 50, primaryAssigneeFieldId: 70, sampleIssueId: 1001, labelFieldIds: [], labelOptions: [] }),
     } as unknown as RedmineAdapter;
     state.adapter = adapter;
     return state;
@@ -150,6 +155,23 @@ describe('real Redmine command recovery with mocked adapter and SQLite', () => {
     expect(fake.updateCalls.filter(fields => typeof fields.notes === 'string')).toEqual([{ notes: 'One comment' }]);
   });
 
+  it('blocks unverified journal edit/delete and unsupported likes before any Redmine request', async () => {
+    const fake = harness([1001]);
+    const issueDetail = vi.fn(fake.adapter.issueDetail);
+    fake.adapter.issueDetail = issueDetail;
+    await store.setValue('capabilities', { journalEditing: false, journalDeleting: false, journalLikes: false });
+    const commands = service(fake.adapter);
+    const edit = { journalId: 9002, expectedNotes: 'Original note', notes: 'Edited note' };
+    const editResult = await commands.execute({ type: 'editJournal', issueId: 1001, input: edit });
+    expect(editResult.operation).toMatchObject({ status: 'failed', errorCode: 'JOURNAL_EDIT_UNSUPPORTED' });
+    const deleteResult = await commands.execute({ type: 'deleteJournal', issueId: 1001, input: { journalId: 9002, expectedNotes: 'Original note' } });
+    expect(deleteResult.operation).toMatchObject({ status: 'failed', errorCode: 'JOURNAL_DELETE_UNSUPPORTED' });
+    const likeResult = await commands.execute({ type: 'setJournalLike', issueId: 1001, input: { journalId: 9002, liked: true } });
+    expect(likeResult.operation).toMatchObject({ status: 'failed', errorCode: 'UNSUPPORTED_CAPABILITY' });
+    expect(issueDetail).not.toHaveBeenCalled();
+    expect(fake.updateCalls).toEqual([]);
+  });
+
   it('retries a created issue from its persisted returned ID after a follow-up branch failure', async () => {
     const fake = harness([]);
     let rejectBranchOnce = true;
@@ -173,11 +195,11 @@ describe('real Redmine command recovery with mocked adapter and SQLite', () => {
     fake.failUpdate = undefined;
     const resumed = await commands.execute({ type: 'createIssue', operationId: command.operationId, issueId: 9001, input: {} });
     expect(resumed.operation.status).toBe('done');
-    expect(resumed.issue).toMatchObject({ id: 9001, branch: 'example-branch' });
+    expect(resumed.issue).toMatchObject({ id: 9001, branch: '9001-persist-returned-issue-id' });
     expect(fake.createIssueCalls).toHaveLength(1);
     expect(fake.updateCalls).toEqual([
-      { custom_fields: [{ id: 50, value: 'example-branch' }] },
-      { custom_fields: [{ id: 50, value: 'example-branch' }] },
+      { custom_fields: [{ id: 50, value: '9001-persist-returned-issue-id' }] },
+      { custom_fields: [{ id: 50, value: '9001-persist-returned-issue-id' }] },
     ]);
   });
 });

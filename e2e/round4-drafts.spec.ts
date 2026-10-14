@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page, type Route } from '@playwright/test';
 import type { Bootstrap, CommandResult, Issue, IssueDetail } from '../src/shared/types.js';
+import { editDescriptionSource } from './helpers/rich-editor.js';
 
 async function bootstrap(request: APIRequestContext): Promise<Bootstrap> {
   await request.patch('/api/settings', { data: { locale: 'uk', theme: 'light' } });
@@ -26,7 +27,7 @@ test('an issue refresh during a held text-save response preserves newer unsaved 
   await card.click();
   const dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  const textarea = dialog.locator('.description-area');
+  const textarea = await editDescriptionSource(page);
   await textarea.fill('Submitted description');
 
   let releaseCommandResponse!: () => void;
@@ -64,11 +65,11 @@ test('an issue refresh during a held text-save response preserves newer unsaved 
   releaseCommandResponse();
   await expect(dialog.locator('.text-save-row')).toBeVisible();
   await expect(textarea).toHaveValue('Newer description typed during save');
-  await expect(dialog.locator('.text-save-row button')).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: 'Зберегти зміни', exact: true })).toBeEnabled();
   expect((await (await request.get(`/api/issues/${issue.id}`)).json() as IssueDetail).issue.description).toBe('Submitted description');
 
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await card.click();
-  await expect(dialog.locator('.description-area')).toHaveValue('Newer description typed during save');
+  await expect(await editDescriptionSource(page)).toHaveValue('Newer description typed during save');
 });

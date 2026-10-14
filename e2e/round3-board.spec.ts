@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import type { BoardData, Bootstrap, CommandResult, Issue, IssueDetail, Journal, Notification } from '../src/shared/types.js';
+import { sourceEditor } from './helpers/rich-editor.js';
 
 async function createIssue(request: APIRequestContext, bootstrap: Bootstrap, subject: string): Promise<Issue> {
   const response = await request.post('/api/commands', { data: {
@@ -104,7 +105,7 @@ test('unread badges, combined board filters, saved filters, exact reads and remo
   await expect(page.getByTestId('board')).toBeFocused();
 });
 
-test('notification stays unread when issue details load but the board needed for its dialog fails', async ({ page, request }) => {
+test('a targeted unread event opens from fresh issue details when the board refresh fails', async ({ page, request }) => {
   const bootstrap = await (await request.get('/api/bootstrap')).json() as Bootstrap;
   const project = bootstrap.projects[0]!;
   const issue = await createIssue(request, bootstrap, `Round three board failure ${Date.now()}`);
@@ -140,11 +141,15 @@ test('notification stays unread when issue details load but the board needed for
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect.poll(() => boardFailures).toBeGreaterThan(0);
   await expect(page.getByTestId(`issue-unread-badge-${issue.id}`)).toBeVisible();
+  expect(readCalls).toEqual([]);
 
   await page.getByTestId(`issue-unread-badge-${issue.id}`).click();
-  await expect(page.locator('.center-loading')).toBeVisible();
-  await expect(page.getByTestId('issue-dialog')).toHaveCount(0);
-  await expect.poll(() => readCalls.length).toBe(0);
+  const dialog = page.getByTestId('issue-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(`#journal-${journalId}`)).toBeVisible();
+  await expect(page.locator('.page-error')).toBeVisible();
+  await expect.poll(() => readCalls.length).toBe(1);
+  expect(readCalls).toEqual([[notification.id]]);
   expect(new URL(page.url()).searchParams.get('issue')).toBe(String(issue.id));
 });
 
@@ -189,7 +194,7 @@ test('active issue polling buffers incoming activity without disturbing the comm
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  const comment = dialog.getByTestId('comment-composer');
+  const comment = await sourceEditor(page, 'comment-composer');
   const draft = 'Keep this unsent comment while new Activity arrives';
   await comment.fill(draft);
   const issueScroll = dialog.locator('.issue-dialog-scroll');

@@ -41,10 +41,12 @@ describe('board and release rules', () => {
     expect(todo.issues.map(i => i.id)).toEqual([1, 3, 2, 4]);
   });
   it('does not lose unfinished work with closed, missing or foreign versions/statuses', () => {
-    expect(issueColumnId(issue({ fixedVersionId: 2 }), versions)).toBe('status:1');
-    expect(issueColumnId(issue({ fixedVersionId: 3 }), versions)).toBe('status:1');
-    const columns = groupBoard([issue({ statusId: 99 })], statuses, versions);
-    expect(columns.flatMap(c => c.issues)).toHaveLength(1);
+    expect(issueColumnId(issue({ fixedVersionId: 2 }), versions, statuses)).toBe('status:1');
+    expect(issueColumnId(issue({ fixedVersionId: 3 }), versions, statuses)).toBe('status:1');
+    const columns = groupBoard([issue({ statusId: 99 }), issue({ id: 2, statusId: 100 })], statuses, versions);
+    expect(columns.flatMap(c => c.issues)).toHaveLength(2);
+    expect(columns.find(c => c.id === 'status:unknown')?.issues.map(item => item.id)).toEqual([1, 2]);
+    expect(columns.filter(c => c.id === 'status:unknown')).toHaveLength(1);
     expect(columns.some(c => c.id === 'version:2')).toBe(false);
   });
   it('keeps Deploy visible when it is marked closed, hides finished/backlog by default', () => {
@@ -66,6 +68,13 @@ describe('board and release rules', () => {
     const tasks = [issue({ id: 1, labels: ['frontend'] }), issue({ id: 2, labels: ['support'] }), issue({ id: 3, labels: ['docs'] })];
     expect(filterIssues(tasks, statuses, 'all', 1, { labels: ['frontend', 'support'] }).map(i => i.id)).toEqual([1, 2]);
     expect(filterIssues(tasks, statuses, 'all', 1, { label: 'docs' }).map(i => i.id)).toEqual([3]);
+  });
+  it('does not match a group assignment as a same-numbered user filter', () => {
+    const tasks = [
+      issue({ id: 1, assignedToId: 7, assignedToType: 'group', assignedToName: 'Backend' }),
+      issue({ id: 2, assignedToId: 7, assignedToType: 'user', assignedToName: 'A user' }),
+    ];
+    expect(filterIssues(tasks, statuses, 'all', 1, { assigneeId: 7 }).map(item => item.id)).toEqual([2]);
   });
   it('filters by the shared unread issue index without disturbing other filters', () => {
     const tasks = [issue({ id: 1 }), issue({ id: 2, assignedToId: 7 }), issue({ id: 3, assignedToId: 7 })];

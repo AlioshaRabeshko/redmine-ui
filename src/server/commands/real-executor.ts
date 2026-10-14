@@ -7,10 +7,17 @@ import type { RedmineAdapter } from '../redmine/adapter.js';
 import { RedmineRequestError } from '../redmine/transport.js';
 import { ApiFault } from './service.js';
 
-type WriteMetadata = { branchFieldId?: number; labelFieldIds: number[]; labelOptions: LabelOption[] };
-type AdapterWithWriteMetadata = RedmineAdapter & { writeFieldMetadata?: (projectId: number) => Promise<WriteMetadata> };
+type WriteMetadata = { branchFieldId?: number; primaryAssigneeFieldId?: number; sampleIssueId?: number; labelFieldIds: number[]; labelOptions: LabelOption[] };
+type AdapterWithWriteMetadata = RedmineAdapter & { writeFieldMetadata?: (projectId: number, sampleIssueId?: number, trackerId?: number) => Promise<WriteMetadata> };
 type Detail = Awaited<ReturnType<RedmineAdapter['issueDetail']>>;
 const now = () => new Date().toISOString();
+function readOnlyFault(): ApiFault {
+  return new ApiFault(403, 'READ_ONLY', 'Запис у Redmine вимкнений. Для нього потрібно задати REDMINE_WRITE_ENABLED=true на backend.');
+}
+function isPendingRealAutomation(record: OperationRecord | undefined): record is OperationRecord {
+  return Boolean(record?.operation.type === 'runAutomation' && record.operation.status === 'pending'
+    && record.context?.realWrite === true && record.context.automationTrigger);
+}
 
 /** Executes commands against Redmine. Every write is preceded by a fresh read and checkpointed locally. */
 export class RealCommandExecutor {
@@ -20,6 +27,15 @@ export class RealCommandExecutor {
     private readonly events?: { publish(event: string, data?: unknown): void }) {}
 
   async execute(command: Command): Promise<CommandResult> {
+    // This executor is also called by background automation paths that bypass CommandService.
+    // Keep the write-mode guard here, before queuing or any remote read.
+    if (!this.config.writeEnabled) {
+      if (command.type === 'runAutomation' && command.operationId) {
+        const existing = await this.store.getOperationRecord(command.operationId);
+        if (isPendingRealAutomation(existing)) await this.blockReadOnlyAutomation(existing!);
+      }
+      throw readOnlyFault();
+    }
     const previous = this.queue;
     let release!: () => void;
     this.queue = new Promise<void>(resolve => { release = resolve; });
@@ -42,13 +58,14 @@ export class RealCommandExecutor {
         case 'handoffToQA': await this.handoffToQA(record, command); break;
         case 'returnToDeveloper': await this.returnToDeveloper(record, command); break;
         case 'comment': await this.comment(record, command); break;
+        case 'editJournal': await this.editJournal(record, command); break;
+        case 'deleteJournal': await this.deleteJournal(record, command); break;
+        case 'setJournalLike': throw new ApiFault(501, 'UNSUPPORTED_CAPABILITY', 'Лайки журналів не мають підтвердженого REST API Redmine.');
         case 'createRelease': await this.createRelease(record, command); break;
         case 'updateRelease': await this.updateRelease(record, command); break;
         case 'assignRelease': await this.assignRelease(record, command); break;
         case 'finishRelease': await this.finishRelease(record, command); break;
         case 'generateBranch': await this.generateBranch(record, command); break;
-        case 'editJournal': case 'deleteJournal': case 'setJournalLike':
-          throw new ApiFault(501, 'UNSUPPORTED_CAPABILITY', 'Ця дія журналу не підтримується перевіреним API Redmine.');
         default: throw new ApiFault(400, 'UNKNOWN_COMMAND', 'Невідома команда.');
       }
       return result(record);
@@ -72,16 +89,36 @@ export class RealCommandExecutor {
   }
 
   async processPendingAutomations(issueId?: number): Promise<void> {
+    const pending = (await this.store.getOperationRecords()).filter(record => isPendingRealAutomation(record)
+      && (issueId === undefined || record.operation.issueId === issueId));
+    if (!this.config.writeEnabled) {
+      // Persist the reason and remove these from the worker's pending queue. Enabling writes later
+      // must not replay automations that were observed while Redmine was read-only.
+      for (const record of pending) await this.blockReadOnlyAutomation(record);
+      return;
+    }
     const settings = await this.store.getSettings();
     if (!settings.automationEnabled) return;
-    const pending = (await this.store.getOperationRecords()).filter(record => record.operation.type === 'runAutomation'
-      && record.operation.status === 'pending' && record.context?.realWrite === true
-      && record.context?.automationTrigger && (issueId === undefined || record.operation.issueId === issueId));
     for (const pendingRecord of pending) {
       const original = pendingRecord.context?.originalCommand as Command | undefined;
       const command = original ?? { type: 'runAutomation' as const, issueId: pendingRecord.operation.issueId, input: {}, operationId: pendingRecord.operation.id };
       await this.execute(command).catch(() => undefined);
     }
+  }
+
+  private async blockReadOnlyAutomation(record: OperationRecord): Promise<void> {
+    const message = 'Автоматизацію заблоковано: на момент обробки запис у Redmine був вимкнений.';
+    record.operation.status = 'blocked';
+    record.operation.error = message;
+    record.operation.errorCode = 'READ_ONLY';
+    record.operation.steps = record.operation.steps.map(step => step.status === 'pending'
+      ? { ...step, status: 'blocked', error: message } : step);
+    if (!record.operation.steps.some(step => step.status === 'blocked')) {
+      record.operation.steps.push({ name: 'Виконати автоматизацію в Redmine', status: 'blocked', error: message });
+    }
+    record.context = { ...(record.context ?? {}), readOnlyBlocked: true };
+    await this.store.saveOperationRecord(record);
+    this.events?.publish('operation', { id: record.operation.id, status: 'blocked' });
   }
 
   private async openRecord(command: Command): Promise<{ record: OperationRecord; alreadyDone: boolean; effectiveCommand: Command }> {
@@ -91,6 +128,9 @@ export class RealCommandExecutor {
         if (existing.operation.type !== command.type) throw new ApiFault(409, 'OPERATION_CONFLICT', 'Цей operationId уже використано для іншої команди.');
         if (existing.context?.realWrite !== true) {
           throw new ApiFault(409, 'LEGACY_OPERATION', 'Цю стару операцію не можна повторити як реальний запис. Створіть нову дію після перевірки поточного стану.');
+        }
+        if (existing.context.readOnlyBlocked === true) {
+          throw new ApiFault(409, 'READ_ONLY', 'Цю автоматизацію заблоковано в режимі без запису; після увімкнення створіть нову дію лише для нового підтвердженого тригера.');
         }
         const original = existing.context.originalCommand as Command | undefined;
         const effective = original && isRetryEnvelope(command, original, existing.operation.issueId, existing.operation.versionId)
@@ -139,13 +179,35 @@ export class RealCommandExecutor {
     if (priorities.length && !priorities.some(value => value.id === priorityId)) throw new ApiFault(400, 'PRIORITY_REQUIRED', 'Виберіть доступний пріоритет.');
     const trackerId = numberField(input, 'trackerId') ?? project.trackers?.[0]?.id;
     if (!trackerId || project.trackers && !project.trackers.some(value => value.id === trackerId)) throw new ApiFault(400, 'TRACKER_REQUIRED', 'Виберіть тип задачі, доступний у цьому проєкті.');
-    const metadata = await this.writeMetadata(projectId);
+    const metadata = await this.writeMetadata(projectId, trackerId);
     if (!metadata.branchFieldId) throw new ApiFault(400, 'BRANCH_FIELD_UNAVAILABLE', 'У проєкті немає доступного для запису поля Branch; задачу не створено.');
     const labels = normalizeLabels(input.labels);
     const fields: Record<string, unknown> = { project_id: projectId, subject, description: stringField(input, 'description') ?? '',
       status_id: statusId, priority_id: priorityId, tracker_id: trackerId };
-    const assignee = numberField(input, 'assignedToId');
-    if (assignee) { await this.assertProjectMember(projectId, assignee); fields.assigned_to_id = assignee; }
+    const hasAssignee = Object.prototype.hasOwnProperty.call(input, 'assignedToId');
+    const assigneeId = numberField(input, 'assignedToId');
+    if (Object.prototype.hasOwnProperty.call(input, 'assignedToType') && input.assignedToType !== 'user' && input.assignedToType !== 'group') {
+      throw new ApiFault(400, 'ASSIGNEE_TYPE_REQUIRED', 'Вкажіть тип виконавця Redmine.');
+    }
+    const assigneeType = input.assignedToType === 'group' ? 'group' : 'user';
+    if (hasAssignee && assigneeId === undefined && input.assignedToId !== null) throw new ApiFault(400, 'PERSON_REQUIRED', 'Вкажіть ID виконавця або очистьте поле.');
+    if (!hasAssignee && Object.prototype.hasOwnProperty.call(input, 'assignedToType')) throw new ApiFault(400, 'PERSON_REQUIRED', 'Вкажіть ID виконавця разом із його типом.');
+    if (hasAssignee && (assigneeId !== undefined || input.assignedToId === null)) {
+      if (assigneeId !== undefined) await this.assertProjectAssignee(projectId, assigneeId, assigneeType);
+      fields.assigned_to_id = assigneeId ?? null;
+    }
+    const primaryAssigneeChanged = Object.prototype.hasOwnProperty.call(input, 'primaryAssigneeId') || Object.prototype.hasOwnProperty.call(input, 'developerId');
+    const primaryAssigneeValue = Object.prototype.hasOwnProperty.call(input, 'primaryAssigneeId') ? input.primaryAssigneeId : input.developerId;
+    const primaryAssigneeId = typeof primaryAssigneeValue === 'number' ? numberField(input, Object.prototype.hasOwnProperty.call(input, 'primaryAssigneeId') ? 'primaryAssigneeId' : 'developerId') : undefined;
+    if (primaryAssigneeChanged) {
+      if (primaryAssigneeValue !== null && typeof primaryAssigneeValue !== 'number') throw new ApiFault(400, 'PERSON_REQUIRED', 'Вкажіть ID Primary Assignee або очистьте поле.');
+      if (typeof primaryAssigneeValue === 'number' && primaryAssigneeId === undefined) throw new ApiFault(400, 'PERSON_REQUIRED', 'Виберіть коректного Primary Assignee.');
+      if (primaryAssigneeId) await this.assertPrimaryAssigneeMember(projectId, primaryAssigneeId);
+      if (!metadata.primaryAssigneeFieldId) throw new ApiFault(400, 'PRIMARY_ASSIGNEE_FIELD_UNAVAILABLE', 'У задачах цього проєкту не підтверджено єдине поле Primary Assignee.');
+      const customFields = Array.isArray(fields.custom_fields) ? fields.custom_fields as { id: number; value: unknown }[] : [];
+      customFields.push({ id: metadata.primaryAssigneeFieldId, value: primaryAssigneeId ?? '' });
+      fields.custom_fields = customFields;
+    }
     const versionId = numberField(input, 'fixedVersionId');
     if (versionId) {
       const version = await this.requireVersion(versionId, true);
@@ -156,7 +218,10 @@ export class RealCommandExecutor {
     if (dueDate) fields.due_date = dueDate;
     const custom = this.labelCustomFields(labels, metadata);
     if (labels.length && !custom.length) throw new ApiFault(400, 'LABELS_UNAVAILABLE', 'У проєкті не знайдено підтримуваного поля Labels/Tags з варіантами.');
-    if (custom.length) fields.custom_fields = custom;
+    if (custom.length) {
+      const existing = Array.isArray(fields.custom_fields) ? fields.custom_fields as { id: number; value: unknown }[] : [];
+      fields.custom_fields = [...existing, ...custom];
+    }
 
     if (!this.stepDone(record, 'create')) {
       const priorCreatedId = numberField(record.context ?? {}, 'createdIssueId') ?? record.operation.issueId;
@@ -173,7 +238,7 @@ export class RealCommandExecutor {
       } else {
         await this.beginRequest(record, 'create', 'Створити задачу в Redmine');
         let created: Issue;
-        try { created = await this.adapter.createIssue(fields, metadata.labelOptions); }
+        try { created = await this.adapter.createIssue(fields, metadata.labelOptions, metadata.primaryAssigneeFieldId); }
         catch (error) {
           if (isOutcomeUnknown(error, true)) { await this.unknown(record, 'create', safeMessage(error)); return; }
           throw mapRedmineError(error);
@@ -192,6 +257,12 @@ export class RealCommandExecutor {
     const createdId = Number(record.context?.createdIssueId ?? record.operation.issueId);
     if (!createdId) return this.block(record, 'Задачу створено, але Redmine не повернув її ID.', 'CREATED_ID_MISSING');
     let issue = await this.refreshIssue(createdId);
+    if (hasAssignee && (issue.assignedToId !== (assigneeId ?? undefined) || assigneeId !== undefined && issue.assignedToType !== assigneeType)) {
+      return this.block(record, 'Redmine не підтвердив обраний тип і виконавця після створення.', 'REMOTE_STATE_MISMATCH', issue);
+    }
+    if (primaryAssigneeChanged && issue.primaryAssigneeId !== (primaryAssigneeId ?? undefined)) {
+      return this.block(record, 'Redmine не підтвердив значення поля Primary Assignee після створення.', 'REMOTE_STATE_MISMATCH', issue);
+    }
     const branch = branchForIssue(issue.id, issue.subject);
     const freshMetadata = await this.writeMetadata(projectId);
     if (!freshMetadata.branchFieldId) return this.block(record, 'Задачу створено, але поле Branch недоступне для запису.', 'BRANCH_FIELD_UNAVAILABLE', issue);
@@ -211,9 +282,9 @@ export class RealCommandExecutor {
     if (record.context?.workflowKind === 'handoffToQA') return this.handoffToQA(record, command);
     if (record.context?.workflowKind === 'returnToDeveloper') return this.returnToDeveloper(record, command);
     const built = await this.buildIssueFields(issue, command.input, true);
-    if (!Object.keys(built.fields).length && (built.developerIdChanged || built.qaIdChanged)) {
-      await this.store.setIssueRoles(issue.id, built.developerId, built.qaId);
-      issue = { ...issue, developerId: built.developerId, qaId: built.qaId };
+    if (!Object.keys(built.fields).length && built.qaIdChanged) {
+      await this.store.setIssueRoles(issue.id, undefined, built.qaId);
+      issue = { ...issue, qaId: built.qaId };
       record.issue = issue; record.operation.status = 'done';
       await this.finish(record); this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId }); return;
     }
@@ -233,11 +304,11 @@ export class RealCommandExecutor {
       this.assertTransition(issue, target.id);
     }
     if (!await this.writeIssueStep(record, issue, 'update', 'Оновити задачу в Redmine', built.fields,
-      updated => issueFieldsMatch(updated, built.fields, built.labels, built.branch))) return;
+      updated => issueFieldsMatch(updated, built.fields, built.labels, built.branch, built.developerIdChanged ? built.developerId ?? null : undefined, built.developerIdChanged)
+        && (!built.assignedToType || updated.assignedToType === built.assignedToType))) return;
     issue = await this.refreshIssue(issue.id);
-    if (built.developerIdChanged || built.qaIdChanged) {
-      await this.store.setIssueRoles(issue.id, built.developerId, built.qaId);
-      issue.developerId = built.developerId ?? undefined;
+    if (built.qaIdChanged) {
+      await this.store.setIssueRoles(issue.id, undefined, built.qaId);
       issue.qaId = built.qaId ?? undefined;
     }
     record.issue = issue;
@@ -298,8 +369,8 @@ export class RealCommandExecutor {
     if (!qaId) return this.block(record, 'Виберіть QA перед передачею задачі.', 'QA_REQUIRED', issue);
     await this.assertProjectMember(issue.projectId, qaId);
     const me = await this.adapter.currentUser();
-    const developerId = numberField(command.input, 'developerId') ?? numberField(record.context ?? {}, 'handoffDeveloperId') ?? issue.developerId
-      ?? (issue.assignedToId && issue.assignedToId !== me.id ? issue.assignedToId : undefined);
+    const developerId = numberField(command.input, 'primaryAssigneeId') ?? numberField(command.input, 'developerId')
+      ?? numberField(record.context ?? {}, 'handoffDeveloperId') ?? issue.primaryAssigneeId;
     record.context = { ...(record.context ?? {}), ...(developerId ? { handoffDeveloperId: developerId } : {}) };
     await this.store.saveOperationRecord(record);
     // Validate non-workflow fields before temporarily changing the assignee.
@@ -311,6 +382,7 @@ export class RealCommandExecutor {
     if (!this.stepDone(record, 'assign-self')) {
       issue = await this.requireFreshIssue(issue.id);
       if (issue.assignedToId !== me.id) {
+        await this.assertProjectAssignee(issue.projectId, me.id, 'user');
         if (!await this.writeIssueStep(record, issue, 'assign-self', 'Тимчасово призначити себе виконавцем', { assigned_to_id: me.id },
           updated => updated.assignedToId === me.id)) return;
       } else await this.completeStep(record, 'assign-self', 'Виконавець уже призначений поточному користувачу', 'skipped');
@@ -335,8 +407,7 @@ export class RealCommandExecutor {
       updated => issueFieldsMatch(updated, extra.fields, extra.labels, extra.branch))) return;
     const fresh = await this.refreshIssue(issue.id);
     if (fresh.statusId !== qaStatus.id || fresh.assignedToId !== qaId) return this.block(record, 'Передачу в QA не підтверджено.', 'REMOTE_STATE_MISMATCH', fresh);
-    await this.store.setIssueRoles(fresh.id, developerId, qaId);
-    fresh.developerId = developerId;
+    await this.store.setIssueRoles(fresh.id, undefined, qaId);
     fresh.qaId = qaId;
     record.issue = fresh;
     record.operation.status = 'done';
@@ -354,9 +425,9 @@ export class RealCommandExecutor {
     const current = await this.statusById(issue.statusId);
     const todo = await this.statusByKey('todo');
     if (!todo) return this.block(record, 'Статус To Do не налаштований.', 'WORKFLOW_UNAVAILABLE', issue);
-    const developerId = numberField(command.input, 'developerId') ?? issue.developerId;
+    const developerId = numberField(command.input, 'primaryAssigneeId') ?? numberField(command.input, 'developerId') ?? issue.primaryAssigneeId;
     if (!developerId) return this.block(record, 'Не вдалося визначити розробника. Виберіть його вручну.', 'DEVELOPER_REQUIRED', issue);
-    await this.assertProjectMember(issue.projectId, developerId);
+    await this.assertPrimaryAssigneeMember(issue.projectId, developerId);
     if (current?.key !== 'todo' && !['qa', 'review'].includes(current?.key ?? '')) {
       return this.block(record, 'Повернення доступне лише з QA або Review.', 'TRANSITION_NOT_ALLOWED', issue);
     }
@@ -371,8 +442,7 @@ export class RealCommandExecutor {
       fields, updated => updated.statusId === todo.id && updated.assignedToId === developerId
         && issueFieldsMatch(updated, extra.fields, extra.labels, extra.branch))) return;
     const fresh = await this.refreshIssue(issue.id);
-    await this.store.setIssueRoles(fresh.id, developerId, fresh.qaId);
-    fresh.developerId = developerId;
+    await this.store.setIssueRoles(fresh.id, undefined, fresh.qaId);
     record.issue = fresh;
     record.operation.status = 'done';
     await this.finish(record);
@@ -395,6 +465,90 @@ export class RealCommandExecutor {
     record.issue = issue;
     record.operation.status = 'done';
     this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId });
+  }
+
+  private async editJournal(record: OperationRecord, command: Command): Promise<void> {
+    await this.assertJournalCapability('edit');
+    const issue = await this.requireFreshIssue(command.issueId, true);
+    const journal = await this.requireOwnedJournal(issue.id, command.input);
+    const notes = stringField(command.input, 'notes');
+    if (notes === undefined || !notes.trim()) throw new ApiFault(400, 'COMMENT_REQUIRED', 'Текст коментаря не може бути порожнім.');
+    await this.writeJournalNotes(record, issue, journal.id, notes, true);
+  }
+
+  private async deleteJournal(record: OperationRecord, command: Command): Promise<void> {
+    await this.assertJournalCapability('delete');
+    const issue = await this.requireFreshIssue(command.issueId, true);
+    const journal = await this.requireOwnedJournal(issue.id, command.input);
+    // Redmine's core API clears notes on journals with field changes but retains those changes;
+    // journals without details are removed entirely. Both outcomes remove only the user's note.
+    await this.writeJournalNotes(record, issue, journal.id, '', false, journal.changes.length === 0);
+  }
+
+  private async assertJournalCapability(action: 'edit' | 'delete'): Promise<void> {
+    const capabilities = await this.store.getValue<{ journalEditing?: boolean; journalDeleting?: boolean }>('capabilities');
+    const enabled = action === 'edit' ? capabilities?.journalEditing : capabilities?.journalDeleting;
+    if (!enabled) throw new ApiFault(501, action === 'edit' ? 'JOURNAL_EDIT_UNSUPPORTED' : 'JOURNAL_DELETE_UNSUPPORTED',
+      'Не вдалося підтвердити право цього користувача на зміну журналу в цільовому Redmine; запит не надіслано.');
+  }
+
+  private async requireOwnedJournal(issueId: number, input: Record<string, unknown>): Promise<import('../../shared/types.js').Journal> {
+    const journalId = numberField(input, 'journalId');
+    const expectedNotes = stringField(input, 'expectedNotes');
+    if (!journalId || journalId <= 0 || expectedNotes === undefined) throw new ApiFault(400, 'JOURNAL_REQUIRED', 'Оновіть коментар і повторіть дію.');
+    const journal = (await this.store.getJournals(issueId)).find(item => item.id === journalId);
+    if (!journal) throw new ApiFault(404, 'JOURNAL_NOT_FOUND', 'Коментар не знайдено у свіжому журналі задачі.');
+    if (journal.user.id !== (await this.adapter.currentUser()).id) throw new ApiFault(403, 'JOURNAL_NOT_OWNED', 'Можна змінювати лише власні коментарі.');
+    if (!journal.notes.trim()) throw new ApiFault(409, 'JOURNAL_NOT_COMMENT', 'Цей запис журналу не містить коментаря.');
+    if (journal.notes !== expectedNotes) throw new ApiFault(409, 'STALE_JOURNAL', 'Коментар змінився. Оновіть його перед дією.', { journalId });
+    return journal;
+  }
+
+  private async writeJournalNotes(record: OperationRecord, issue: Issue, journalId: number, notes: string, shouldExist: boolean,
+    expectJournalRemoval = false): Promise<void> {
+    const key = 'journal-notes';
+    const label = shouldExist ? 'Редагувати коментар Redmine' : 'Видалити коментар Redmine';
+    const verify = async (): Promise<{ issue: Issue; matches: boolean }> => {
+      const fresh = await this.refreshIssue(issue.id);
+      const found = (await this.store.getJournals(issue.id)).find(item => item.id === journalId);
+      return { issue: fresh, matches: shouldExist ? found?.notes === notes : expectJournalRemoval ? found === undefined : found?.notes === '' };
+    };
+    if (this.stepDone(record, key) || record.context?.awaitingVerification === key) {
+      const checked = await verify();
+      if (!checked.matches) {
+        await this.block(record, `${label}: Redmine не підтвердив очікуваний стан.`, 'REMOTE_STATE_MISMATCH', checked.issue);
+        return;
+      }
+      if (!this.stepDone(record, key)) await this.completeStep(record, key, label);
+      record.issue = checked.issue; record.operation.status = 'done';
+      await this.finish(record); this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId }); return;
+    }
+    await this.beginRequest(record, key, label);
+    try { await this.adapter.updateJournal(journalId, notes); }
+    catch (error) {
+      if (isOutcomeUnknown(error, false)) {
+        try {
+          const checked = await verify();
+          if (checked.matches) {
+            record.issue = checked.issue;
+            record.context = { ...(record.context ?? {}), inFlightStep: undefined };
+            await this.completeStep(record, key, label);
+            record.operation.status = 'done'; await this.finish(record);
+            this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId }); return;
+          }
+        } catch { /* keep the ambiguous write blocked; never send it twice */ }
+        await this.unknown(record, key, safeMessage(error));
+        return;
+      }
+      throw mapRedmineError(error);
+    }
+    record.context = { ...(record.context ?? {}), inFlightStep: undefined, awaitingVerification: key };
+    await this.store.saveOperationRecord(record);
+    const checked = await verify();
+    if (!checked.matches) { await this.block(record, `${label}: Redmine не підтвердив очікуваний стан.`, 'REMOTE_STATE_MISMATCH', checked.issue); return; }
+    await this.completeStep(record, key, label);
+    record.issue = checked.issue; record.operation.status = 'done';
+    await this.finish(record); this.events?.publish('issue', { issueId: issue.id, projectId: issue.projectId });
   }
 
   private async generateBranch(record: OperationRecord, command: Command): Promise<void> {
@@ -622,7 +776,7 @@ export class RealCommandExecutor {
       && (issueId === undefined || record.operation.issueId === issueId));
     const results: Operation[] = [];
     for (const record of pending) {
-      const trigger = record.context!.automationTrigger as { expectedUpdatedOn: string; reviewStatusId: number; developerId?: number };
+      const trigger = record.context!.automationTrigger as { expectedUpdatedOn: string; reviewStatusId: number; primaryAssigneeId?: number; developerId?: number };
       let issue: Issue | undefined;
       try { issue = record.operation.issueId ? await this.requireFreshIssue(record.operation.issueId) : undefined; }
       catch (error) {
@@ -637,13 +791,10 @@ export class RealCommandExecutor {
       const review = await this.statusByKey('review');
       const todo = await this.statusByKey('todo');
       const checkpointedReturn = this.stepDone(record, 'return') || record.context?.awaitingVerification === 'return';
-      const savedDeveloperId = numberField(record.context ?? {}, 'automationDeveloperId') ?? trigger.developerId;
       if (issue && todo && checkpointedReturn && issue.statusId === todo.id) {
-        const developerId = savedDeveloperId ?? issue.developerId;
+        const developerId = issue.primaryAssigneeId;
         if (developerId && issue.assignedToId === developerId) {
           if (!this.stepDone(record, 'return')) await this.completeStep(record, 'return', 'Підтвердити виконане повернення до To Do');
-          await this.store.setIssueRoles(issue.id, developerId, issue.qaId);
-          issue.developerId = developerId;
           record.issue = issue;
           record.operation.status = 'done';
           await this.finish(record);
@@ -659,13 +810,13 @@ export class RealCommandExecutor {
         record.operation.status = 'blocked'; record.operation.errorCode = 'STALE'; record.operation.error = 'Подія CI застаріла; автоматизацію зупинено.';
         await this.store.saveOperationRecord(record); results.push(record.operation); continue;
       }
-      const developerId = savedDeveloperId ?? issue.developerId;
+      const developerId = issue.primaryAssigneeId;
       if (!developerId) {
         record.operation.status = 'blocked'; record.operation.errorCode = 'DEVELOPER_REQUIRED'; record.operation.error = 'Не вдалося визначити розробника; потрібен ручний вибір.';
         await this.store.saveOperationRecord(record); results.push(record.operation); continue;
       }
       try {
-        record.context = { ...(record.context ?? {}), automationDeveloperId: developerId };
+        record.context = { ...(record.context ?? {}), automationPrimaryAssigneeId: developerId };
         await this.store.saveOperationRecord(record);
         this.assertTransition(issue, todo.id);
         if (!await this.writeIssueStep(record, issue, 'return', 'Повернути задачу в To Do розробнику',
@@ -674,8 +825,10 @@ export class RealCommandExecutor {
           continue;
         }
         const updated = await this.refreshIssue(issue.id);
-        await this.store.setIssueRoles(issue.id, developerId, updated.qaId);
-        updated.developerId = developerId;
+        if (updated.primaryAssigneeId !== developerId) {
+          await this.block(record, 'Primary Assignee змінився під час автоматизації; автоматизацію зупинено.', 'STALE', updated);
+          results.push(record.operation); continue;
+        }
         record.issue = updated; record.operation.status = 'done';
         await this.finish(record); results.push(record.operation);
       } catch (error) {
@@ -697,7 +850,7 @@ export class RealCommandExecutor {
   }
 
   private async buildIssueFields(issue: Issue, input: Record<string, unknown>, includeStatus: boolean): Promise<{
-    fields: Record<string, unknown>; labels?: string[]; branch?: string; statusId?: number; status?: Status;
+    fields: Record<string, unknown>; labels?: string[]; branch?: string; statusId?: number; status?: Status; assignedToType?: 'user' | 'group';
     developerId?: number; qaId?: number; developerIdChanged: boolean; qaIdChanged: boolean;
   }> {
     const fields: Record<string, unknown> = {};
@@ -717,8 +870,17 @@ export class RealCommandExecutor {
       if (!project?.trackers?.some(value => value.id === input.trackerId)) throw new ApiFault(400, 'TRACKER_REQUIRED', 'Виберіть тип задачі, доступний у цьому проєкті.');
       fields.tracker_id = input.trackerId;
     }
+    const metadata = await this.writeMetadata(issue.projectId, issue.trackerId, issue.id);
+    let assignedToType: 'user' | 'group' | undefined;
+    if (Object.prototype.hasOwnProperty.call(input, 'assignedToId') && typeof input.assignedToId !== 'number' && input.assignedToId !== null) {
+      throw new ApiFault(400, 'PERSON_REQUIRED', 'Вкажіть ID виконавця або очистьте поле.');
+    }
     if (typeof input.assignedToId === 'number' || input.assignedToId === null) {
-      if (typeof input.assignedToId === 'number') await this.assertProjectMember(issue.projectId, input.assignedToId);
+      if (Object.prototype.hasOwnProperty.call(input, 'assignedToType') && input.assignedToType !== 'user' && input.assignedToType !== 'group') {
+        throw new ApiFault(400, 'ASSIGNEE_TYPE_REQUIRED', 'Вкажіть тип виконавця Redmine.');
+      }
+      assignedToType = typeof input.assignedToId === 'number' ? input.assignedToType === 'group' ? 'group' : 'user' : undefined;
+      if (typeof input.assignedToId === 'number') await this.assertProjectAssignee(issue.projectId, input.assignedToId, assignedToType!);
       fields.assigned_to_id = input.assignedToId;
     }
     if (typeof input.fixedVersionId === 'number' || input.fixedVersionId === null || input.removeVersion === true) {
@@ -735,28 +897,43 @@ export class RealCommandExecutor {
     let customFields: { id: number; value: unknown }[] = [];
     if (Array.isArray(input.labels)) {
       labels = normalizeLabels(input.labels);
-      const metadata = await this.writeMetadata(issue.projectId);
       if (!metadata.labelFieldIds.length) throw new ApiFault(400, 'LABELS_UNAVAILABLE', 'У проєкті немає доступного для запису поля Labels/Tags.');
       const custom = this.labelCustomFields(labels, metadata);
       customFields.push(...custom);
     }
     if (typeof input.branch === 'string') {
-      const metadata = await this.writeMetadata(issue.projectId);
       if (!metadata.branchFieldId) throw new ApiFault(400, 'BRANCH_FIELD_UNAVAILABLE', 'Поле Branch недоступне для запису в цьому проєкті.');
       branch = input.branch.trim();
       customFields = customFields.filter(field => field.id !== metadata.branchFieldId);
       customFields.push({ id: metadata.branchFieldId, value: branch });
     }
-    if (customFields.length) fields.custom_fields = customFields;
+    const developerIdChanged = Object.prototype.hasOwnProperty.call(input, 'primaryAssigneeId') || Object.prototype.hasOwnProperty.call(input, 'developerId');
+    const primaryValue = Object.prototype.hasOwnProperty.call(input, 'primaryAssigneeId') ? input.primaryAssigneeId : input.developerId;
+    const developerId = developerIdChanged ? (typeof primaryValue === 'number' ? primaryValue : undefined) : issue.primaryAssigneeId;
+    if (developerIdChanged) {
+      if (primaryValue !== null && typeof primaryValue !== 'number') throw new ApiFault(400, 'PERSON_REQUIRED', 'Вкажіть ID Primary Assignee або очистьте поле.');
+      if (typeof primaryValue === 'number' && (!Number.isSafeInteger(primaryValue) || primaryValue <= 0)) {
+        throw new ApiFault(400, 'PERSON_REQUIRED', 'Виберіть коректного Primary Assignee.');
+      }
+      if (developerId) await this.assertPrimaryAssigneeMember(issue.projectId, developerId);
+      if (!metadata.primaryAssigneeFieldId || issue.primaryAssigneeFieldId !== metadata.primaryAssigneeFieldId) {
+        throw new ApiFault(400, 'PRIMARY_ASSIGNEE_FIELD_UNAVAILABLE', 'У свіжих даних задачі не підтверджено єдине поле Primary Assignee.');
+      }
+      if (issue.primaryAssigneeId !== developerId) {
+        customFields = customFields.filter(field => field.id !== metadata.primaryAssigneeFieldId);
+        customFields.push({ id: metadata.primaryAssigneeFieldId, value: developerId ?? '' });
+      }
+    }
+    if (customFields.length) {
+      const existing = Array.isArray(fields.custom_fields) ? fields.custom_fields as { id: number; value: unknown }[] : [];
+      fields.custom_fields = [...existing.filter(field => !customFields.some(item => item.id === field.id)), ...customFields];
+    }
     const statusId = includeStatus ? await this.requestedStatus(input, false) : undefined;
     if (statusId) fields.status_id = statusId.id;
-    const developerIdChanged = typeof input.developerId === 'number' || input.developerId === null;
     const qaIdChanged = typeof input.qaId === 'number' || input.qaId === null;
-    const developerId = developerIdChanged ? (input.developerId === null ? undefined : numberField(input, 'developerId')) : issue.developerId;
     const qaId = qaIdChanged ? (input.qaId === null ? undefined : numberField(input, 'qaId')) : issue.qaId;
-    if (developerIdChanged && developerId) await this.assertProjectMember(issue.projectId, developerId);
-    if (qaIdChanged && qaId) await this.assertProjectMember(issue.projectId, qaId);
-    return { fields, labels, branch, statusId: statusId?.id, status: statusId, developerId, qaId, developerIdChanged, qaIdChanged };
+    if (qaIdChanged && qaId) await this.assertProjectAssignee(issue.projectId, qaId, 'user');
+    return { fields, labels, branch, statusId: statusId?.id, status: statusId, assignedToType, developerId, qaId, developerIdChanged, qaIdChanged };
   }
 
   private async writeIssueStep(record: OperationRecord, before: Issue, key: string, name: string, fields: Record<string, unknown>,
@@ -799,12 +976,21 @@ export class RealCommandExecutor {
     return true;
   }
 
-  private async refreshIssue(id: number): Promise<Issue> {
+  private async refreshIssue(id: number, requireJournals = false): Promise<Issue> {
     const catalogs = await this.store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {};
-    const detail = await this.adapter.issueDetail(id, catalogs, false);
-    if (!(await this.store.getProjects()).some(project => project.id === detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено в доступному проєкті.');
     const old = await this.store.getIssue(id);
-    const issue = { ...detail.issue, developerId: old?.developerId, qaId: old?.qaId };
+    const memberships = await this.store.getValue<Record<string, number[]>>('projectMembershipIds') ?? {};
+    const groups = await this.store.getValue<Record<string, number[]>>('projectGroupIds') ?? {};
+    const detail = await this.adapter.issueDetail(id, catalogs, false, old ? {
+      userIds: new Set(memberships[String(old.projectId)] ?? []), groupIds: new Set(groups[String(old.projectId)] ?? []),
+    } : undefined);
+    if (requireJournals && !detail.journalsIncluded) throw new ApiFault(501, 'JOURNAL_HISTORY_UNAVAILABLE', 'Redmine не повернув свіжий журнал задачі; коментар не змінено.');
+    if (!(await this.store.getProjects()).some(project => project.id === detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено в доступному проєкті.');
+    if (detail.journalsIncluded) {
+      const currentIds = new Set(detail.journals.map(journal => journal.id));
+      for (const cached of await this.store.getJournals(id)) if (!currentIds.has(cached.id)) await this.store.deleteJournal(id, cached.id);
+    }
+    const issue = { ...detail.issue, qaId: old?.qaId };
     await this.store.saveIssue(issue);
     for (const journal of detail.journals) await this.store.saveJournal(id, journal);
     const people = new Map<number, Person>((await this.store.getValue<Person[]>('people') ?? []).map(person => [person.id, person]));
@@ -813,9 +999,11 @@ export class RealCommandExecutor {
     return issue;
   }
 
-  private async requireFreshIssue(id?: number): Promise<Issue> {
+  private async requireFreshIssue(id?: number, requireJournals = false): Promise<Issue> {
     if (!id) throw new ApiFault(400, 'ISSUE_REQUIRED', 'Не вказано задачу.');
-    try { return await this.refreshIssue(id); }
+    try {
+      return await this.refreshIssue(id, requireJournals);
+    }
     catch (error) {
       if (error instanceof RedmineRequestError && error.statusCode === 404) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено в Redmine.');
       throw error;
@@ -851,15 +1039,21 @@ export class RealCommandExecutor {
     return details.filter(issue => issue.fixedVersionId === version.id);
   }
 
-  private async writeMetadata(projectId: number): Promise<WriteMetadata> {
+  private async writeMetadata(projectId: number, trackerId?: number, sampleIssueId?: number): Promise<WriteMetadata> {
     const adapter = this.adapter as AdapterWithWriteMetadata;
     if (adapter.writeFieldMetadata) {
-      const fresh = await adapter.writeFieldMetadata(projectId);
+      const fresh = await adapter.writeFieldMetadata(projectId, sampleIssueId, trackerId);
       const catalogs = await this.store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {};
       catalogs[String(projectId)] = fresh.labelOptions;
       await this.store.setValue('labelOptions', catalogs);
       const capabilities = await this.store.getValue<Record<string, unknown>>('capabilities') ?? {};
-      await this.store.setValue('capabilities', { ...capabilities, branchFieldId: fresh.branchFieldId, labelsFieldId: fresh.labelFieldIds[0] });
+      const storedPrimaryFieldIds = capabilities.primaryAssigneeFieldIds && typeof capabilities.primaryAssigneeFieldIds === 'object'
+        ? capabilities.primaryAssigneeFieldIds as Record<string, number> : {};
+      const nextPrimaryFieldIds = { ...storedPrimaryFieldIds };
+      delete nextPrimaryFieldIds[String(projectId)];
+      if (fresh.primaryAssigneeFieldId) nextPrimaryFieldIds[String(projectId)] = fresh.primaryAssigneeFieldId;
+      await this.store.setValue('capabilities', { ...capabilities, branchFieldId: fresh.branchFieldId,
+        labelsFieldId: fresh.labelFieldIds[0], primaryAssigneeFieldIds: nextPrimaryFieldIds });
       return fresh;
     }
     const labels = (await this.store.getValue<Record<string, LabelOption[]>>('labelOptions'))?.[String(projectId)] ?? [];
@@ -880,11 +1074,64 @@ export class RealCommandExecutor {
   }
 
   private async assertProjectMember(projectId: number, personId: number): Promise<void> {
-    if (!Number.isSafeInteger(personId) || personId <= 0) throw new ApiFault(400, 'PERSON_REQUIRED', 'Виберіть коректного учасника проєкту.');
+    return this.assertProjectAssignee(projectId, personId, 'user');
+  }
+
+  /** Primary Assignee is a separate custom User field; verify membership without consulting
+   * the standard assigned_to selector, whose workflow choice set may differ. */
+  private async assertPrimaryAssigneeMember(projectId: number, personId: number): Promise<void> {
+    if (!Number.isSafeInteger(personId) || personId <= 0) throw new ApiFault(400, 'PERSON_REQUIRED', 'Виберіть коректного Primary Assignee.');
     if (!(await this.store.getProjects()).some(project => project.id === projectId)) throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    const membershipAdapter = this.adapter as RedmineAdapter & {
+      projectMemberships?: (projectId: number) => Promise<{ userIds: number[]; groups: { id: number }[] }>;
+    };
+    if (membershipAdapter.projectMemberships) {
+      const fresh = await membershipAdapter.projectMemberships(projectId);
+      const cached = await this.store.getValue<Record<string, number[]>>('projectMembershipIds') ?? {};
+      cached[String(projectId)] = fresh.userIds;
+      await this.store.setValue('projectMembershipIds', cached);
+      if (!fresh.userIds.includes(personId)) throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Primary Assignee не є учасником цього проєкту Redmine.');
+      return;
+    }
+    const ids = (await this.store.getValue<Record<string, number[]>>('projectMembershipIds'))?.[String(projectId)];
+    if (ids && !ids.includes(personId)) throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Primary Assignee не є учасником цього проєкту Redmine.');
+  }
+
+  private async assertProjectAssignee(projectId: number, assigneeId: number, type: 'user' | 'group'): Promise<void> {
+    const id = assigneeId;
+    if (!Number.isSafeInteger(id) || id <= 0) throw new ApiFault(400, 'PERSON_REQUIRED', 'Виберіть коректного виконавця.');
+    if (!(await this.store.getProjects()).some(project => project.id === projectId)) throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    const membershipAdapter = this.adapter as RedmineAdapter & {
+      projectMemberships?: (projectId: number) => Promise<{ userIds: number[]; groups: { id: number; name?: string; memberIds?: number[] }[] }>;
+    };
+    if (membershipAdapter.projectMemberships) {
+      const fresh = await membershipAdapter.projectMemberships(projectId);
+      const projectMembershipIds = await this.store.getValue<Record<string, number[]>>('projectMembershipIds') ?? {};
+      projectMembershipIds[String(projectId)] = fresh.userIds;
+      await this.store.setValue('projectMembershipIds', projectMembershipIds);
+      const groupIds = await this.store.getValue<Record<string, number[]>>('projectGroupIds') ?? {};
+      groupIds[String(projectId)] = fresh.groups.map(group => group.id);
+      await this.store.setValue('projectGroupIds', groupIds);
+      const previousGroups = await this.store.getValue<Record<string, { id: number; name: string; memberIds?: number[] }[]>>('projectGroups') ?? {};
+      previousGroups[String(projectId)] = fresh.groups.flatMap(group => group.name ? [{ id: group.id, name: group.name,
+        ...(group.memberIds ? { memberIds: group.memberIds } : {}) }] : []);
+      await this.store.setValue('projectGroups', previousGroups);
+      if (type === 'user') {
+        if (!fresh.userIds.includes(id)) throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не є учасником цього проєкту Redmine.');
+        return;
+      }
+      const group = fresh.groups.find(item => item.id === id);
+      if (!group) throw new ApiFault(400, 'GROUP_NOT_PROJECT_MEMBER', 'Група не є учасником цього проєкту Redmine.');
+      // Group membership confirms this typed principal and project scope. Redmine itself is the
+      // authority for issue_group_assignment, assignable roles, tracker permissions, and issue
+      // permissions; a rejected PUT is surfaced as a validation error. A successful PUT is reread
+      // and checked against the requested group ID/type before the operation is completed.
+      return;
+    }
+    if (type === 'group') throw new ApiFault(409, 'GROUP_ASSIGNMENT_UNVERIFIED', 'Не вдалося перевірити тип і доступність групи в Redmine.');
     const membershipIds = await this.store.getValue<Record<string, number[]>>('projectMembershipIds');
     const projectIds = membershipIds?.[String(projectId)];
-    if (projectIds && !projectIds.includes(personId)) throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не є учасником цього проєкту Redmine.');
+    if (projectIds && !projectIds.includes(id)) throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не є учасником цього проєкту Redmine.');
   }
 
   private async statuses(): Promise<Status[]> { return await this.store.getValue<Status[]>('statuses') ?? []; }
@@ -983,13 +1230,15 @@ function optionalDate(value: unknown): string | undefined {
 function uniqueNumbers(value: unknown): number[] {
   return Array.isArray(value) ? [...new Set(value.filter((item): item is number => Number.isSafeInteger(item) && item > 0))] : [];
 }
-function issueFieldsMatch(issue: Issue, fields: Record<string, unknown>, labels?: string[], branch?: string): boolean {
+function issueFieldsMatch(issue: Issue, fields: Record<string, unknown>, labels?: string[], branch?: string,
+  primaryAssigneeId?: number | null, checkPrimaryAssignee = false): boolean {
   if (typeof fields.subject === 'string' && issue.subject !== fields.subject) return false;
   if (typeof fields.description === 'string' && issue.description !== fields.description) return false;
   if (typeof fields.status_id === 'number' && issue.statusId !== fields.status_id) return false;
   if (typeof fields.priority_id === 'number' && issue.priorityId !== fields.priority_id) return false;
   if (typeof fields.tracker_id === 'number' && issue.trackerId !== fields.tracker_id) return false;
   if ('assigned_to_id' in fields && issue.assignedToId !== (fields.assigned_to_id === null ? undefined : fields.assigned_to_id)) return false;
+  if (checkPrimaryAssignee && issue.primaryAssigneeId !== (primaryAssigneeId === null ? undefined : primaryAssigneeId)) return false;
   if ('fixed_version_id' in fields && issue.fixedVersionId !== (fields.fixed_version_id === null ? undefined : fields.fixed_version_id)) return false;
   if ('due_date' in fields && issue.dueDate !== (fields.due_date === null ? undefined : fields.due_date)) return false;
   if (branch !== undefined && issue.branch !== branch) return false;

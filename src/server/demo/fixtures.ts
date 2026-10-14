@@ -58,12 +58,14 @@ function issue(
   return {
     id, projectId, subject, description: `${subject}. Демодані для перевірки швидкої роботи з картками.`,
     statusId, priorityId, trackerId: 1, trackerName: 'Feature', authorId: id % 2 === 0 ? 2 : 4,
-    assignedToId, developerId, qaId, fixedVersionId,
+    assignedToId, assignedToType: assignedToId ? 'user' : undefined,
+    assignedToName: assignedToId ? demoPeople.find(person => person.id === assignedToId)?.name : undefined,
+    developerId, qaId, fixedVersionId,
     branch: `${id}-${subject.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-')}`,
     labels, watcherIds: [demoMe.id, personIds[id % personIds.length]],
     createdOn: new Date(Date.now() - (id % 45 + 2) * 86_400_000).toISOString(),
     updatedOn: new Date(Date.now() - (id % 9) * 3_600_000).toISOString(),
-    attachments: [], ...extras,
+    attachments: [], allowedStatusIds: demoStatuses.map(status => status.id), ...extras,
   };
 }
 

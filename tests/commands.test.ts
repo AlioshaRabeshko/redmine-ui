@@ -96,6 +96,15 @@ describe('durable workspace commands using isolated SQLite', () => {
     await expect(commands.execute({ ...command, type: 'comment', issueId: 1001, input: { notes: 'conflict' } })).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it('gives newly created demo issues the current catalog of known status choices', async () => {
+    const statuses = await store.getValue<{ id: number }[]>('statuses') ?? [];
+    const created = await commands.execute({ type: 'createIssue', projectId: 10, input: { subject: 'New demo transition coverage' } });
+
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(created.issue?.allowedStatusIds).toEqual(statuses.map(status => status.id));
+    expect(created.issue?.allowedStatusIds).toContain(created.issue?.statusId);
+  });
+
   it('uses project tracker metadata before issue fixtures and validates enabled tracker IDs', async () => {
     await store.saveIssue({ ...(await store.getIssue(1004))!, id: 9001, trackerId: 2, trackerName: 'Issue fixture name' });
 

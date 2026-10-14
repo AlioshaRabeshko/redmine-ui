@@ -1109,3 +1109,27 @@ Docker preview оновлено зі збереженням наявного SQL
 Реалізовано всі п’ять погоджених змін, швидку дію «У To Do», звіряння фактичного стану після невідомих/часткових помилок та захист від старих відповідей синхронізації. Незалежне рев’ю додатково закрило втрату фокуса в беклозі, зависання перевірки стану та гонку з новішою текстовою чернеткою під час збереження.
 
 Фінальні build/typecheck, Vitest 243/243 у 42 файлах і повний Chromium 108/108 успішні. Docker оновлено зі збереженням volume; GET-only smoke підтвердив фінальний client asset, healthy, connected=true і раніше дозволений write mode. Усі мутаційні перевірки виконували лише в demo/mocks. Повний звіт та межі перевірки: [UX_ROUND4_RESULTS.md](docs/UX_ROUND4_RESULTS.md).
+
+## UX round 5 — 2026-10-13, нотатки
+
+Користувач попросив записати 16 зауважень для наступної ітерації: форматування й редагування коментарів, згадки користувачів, зіставлення Developer з `Primary Assignee` у Redmine, сповіщення про нові картки, синхронізація видалених статусів, відкидання конфліктних чернеток, підсвічування коду, preview за замовчуванням, WYSIWYG, дії з власними коментарями, дозволені переходи статусу, згортання колонок, залиті плашки Urgent/Immediate, непослідовне відображення зображень у коментарях, призначення груп на картки та фільтр за watcher. Повний перелік і питання для ресерчу: [docs/UX_ROUND5.md](docs/UX_ROUND5.md). Цей запит фіксує backlog; реалізацію ще не починали.
+
+Уточнення під час обговорення: сповіщення про згадки доставляє Redmine; застосунок відповідає за вибір користувача й сумісну згадку. Developer має лише одне джерело істини — `Primary Assignee` у Redmine; старі локальні значення більше не використовуються навіть як fallback і автоматично не переносяться. WYSIWYG із форматуванням під час набору — режим за замовчуванням; вихідна розмітка може залишитися окремою можливістю. Scope списку згадок «учасники поточного проєкту» залишається робочим припущенням. Після обговорення користувач доручив реалізацію з максимально можливим делегуванням `gpt-6-luna` з `max` reasoning. Тести мутацій — лише demo/mocks.
+
+
+### Результат UX round 5 — 2026-10-14
+
+Погоджені 16 зауважень інтегровано через Luna max implementation/QA/review: формат-aware preview та WYSIWYG, source toggle зі збереженням точних невідомих блоків, code highlighting, project login mentions, Developer виключно з Redmine Primary Assignee, new-issue subscription без historical replay, свіжі статуси та per-issue transitions, scoped draft discard, collapsed columns, filled high priorities, reliable image retry, typed group assignment і watcher filter. Непідтверджені real journal edit/delete та likes лишаються unavailable згідно capability guards; локальний success не імітується.
+
+Незалежне рев’ю й браузерний gate додатково закрили дозволений raw CommonMark HTML, subscription/sync races, read-only worker outcome classification, label-triggered Bold, untouched source normalization, quote source mode/focus та metadata переходів для нових demo задач. Legacy E2E fixtures/селектори актуалізовано без послаблення assertions; CI fixture labels задано явно лише у Playwright, runtime-конфіг користувача не змінювали.
+
+Фінальні build/typecheck, 300/300 unit/server у 45 файлах, повний Chromium 127/127 і 12 desktop captures (1280/1600, light/dark) успішні. Docker image production build і disposable SQLite binding preflight успішні; локальне оновлення та GET-only smoke описано у deployment звіті. Мутаційні перевірки тільки demo/mocks, мобільний аудит відкладено. Зведені докази та formatter/API межі: [UX_ROUND5_RESULTS.md](docs/UX_ROUND5_RESULTS.md).
+
+
+### Preview як Visual Edit і рішення щодо реакцій — 2026-10-14
+
+Користувач погодив спільне оформлення Description Preview та Visual Edit: однакові шрифт, міжрядковий інтервал, відступи абзаців/списків/цитат/заголовків/коду, без сірого фону Preview. Activity зберігає компактний текст 12px. Preview не завантажує editor chunk до редагування; вихідна розмітка й поведінка курсора зберігаються. Результат підтверджено строгим вимірюванням геометрії блоків та візуальним оглядом у світлій і темній темах.
+
+Для наявного backend API-key підключення перевірка не знайшла операцій для like/unlike: цільовий UI використовує browser session/web reactions, а REST не надав reaction metadata чи придатного write-контракту. Користувач заборонив зміни сервера й дозволив пропустити лайки, якщо API їх не підтримує. Плагін, cookie/session обхід, локальний fake-state чи зовнішній reaction fallback не додаються. Деталі: [перевірка API](docs/UX_ROUND5_LIKES.md).
+
+Фінальний build/typecheck успішний; 313 unit/server-тестів пройшли перед останнім CSS-only уточненням. Після CSS уточнення цільові Chrome-сценарії пройшли 20/20, parity окремо 1/1. Це цільове покриття, а не новий повний E2E прогін. Docker оновлено на localhost:3010 зі збереженням тому та write mode; GET health/bootstrap підтвердили connected=true. [QA](docs/UX_ROUND5_LIKES_PREVIEW_QA.md), [розгортання](docs/UX_ROUND5_PREVIEW_DEPLOY.md).

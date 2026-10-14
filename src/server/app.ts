@@ -1,10 +1,11 @@
+import { registerGroupAvatarRoutes } from './group-avatars.js';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, Notification, PeopleField, Person, Priority, RedmineRole, ReleaseDetail, SearchResponse, SearchResult, Status, Version } from '../shared/types.js';
+import type { AssigneeOption, Bootstrap, BoardData, Command, Issue, IssueDetail, Journal, LabelOption, Notification, PeopleField, Person, Priority, RedmineRole, ReleaseDetail, SearchResponse, SearchResult, Status, Version } from '../shared/types.js';
 import { createConfig, type AppConfig, type ConfigInput } from './config.js';
 import { CommandService, ApiFault } from './commands/service.js';
 import { openDatabase } from './db/connection.js';
@@ -79,7 +80,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
   const connection = openDatabase(config.databasePath);
   try { await applyMigrations(connection.db, options.migrationsFolder ?? resolve(process.cwd(), 'drizzle')); }
   catch (error) { connection.close(); throw error; }
-  const store = new WorkspaceStore(connection.db, config.scope);
+  const store = new WorkspaceStore(connection.db, config.scope, config.mode === 'redmine');
   await store.initializeDemo();
   const events = new LocalEventHub();
   let adapter: RedmineAdapter | undefined;
@@ -196,6 +197,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     return { deleted: await store.removePersonAvatar(personId, version) };
   });
 
+  registerGroupAvatarRoutes(app, store);
+
   app.get('/api/bootstrap', async (): Promise<Bootstrap> => {
     await sync.bootstrapRead();
     const [projects, statuses, priorities, settings, me, capabilities] = await Promise.all([
@@ -213,9 +216,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       redmineUrl: config.redmineUrl, me: applyPersonAvatarOverride(me ?? { id: 0, name: 'Підключення Redmine' }, settings), projects,
       statuses: statuses ?? [], priorities: priorities ?? [], settings,
       capabilities: { canWrite: config.mode === 'demo' || config.writeEnabled && sync.isConnected && Boolean(adapter),
-        journalEditing: config.mode === 'demo', journalDeleting: config.mode === 'demo', journalLikes: config.mode === 'demo',
+        journalEditing: config.mode === 'demo' || capabilities?.journalEditing === true,
+        journalDeleting: config.mode === 'demo' || capabilities?.journalDeleting === true,
+        journalLikes: config.mode === 'demo',
         ...(capabilities?.branchFieldId ? { branchFieldId: capabilities.branchFieldId } : {}),
-        ...(capabilities?.labelsFieldId ? { labelsFieldId: capabilities.labelsFieldId } : {}), warnings },
+        ...(capabilities?.labelsFieldId ? { labelsFieldId: capabilities.labelsFieldId } : {}),
+        ...(capabilities?.primaryAssigneeFieldIds ? { primaryAssigneeFieldIds: capabilities.primaryAssigneeFieldIds } : {}),
+        ...(config.mode === 'demo' ? { textFormat: 'markdown' } : capabilities?.textFormat ? { textFormat: capabilities.textFormat } : {}), warnings },
+      ...(config.mode === 'demo' ? { textFormat: 'markdown' } : capabilities?.textFormat ? { textFormat: capabilities.textFormat } : {}),
     };
   });
 
@@ -226,15 +234,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     if (!project) throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
     const issues = await store.getIssues(projectId);
     const versions = await store.getVersions(projectId);
+    const statuses = await store.getValue<Status[]>('statuses') ?? [];
     const people = await store.getValue<Person[]>('people') ?? [];
     const memberIds = (await store.getValue<Record<string, number[]>>('projectMembers'))?.[String(projectId)] ?? [];
     const membershipIds = new Set((await store.getValue<Record<string, number[]>>('projectMembershipIds'))?.[String(projectId)] ?? []);
+    const projectGroups = (await store.getValue<Record<string, { id: number; name: string; memberIds?: number[] }[]>>('projectGroups'))?.[String(projectId)] ?? [];
+    const primaryAssigneeFieldId = (await store.getValue<{ primaryAssigneeFieldIds?: Record<string, number> }>('capabilities'))?.primaryAssigneeFieldIds?.[String(projectId)];
+    const capabilities = await store.getValue<Bootstrap['capabilities']>('capabilities');
     const membershipRoles = (await store.getValue<Record<string, Record<string, RedmineRole[]>>>('projectMembershipRoles'))?.[String(projectId)] ?? {};
     const settings = await store.getSettings();
     const members = [...new Map([...memberIds.map(id => people.find(person => person.id === id)).filter((person): person is Person => Boolean(person)),
-      ...issues.flatMap(issue => [people.find(person => person.id === issue.authorId), people.find(person => person.id === issue.assignedToId),
+      ...issues.flatMap(issue => [people.find(person => person.id === issue.authorId), issue.assignedToType === 'group' ? undefined : people.find(person => person.id === issue.assignedToId),
         ...issue.watcherIds.map(id => people.find(person => person.id === id))].filter((person): person is Person => Boolean(person)))].map(person => [person.id, person])).values()]
       .map(person => projectPerson(person, projectId, { membershipIds, membershipRoles }, settings));
+    const assigneeOptions: AssigneeOption[] = [
+      ...[...membershipIds].map(id => people.find(person => person.id === id)).filter((person): person is Person => Boolean(person))
+        .map(person => ({ type: 'user' as const, id: person.id, name: person.name, ...(person.avatar ? { avatar: person.avatar } : {}) })),
+      ...projectGroups.map(group => ({ type: 'group' as const, id: group.id, name: group.name,
+        ...(group.memberIds ? { memberIds: group.memberIds } : {}) })),
+    ];
     const peopleRecommendations: Partial<Record<PeopleField, number[]>> = {
       assignee: await store.getPeopleRecommendations(projectId, 'assignee'),
       developer: await store.getPeopleRecommendations(projectId, 'developer'),
@@ -242,10 +260,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     };
     const syncedAt = await store.getCursor('baseline');
     const labelOptions = (await store.getValue<Record<string, LabelOption[]>>('labelOptions'))?.[String(projectId)];
-    return { issues, versions, members, labels: [...new Set([...issues.flatMap(issue => issue.labels), ...(labelOptions ?? []).map(option => option.name)])].sort((a, b) => a.localeCompare(b)),
+    return { issues, versions, members, assigneeOptions, statuses,
+      ...(config.mode === 'demo' ? { textFormat: 'markdown' } : capabilities?.textFormat ? { textFormat: capabilities.textFormat } : {}),
+      ...(primaryAssigneeFieldId ? { primaryAssigneeFieldId } : {}), labels: [...new Set([...issues.flatMap(issue => issue.labels), ...(labelOptions ?? []).map(option => option.name)])].sort((a, b) => a.localeCompare(b)),
       ...(project.trackers !== undefined ? { trackers: project.trackers } : {}),
       ...(labelOptions?.length ? { labelOptions } : {}),
       total: issues.length, peopleRecommendations, ...(syncedAt ? { syncedAt } : {}) };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/projects/:id/mention-users', async request => {
+    await sync.bootstrapRead();
+    const projectId = positiveId(request.params.id, 'PROJECT_NOT_FOUND');
+    if (!(await store.getProjects()).some(project => project.id === projectId)) throw new ApiFault(404, 'PROJECT_NOT_FOUND', 'Проєкт не знайдено.');
+    if (config.mode === 'redmine') {
+      if (!adapter) throw new ApiFault(503, 'REDMINE_UNAVAILABLE', sync.connectionError ?? 'З’єднання з Redmine недоступне.');
+      return adapter.mentionUsers(projectId);
+    }
+    const memberIds = (await store.getValue<Record<string, number[]>>('projectMembershipIds'))?.[String(projectId)] ?? [];
+    const people = await store.getValue<Person[]>('people') ?? [];
+    return people.filter(person => memberIds.includes(person.id));
   });
 
   app.get<{ Querystring: { q?: string; projectId?: string; offset?: string; limit?: string } }>('/api/search', async (request): Promise<SearchResponse> => {
@@ -315,17 +348,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
     let remoteJournals: Journal[] | undefined;
     let remotePeople: Person[] | undefined;
+    let remoteAssigneeOptions: AssigneeOption[] | undefined;
+    let remoteTextFormat: string | undefined;
     if (config.mode === 'redmine' && adapter) {
       const detail = await adapter.issueDetail(issueId, await store.getValue<Record<string, LabelOption[]>>('labelOptions') ?? {});
       remoteJournals = detail.journals;
       remotePeople = detail.people;
+      remoteTextFormat = (await store.getValue<Bootstrap['capabilities']>('capabilities'))?.textFormat;
       if (!(await store.getProjects()).some(project => project.id === detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
       const cached = await store.getIssue(issueId);
-      await store.saveIssue({ ...detail.issue, developerId: cached?.developerId, qaId: cached?.qaId });
+      await store.saveIssue({ ...detail.issue, qaId: cached?.qaId });
+      if (detail.journalsIncluded) {
+        const freshJournalIds = new Set(detail.journals.map(journal => journal.id));
+        for (const previous of await store.getJournals(issueId)) if (!freshJournalIds.has(previous.id)) await store.deleteJournal(issueId, previous.id);
+      }
       for (const journal of detail.journals) await store.saveJournal(issueId, journal);
       const people = new Map((await store.getValue<Person[]>('people') ?? []).map(person => [person.id, person]));
       for (const person of detail.people) people.set(person.id, person);
       await store.setValue('people', [...people.values()]);
+      remoteAssigneeOptions = await adapter.issueAssigneeOptions(detail.issue.projectId, [...people.values()]).catch(() => undefined);
     }
     const issue = await store.getIssue(issueId);
     if (!issue) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
@@ -341,17 +382,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
     const roleContext = { membershipIds, membershipRoles };
     const projectedPeople = new Map([...peopleById.values()].map(person => [person.id, projectPerson(person, issue.projectId, roleContext, settings)]));
     const currentUser = me ?? { id: 0, name: 'Підключення Redmine' };
+    const statuses = await store.getValue<Status[]>('statuses') ?? [];
+    const capabilities = await store.getValue<Bootstrap['capabilities']>('capabilities');
     const journals = storedJournals.map(journal => {
       const hasNotes = journal.notes.trim().length > 0;
-      const mayManage = config.mode === 'demo' && hasNotes && (journal.user.id === currentUser.id || currentUser.isAdmin === true);
+      const ownJournal = journal.user.id === currentUser.id && currentUser.id > 0;
+      const mayEdit = hasNotes && (config.mode === 'demo' ? ownJournal || currentUser.isAdmin === true
+        : ownJournal && capabilities?.journalEditing === true);
+      const mayDelete = hasNotes && (config.mode === 'demo' ? mayEdit : ownJournal && capabilities?.journalDeleting === true);
       const { likes: _likes, likedByMe: _likedByMe, canLike: _canLike, canEdit: _canEdit, canDelete: _canDelete, ...publicJournal } = journal;
       const reactions = config.mode === 'demo' && hasNotes ? store.getJournalLikeState(journal.id, currentUser.id) : undefined;
       return { ...publicJournal, user: projectedPeople.get(journal.user.id) ?? projectPerson(journal.user, issue.projectId, roleContext, settings),
-        canEdit: mayManage, canDelete: mayManage, canLike: config.mode === 'demo' && hasNotes,
+        canEdit: mayEdit, canDelete: mayDelete, canLike: config.mode === 'demo' && hasNotes,
         ...(reactions ? { likes: reactions.count, likedByMe: reactions.likedByMe } : {}) };
     });
     return { issue, journals,
       watchers: issue.watcherIds.map(id => projectedPeople.get(id)).filter((person): person is Person => Boolean(person)),
+      statuses,
+      ...(config.mode === 'demo' ? { textFormat: 'markdown' } : remoteTextFormat ? { textFormat: remoteTextFormat } : {}),
+      ...(remoteAssigneeOptions ? { assigneeOptions: remoteAssigneeOptions } : {}),
       ...(remotePeople ? { people: remotePeople.map(person => projectedPeople.get(person.id) ?? projectPerson(person, issue.projectId, roleContext, settings)) } : {}) };
   });
 
@@ -368,7 +417,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       if (!accessibleProjects.has(detail.issue.projectId)) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
       issue = detail.issue;
       const cached = await store.getIssue(issueId);
-      await store.saveIssue({ ...issue, developerId: cached?.developerId, qaId: cached?.qaId });
+      await store.saveIssue({ ...issue, qaId: cached?.qaId });
     }
     const attachment = issue.attachments.find(item => item.id === attachmentId);
     if (!attachment) throw new ApiFault(404, 'ATTACHMENT_NOT_FOUND', 'Вкладення не знайдено.');
@@ -389,7 +438,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
       const issues: Issue[] = [];
       for (const issue of remoteIssues) {
         const cached = cachedIssues.get(issue.id);
-        const merged = { ...issue, watcherIds: cached?.watcherIds ?? issue.watcherIds, developerId: cached?.developerId, qaId: cached?.qaId };
+        const merged = { ...issue, watcherIds: cached?.watcherIds ?? issue.watcherIds, qaId: cached?.qaId };
         await store.saveIssue(merged);
         issues.push(merged);
       }
@@ -420,12 +469,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Workspa
   app.post<{ Params: { id: string } }>('/api/issues/:id/roles', async (request, reply) => {
     const issueId = positiveId(request.params.id, 'ISSUE_NOT_FOUND');
     const schema = z.object({ developerId: z.number().int().positive().nullable().optional(), qaId: z.number().int().positive().nullable().optional(),
+      expectedUpdatedOn: z.string().optional(),
       operationId: z.string().min(1).max(200).optional() });
     const parsed = schema.safeParse(request.body);
     if (!parsed.success || (parsed.data.developerId === undefined && parsed.data.qaId === undefined)) {
       return reply.code(400).send({ code: 'INVALID_ROLE', message: 'Вкажіть розробника або QA.' });
     }
-    const { operationId, ...roles } = parsed.data;
+    const { operationId, expectedUpdatedOn, ...roles } = parsed.data;
+    if (config.mode === 'redmine' && roles.developerId !== undefined) {
+      const result = await commands.execute({ type: 'updateIssue', issueId, operationId,
+        input: { primaryAssigneeId: roles.developerId, ...(roles.qaId !== undefined ? { qaId: roles.qaId } : {}),
+          ...(expectedUpdatedOn ? { expectedUpdatedOn } : {}) } });
+      if (result.operation.status !== 'done') throw new ApiFault(409, result.operation.errorCode ?? 'WRITE_FAILED', result.operation.error ?? 'Зміни не підтверджено Redmine.');
+      const updated = result.issue ?? await store.getIssue(issueId);
+      if (!updated) throw new ApiFault(404, 'ISSUE_NOT_FOUND', 'Задачу не знайдено.');
+      return updated;
+    }
     return commands.saveIssueRoles(issueId, roles, operationId);
   });
 

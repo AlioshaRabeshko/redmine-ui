@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Journal, Notification } from '../shared/types.js';
+import type { Journal, Notification, SubscriptionEvent } from '../shared/types.js';
 import { defaultSettings } from './settings.js';
 import { projectNotification, resolveNotificationEligibility } from './notifications.js';
 
@@ -20,7 +20,7 @@ const stored: Notification = {
   kind: 'labels', text: 'status_id: 910 → 911', createdOn: source.createdOn, readAt: '2026-10-05T10:00:00Z',
 };
 
-function data(events?: string[]) {
+function data(events?: SubscriptionEvent[]) {
   const settings = structuredClone(defaultSettings);
   if (events !== undefined) settings.subscriptions['5'] = { enabled: false, events };
   else delete settings.subscriptions['5'];

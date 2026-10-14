@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createConfig } from '../src/server/config.js';
 import { RedmineAdapter } from '../src/server/redmine/adapter.js';
 import { createApp } from '../src/server/app.js';
+import type { LabelOption } from '../src/shared/types.js';
 
 function fixtureFetch(failDetail = false) {
   const requested: URL[] = [];
@@ -9,6 +10,7 @@ function fixtureFetch(failDetail = false) {
     id, project: { id: 10 }, subject: `Task ${id}`, description: 'Body',
     status: { id: 903, name: 'Review' }, priority: { id: 88 }, author: { id: 2, name: 'Developer' },
     assigned_to: { id: 2, name: 'Developer' }, tracker: { id: 1, name: 'Task' },
+    allowed_statuses: [{ id: 903, name: 'Review', is_closed: false }],
     created_on: '2026-10-01T10:00:00Z', updated_on: '2026-10-02T10:00:00Z',
     custom_fields: [{ id: 23, name: 'Labels', value: ['Build: Failed'] }, { id: 24, name: 'Branch', value: `${id}-task` }],
   });
@@ -24,6 +26,7 @@ function fixtureFetch(failDetail = false) {
     ] }], total_count: 1, limit: 100 };
     else if (url.pathname.endsWith('/versions.json')) body = { versions: [{ id: 99, project: { id: 10 }, name: 'NEXT', status: 'open' }] };
     else if (url.pathname.endsWith('/memberships.json')) body = { memberships: [{ user: { id: 2, name: 'Developer' }, roles: [{ id: 5, name: 'Developer' }] }] };
+    else if (url.pathname.endsWith('/login')) return new Response('<body data-text-formatting="common_mark"></body>', { headers: { 'Content-Type': 'text/html' } });
     else if (url.pathname.endsWith('/issues.json')) {
       const offset = Number(url.searchParams.get('offset'));
       const ids = url.searchParams.get('status_id') === 'closed' ? [] : [101, 102, 103];
@@ -60,6 +63,146 @@ describe('Redmine read-only adapter integration contract', () => {
     expect(data.projectMembershipIds?.['10']).toEqual([2]);
     expect(data.projectMembershipRoles?.['10']?.['2']).toEqual([{ id: 5, name: 'Developer' }]);
     expect(JSON.stringify(data)).not.toContain('sensitive-api-response-key');
+  });
+
+  it('leaves Redmine status transitions unknown when the issue omits allowed_statuses', async () => {
+    const fixture = fixtureFetch();
+    const fetcher = async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const response = await fixture.fetcher(input);
+      if (!/\/issues\/\d+\.json$/.test(url.pathname)) return response;
+      const body = await response.json();
+      delete body.issue.allowed_statuses;
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+
+    const data = await adapter.snapshot();
+
+    expect(data.issues[0]?.allowedStatusIds).toBeUndefined();
+  });
+
+  it.each([
+    ['null', null, undefined],
+    ['a non-array value', { id: 903 }, undefined],
+    ['an invalid status ID', [{ id: '903', name: 'Review' }], undefined],
+    ['an empty list', [], []],
+  ] as const)('normalizes %s allowed_statuses without guessing transitions', async (_caseName, allowedStatuses, expected) => {
+    const fixture = fixtureFetch();
+    const fetcher = async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const response = await fixture.fetcher(input);
+      if (!/\/issues\/\d+\.json$/.test(url.pathname)) return response;
+      const body = await response.json();
+      body.issue.allowed_statuses = allowedStatuses;
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    };
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
+
+    const data = await adapter.snapshot();
+
+    expect(data.issues[0]?.allowedStatusIds).toEqual(expected);
+  });
+
+  it('maps Developer from one exact issue field ID while rejecting known conflicting metadata', async () => {
+    const fixture = fixtureFetch();
+    const validDefinition = { id: 19, name: 'Primary Assignee', customized_type: 'issue', field_format: 'user', multiple: false,
+      projects: [{ id: 10 }], trackers: [{ id: 1 }] };
+    const makeAdapter = (definition: unknown, denied = false) => new RedmineAdapter(
+      createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }),
+      async input => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith('/custom_fields.json')) return denied
+          ? new Response('', { status: 403 }) : new Response(JSON.stringify({ custom_fields: [definition] }));
+        const response = await fixture.fetcher(input);
+        if (url.pathname.endsWith('/issues.json') || /\/issues\/\d+\.json$/.test(url.pathname)) {
+          const body = await response.json();
+          const addField = (issue: Record<string, unknown>) => ({ ...issue, custom_fields: [
+            ...(Array.isArray(issue.custom_fields) ? issue.custom_fields : []), { id: 19, name: 'Primary Assignee', value: '2' },
+          ] });
+          if (Array.isArray(body.issues)) body.issues = body.issues.map(addField);
+          if (body.issue) body.issue = addField(body.issue);
+          return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return response;
+      });
+
+    const verified = await makeAdapter(validDefinition).snapshot();
+    expect(verified.issues[0]).toMatchObject({ primaryAssigneeFieldId: 19, primaryAssigneeId: 2, developerId: 2 });
+    expect(verified.primaryAssigneeFieldIds?.['10']).toBe(19);
+
+    const wrongType = await makeAdapter({ ...validDefinition, field_format: 'string' }).snapshot();
+    expect(wrongType.issues[0]?.primaryAssigneeId).toBeUndefined();
+    expect(wrongType.issues[0]?.developerId).toBeUndefined();
+    expect(wrongType.issues[0]?.primaryAssigneeFieldId).toBeUndefined();
+
+    const inaccessibleDefinition = await makeAdapter(undefined, true).snapshot();
+    expect(inaccessibleDefinition.issues[0]).toMatchObject({ primaryAssigneeFieldId: 19, primaryAssigneeId: 2, developerId: 2 });
+    expect(inaccessibleDefinition.primaryAssigneeFieldIds?.['10']).toBe(19);
+
+    const multiple = await makeAdapter({ ...validDefinition, multiple: true }).snapshot();
+    expect(multiple.issues[0]?.primaryAssigneeFieldId).toBeUndefined();
+    expect(multiple.issues[0]?.primaryAssigneeId).toBeUndefined();
+  });
+
+  it('exposes typed project groups from fresh membership even when the browser form is unavailable', async () => {
+    const requested: string[] = [];
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }),
+      async input => {
+        const url = new URL(String(input)); requested.push(url.pathname + url.search);
+        if (url.pathname.endsWith('/projects/10/memberships.json')) return new Response(JSON.stringify({ memberships: [
+          { user: { id: 2, name: 'Alex' } }, { group: { id: 7, name: 'Ops Team' } }, { group: { id: 8, name: 'Other Team' } },
+        ] }), { headers: { 'Content-Type': 'application/json' } });
+        if (/\/groups\/\d+\.json$/.test(url.pathname)) return new Response('', { status: 403 });
+        throw new Error(`Unexpected mock endpoint: ${url.pathname}`);
+      });
+    expect(await adapter.issueAssigneeOptions(10, [{ id: 2, name: 'Alex' }])).toBeUndefined();
+    const firstFreshMemberships = await adapter.projectMemberships(10);
+    expect(firstFreshMemberships.groups).toEqual([{ id: 7, name: 'Ops Team' }, { id: 8, name: 'Other Team' }]);
+    const readCountBeforeCachedPicker = requested.length;
+    expect(await adapter.issueAssigneeOptions(10, [{ id: 2, name: 'Alex' }])).toEqual([
+      { type: 'user', id: 2, name: 'Alex' }, { type: 'group', id: 7, name: 'Ops Team' }, { type: 'group', id: 8, name: 'Other Team' },
+    ]);
+    expect(requested).toHaveLength(readCountBeforeCachedPicker);
+    const secondFreshMemberships = await adapter.projectMemberships(10);
+    expect(secondFreshMemberships.groups).toEqual(firstFreshMemberships.groups);
+    expect(requested.filter(path => path.startsWith('/projects/10/memberships.json'))).toHaveLength(2);
+    expect(requested.some(path => /\/groups\/\d+\.json/.test(path))).toBe(false);
+  });
+
+  it('keeps issue opens off the membership/custom-field path and negatively caches unavailable label forms', async () => {
+    const fixture = fixtureFetch();
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fixture.fetcher);
+
+    await Promise.all([adapter.issueDetail(101, {}, false), adapter.issueDetail(101, {}, false)]);
+    const formReadsAfterColdOpen = fixture.requested.filter(url => url.pathname === '/issues/101/edit' || url.pathname === '/issues/101').length;
+    expect(formReadsAfterColdOpen).toBe(2);
+    expect(fixture.requested.some(url => url.pathname.endsWith('/custom_fields.json'))).toBe(false);
+    expect(fixture.requested.some(url => url.pathname.endsWith('/memberships.json') || /\/groups\/\d+\.json$/.test(url.pathname))).toBe(false);
+
+    await adapter.issueDetail(101, {}, false);
+
+    expect(fixture.requested.filter(url => url.pathname === '/issues/101/edit' || url.pathname === '/issues/101')).toHaveLength(2);
+    expect(fixture.requested.filter(url => /\/issues\/101\.json$/.test(url.pathname))).toHaveLength(3);
+  });
+
+  it('uses warm snapshot memberships and field definitions during issue open without repeating metadata GETs', async () => {
+    const fixture = fixtureFetch();
+    const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fixture.fetcher);
+    const snapshot = await adapter.snapshot();
+    const customFieldReads = fixture.requested.filter(url => url.pathname.endsWith('/custom_fields.json')).length;
+    const membershipReads = fixture.requested.filter(url => url.pathname === '/projects/10/memberships.json').length;
+    const formReads = fixture.requested.filter(url => url.pathname.endsWith('/edit') || url.pathname === '/issues/101').length;
+    const labels: LabelOption[] = [{ fieldId: 23, id: 'Build: Failed', name: 'Build: Failed' }];
+
+    await adapter.issueDetail(101, { '10': labels }, false);
+    const options = await adapter.issueAssigneeOptions(10, snapshot.people);
+
+    expect(options).toContainEqual({ type: 'user', id: 2, name: 'Developer' });
+    expect(fixture.requested.filter(url => url.pathname.endsWith('/custom_fields.json'))).toHaveLength(customFieldReads);
+    expect(fixture.requested.filter(url => url.pathname === '/projects/10/memberships.json')).toHaveLength(membershipReads);
+    expect(fixture.requested.some(url => /\/groups\/\d+\.json$/.test(url.pathname))).toBe(false);
+    expect(fixture.requested.filter(url => url.pathname.endsWith('/edit') || url.pathname === '/issues/101')).toHaveLength(formReads);
   });
   it.each([false, true])('reads a large unpaginated versions collection once (total_count present: %s)', async (hasTotalCount) => {
     const fixture = fixtureFetch();
@@ -101,7 +244,7 @@ describe('Redmine read-only adapter integration contract', () => {
     const adapter = new RedmineAdapter(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid', REDMINE_API_TOKEN: 'mock-token' }), fetcher);
     const baseline = await adapter.snapshot();
     expect(baseline.issues.map(issue => issue.id)).toEqual([101, 102, 103, 104]);
-    expect(baseline.issues.find(issue => issue.id === 104)).toMatchObject({ statusId: 9, fixedVersionId: 99 });
+    expect(baseline.issues.find(issue => issue.id === 104)).toMatchObject({ statusId: 909, fixedVersionId: 99 });
     expect(fixture.requested.filter(url => url.pathname.endsWith('/issues.json')).every(url => url.searchParams.get('status_id') === 'open')).toBe(true);
   });
 
@@ -317,11 +460,15 @@ describe('Redmine read-only adapter integration contract', () => {
       const issue = await app.inject('/api/issues/104');
       expect(issue.statusCode).toBe(200);
       expect(issue.json().journals).toHaveLength(1);
+      expect(issue.json()).toMatchObject({ issue: { allowedStatusIds: [903] }, statuses: [{ id: 903 }], textFormat: 'common_mark' });
+      expect(issue.json().assigneeOptions).toContainEqual({ type: 'user', id: 2, name: 'Developer' });
+      expect(bootstrap.capabilities).toMatchObject({ journalEditing: false, journalDeleting: false, journalLikes: false });
       await app.backend.store.setIssueRoles(104, 2, 3);
       removedNotes = true;
       const refreshed = (await app.inject('/api/issues/104')).json();
       expect(refreshed.journals).toEqual([]);
-      expect(refreshed.issue).toMatchObject({ developerId: 2, qaId: 3 });
+      expect(refreshed.issue).toMatchObject({ qaId: 3 });
+      expect(refreshed.issue.developerId).toBeUndefined();
       const release = await app.inject('/api/releases/99');
       expect(release.statusCode).toBe(200);
       expect(release.json().issues).toHaveLength(3);
@@ -337,7 +484,9 @@ describe('Redmine read-only adapter integration contract', () => {
     expect(data.issues).toHaveLength(3);
     expect(data.journals).toEqual([]);
     expect(data.issues.every(issue => issue.watcherIds.includes(data.me.id))).toBe(true);
-    expect(fixture.requested.some(url => /^\/issues\/\d+\.json$/.test(url.pathname))).toBe(false);
+    const permissionReads = fixture.requested.filter(url => /^\/issues\/\d+\.json$/.test(url.pathname));
+    expect(permissionReads).toHaveLength(3);
+    expect(permissionReads.every(url => url.searchParams.get('include') === 'allowed_statuses')).toBe(true);
     expect(fixture.requested.some(url => url.searchParams.get('watcher_id') === 'me')).toBe(true);
   });
 

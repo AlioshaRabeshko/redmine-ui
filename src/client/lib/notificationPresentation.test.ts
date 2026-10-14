@@ -4,7 +4,7 @@ import type { Notification } from '../../shared/types';
 
 const strings: Record<string, string> = {
   status: 'Status', assignee: 'Assignee', labels: 'Labels', priorityField: 'Priority', release: 'Release',
-  noAssignee: 'Unassigned', cleared: 'Cleared', unknown: 'Unknown', notificationDetailsUnavailable: 'Details unavailable',
+  noAssignee: 'Unassigned', cleared: 'Cleared', unknown: 'Unknown', notificationDetailsUnavailable: 'Details unavailable', notificationIssueCreated: 'Created this issue',
 };
 const t = (key: string) => strings[key] ?? key;
 
@@ -14,6 +14,10 @@ function notification(overrides: Partial<Notification> = {}): Notification {
 }
 
 describe('notification presentation', () => {
+  it('presents issue creation without implying missing journal details', () => {
+    expect(presentNotification(notification({ id: 'issue:12:created', kind: 'issue_created', journalId: undefined, text: 'Created' }), t))
+      .toEqual({ notes: 'Created this issue', changes: [] });
+  });
   it('uses the shared Activity renderer for fields and project lookups', () => {
     const view = presentNotification(notification({
       notes: 'A note',

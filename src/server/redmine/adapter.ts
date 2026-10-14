@@ -1,22 +1,25 @@
 import type { AppConfig } from '../config.js';
-import type { Attachment, Issue, Journal, LabelOption, Person, Priority, Project, ProjectTracker, RedmineRole, SearchResponse, SearchResult, Status, StatusKey, Version } from '../../shared/types.js';
+import type { AssigneeOption, Attachment, Issue, Journal, LabelOption, Person, Priority, Project, ProjectTracker, RedmineRole, SearchResponse, SearchResult, Status, StatusKey, Version } from '../../shared/types.js';
 import type { WorkspaceStore } from '../db/store.js';
 import { load as loadHtml } from 'cheerio';
 import { RedmineRequestError, RedmineTransport, type FetchLike } from './transport.js';
 
-interface RedmineUser { id: number; name?: string; firstname?: string; lastname?: string; avatar_url?: string }
+interface RedmineUser { id: number; name?: string; firstname?: string; lastname?: string; login?: string; avatar_url?: string }
 interface RedmineIssueStatus { id: number; name: string; is_closed?: boolean }
 interface RedminePriority { id: number; name: string; position?: number }
 interface RedmineProject { id: number; name: string; identifier: string; description?: string; trackers?: unknown }
-interface RedmineMembership { user?: RedmineUser; roles?: RedmineRole[] }
+interface RedmineMembership { user?: RedmineUser; group?: { id: number; name?: string }; roles?: RedmineRole[] }
 interface RedmineVersion { id: number; project?: { id: number }; name: string; status?: string; due_date?: string; description?: string }
 interface RedmineJournalDetail { name?: string; property?: string; old_value?: unknown; new_value?: unknown }
 interface RedmineJournal { id: number; user?: RedmineUser; notes?: string; created_on: string; details?: RedmineJournalDetail[] }
-interface RedmineCustomField { id: number; name: string; possible_values?: unknown; projects?: { id: number }[] }
+interface RedmineCustomField {
+  id: number; name: string; possible_values?: unknown; projects?: { id: number }[]; trackers?: { id: number }[];
+  customized_type?: string; field_format?: string; multiple?: boolean;
+}
 interface RedmineSearchItem { id: number; type?: string; title?: string; description?: string; url?: string; datetime?: string; project?: { id: number } }
 interface RedmineIssue {
   id: number; project?: { id: number }; subject: string; description?: string; status: RedmineIssueStatus;
-  priority?: { id: number }; tracker?: { id: number; name: string }; author?: RedmineUser; assigned_to?: RedmineUser;
+  priority?: { id: number }; tracker?: { id: number; name: string }; author?: RedmineUser; assigned_to?: RedmineUser & { type?: string };
   fixed_version?: { id: number }; created_on: string; updated_on: string; due_date?: string; parent?: { id: number };
   watchers?: RedmineUser[]; journals?: RedmineJournal[]; attachments?: { id: number; filename: string; content_url: string; filesize: number; content_type?: string }[];
   custom_fields?: { id: number; name: string; value: unknown }[]; labels?: string[]; allowed_statuses?: RedmineIssueStatus[];
@@ -24,9 +27,30 @@ interface RedmineIssue {
 
 export interface RedmineWriteFieldMetadata {
   branchFieldId?: number;
+  primaryAssigneeFieldId?: number;
+  sampleIssueId?: number;
   labelFieldIds: number[];
   labelOptions: LabelOption[];
 }
+
+export interface RedmineProjectMemberships {
+  userIds: number[];
+  groups: { id: number; name?: string; memberIds?: number[] }[];
+}
+
+interface CachedProjectMemberships {
+  expiresAt: number;
+  value: RedmineProjectMemberships;
+}
+
+interface CachedLabelFormOptions {
+  expiresAt: number;
+  value: LabelOption[];
+}
+
+const metadataCacheTtlMs = 5 * 60_000;
+const maxCachedProjects = 128;
+const maxCachedLabelForms = 256;
 
 export interface RedmineSnapshot {
   me: Person;
@@ -38,16 +62,32 @@ export interface RedmineSnapshot {
   people: Person[];
   projectMembers: Record<string, number[]>;
   projectMembershipIds?: Record<string, number[]>;
+  projectGroupIds?: Record<string, number[]>;
+  projectGroups?: Record<string, { id: number; name: string; memberIds?: number[] }[]>;
   projectMembershipRoles?: Record<string, Record<string, RedmineRole[]>>;
   journals: { issueId: number; journal: Journal }[];
   labelOptions?: Record<string, LabelOption[]>;
   branchFieldId?: number;
   labelsFieldId?: number;
+  primaryAssigneeFieldIds?: Record<string, number>;
+  textFormat?: string;
   warnings: string[];
+}
+
+export interface RedmineIssueDetail {
+  issue: Issue;
+  journals: Journal[];
+  journalsIncluded?: boolean;
+  people: Person[];
 }
 
 export class RedmineAdapter {
   readonly transport: RedmineTransport;
+  private customFieldCatalogCache?: { expiresAt: number; value: RedmineCustomField[] };
+  private customFieldCatalogFlight?: Promise<RedmineCustomField[]>;
+  private readonly projectMembershipCache = new Map<number, CachedProjectMemberships>();
+  private readonly labelFormOptionsCache = new Map<string, CachedLabelFormOptions>();
+  private readonly labelFormOptionsFlights = new Map<string, Promise<LabelOption[]>>();
   constructor(private readonly config: AppConfig, fetcher?: FetchLike) {
     this.transport = new RedmineTransport(config, fetcher);
   }
@@ -72,12 +112,17 @@ export class RedmineAdapter {
     const projectMembers: Record<string, number[]> = {};
     const projectMembershipIds: Record<string, number[]> = {};
     const projectMembershipRoles: Record<string, Record<string, RedmineRole[]>> = {};
+    const projectGroupIds: Record<string, number[]> = {};
+    const projectGroups: Record<string, { id: number; name: string; memberIds?: number[] }[]> = {};
     const warnings: string[] = [];
     const allIssues: Issue[] = [];
     const allVersions: Version[] = [];
     const allJournals: { issueId: number; journal: Journal }[] = [];
     const labelOptions: Record<string, LabelOption[]> = {};
-    const rawFieldDefinitions = await this.readCustomFieldDefinitions();
+    const primaryAssigneeFieldIds: Record<string, number> = {};
+    const conflictingPrimaryAssigneeProjects = new Set<string>();
+    const unresolvedPrimaryAssigneeIds = new Set<number>();
+    const rawFieldDefinitions = await this.readCustomFieldCatalog();
     let branchFieldId: number | undefined;
     let labelsFieldId: number | undefined;
 
@@ -129,7 +174,7 @@ export class RedmineAdapter {
       let optionsFromForm: LabelOption[] = [];
       const sampleIssueId = rawIssues.find(issue => (issue.custom_fields ?? []).some(field => projectFieldIds.has(field.id)))?.id;
       if (sampleIssueId && projectFieldIds.size && (!since || !cachedOptions.length) && (!optionsFromApi.length || numericValueNeedsNames)) {
-        optionsFromForm = await this.readLabelOptionsFromEditForm(sampleIssueId, projectFieldIds).catch(() => []);
+        optionsFromForm = await this.cachedLabelOptionsFromEditForm(sampleIssueId, projectFieldIds);
       }
       labelOptions[String(project.id)] = mergeLabelOptions(cachedOptions, optionsFromApi, optionsFromForm);
       const unresolvedNumericLabels = rawIssues.some(issue => (issue.custom_fields ?? []).filter(field => projectFieldIds.has(field.id))
@@ -152,7 +197,17 @@ export class RedmineAdapter {
       if (membershipResponse !== undefined) {
         projectMembershipIds[String(project.id)] = [...new Set(projectMemberIds)];
         projectMembershipRoles[String(project.id)] = membershipRoles;
+        const groupMemberships = [...new Map(rawMemberships.flatMap(membership => {
+          const id = positiveId(membership.group?.id);
+          const name = safeText(membership.group?.name);
+          return id && name ? [[id, { id, name } as { id: number; name: string }]] : [];
+        })).values()];
+        projectGroupIds[String(project.id)] = groupMemberships.map(group => group.id);
+        this.projectGroupIds.set(project.id, new Set(projectGroupIds[String(project.id)]));
+        projectGroups[String(project.id)] = groupMemberships;
+        this.rememberProjectMemberships(project.id, { userIds: [...new Set(projectMemberIds)], groups: groupMemberships });
       }
+      this.projectGroupIds.set(project.id, new Set(projectGroupIds[String(project.id)] ?? []));
       if (!hydrateDetails) {
         const watched = await this.readPaged<RedmineIssue>(`${query}&watcher_id=me`, 'issues');
         const watchedReleaseIssues = await mapLimit(rawVersions.filter(version => version.status !== 'closed' && (!version.project || version.project.id === project.id)), 2,
@@ -165,24 +220,49 @@ export class RedmineAdapter {
           if (watchedIds.has(raw.id)) raw.watchers = [...(raw.watchers ?? []).filter(user => user.id !== me.id), { id: me.id, name: me.name }];
         }
       }
-      const hydratedIssues = !hydrateDetails ? rawIssues : await mapLimit(rawIssues, 4, async (listIssue) => {
-        if (listOnlyDeployIds.has(listIssue.id)) return listIssue;
+      let transitionMetadataIncomplete = false;
+      const permissionHydratedIssues = !hydrateDetails ? await mapLimit(rawIssues, 4, async (listIssue) => {
+        try {
+          const detail = await this.transport.request<{ issue?: RedmineIssue }>(`issues/${listIssue.id}.json?include=allowed_statuses`);
+          if (!detail.issue) { transitionMetadataIncomplete = true; return listIssue; }
+          return { ...listIssue, allowed_statuses: detail.issue.allowed_statuses };
+        } catch {
+          // Keep the board readable if this Redmine version/permission cannot expose workflow
+          // choices. The missing field remains undefined, which disables unverified transitions.
+          transitionMetadataIncomplete = true;
+          return listIssue;
+        }
+      }) : rawIssues;
+      if (transitionMetadataIncomplete) warnings.push(`Для частини задач проєкту ${project.name} не вдалося перевірити доступні переходи статусу.`);
+      const hydratedIssues = !hydrateDetails ? permissionHydratedIssues : await mapLimit(rawIssues, 4, async (listIssue) => {
         const detail = await this.transport.request<{ issue: RedmineIssue }>(
           `issues/${listIssue.id}.json?include=journals%2Cwatchers%2Cattachments%2Callowed_statuses`);
         if (!detail.issue) throw new RedmineRequestError(`Redmine не повернув задачу ${listIssue.id}.`);
         return detail.issue;
       });
       for (const raw of hydratedIssues) {
-        for (const user of [raw.author, raw.assigned_to, ...(raw.watchers ?? [])]) {
+        const primaryAssigneeFieldId = findPrimaryAssigneeFieldId(raw.custom_fields ?? [], rawFieldDefinitions, project.id, raw.tracker?.id);
+        const mapped = mapIssue(raw, project.id, labelOptions[String(project.id)], {
+          groupIds: new Set(projectGroupIds[String(project.id)] ?? []), userIds: new Set(projectMembershipIds[String(project.id)] ?? []),
+          primaryAssigneeFieldId,
+        });
+        for (const user of [raw.author, ...(mapped.assignedToType === 'group' ? [] : [raw.assigned_to]), ...(raw.watchers ?? [])]) {
           if (!user) continue;
           const mapped = person(user);
           peopleById.set(mapped.id, mapped);
           projectPeople.add(mapped.id);
         }
+        if (mapped.primaryAssigneeId && !peopleById.has(mapped.primaryAssigneeId)) unresolvedPrimaryAssigneeIds.add(mapped.primaryAssigneeId);
         const fieldMap = raw.custom_fields ?? [];
         branchFieldId ??= fieldMap.find(field => /\bbranch\b/i.test(field.name))?.id;
         labelsFieldId ??= fieldMap.find(field => isLabelOrTagField(field.name))?.id;
-        const mapped = mapIssue(raw, project.id, labelOptions[String(project.id)]);
+        if (primaryAssigneeFieldId && !conflictingPrimaryAssigneeProjects.has(String(project.id))) {
+          const previousFieldId = primaryAssigneeFieldIds[String(project.id)];
+          if (previousFieldId !== undefined && previousFieldId !== primaryAssigneeFieldId) {
+            delete primaryAssigneeFieldIds[String(project.id)];
+            conflictingPrimaryAssigneeProjects.add(String(project.id));
+          } else primaryAssigneeFieldIds[String(project.id)] = primaryAssigneeFieldId;
+        }
         allIssues.push(mapped);
         const customFieldNames = new Map((raw.custom_fields ?? []).map(field => [field.id, field.name]));
         for (const rawJournal of raw.journals ?? []) {
@@ -197,20 +277,30 @@ export class RedmineAdapter {
         if (version.projectId === project.id) allVersions.push(version);
       }
     }
+    await mapLimit([...unresolvedPrimaryAssigneeIds], 4, async id => {
+      try {
+        const response = await this.transport.request<{ user?: RedmineUser }>(`users/${id}.json`);
+        if (response.user) peopleById.set(response.user.id, person(response.user));
+      } catch { /* custom-field user names are best-effort metadata */ }
+    });
     if (!branchFieldId) warnings.push('Поле Branch не знайдено у доступних задачах.');
     if (!labelsFieldId) warnings.push('Поле Labels не визначено у доступних задачах.');
+    const textFormat = await this.readTextFormat().catch(() => undefined);
     return { me, projects, statuses, priorities, versions: allVersions, issues: allIssues,
       people: [...peopleById.values()], projectMembers, projectMembershipIds, projectMembershipRoles,
-      journals: allJournals, labelOptions, branchFieldId, labelsFieldId, warnings };
+      projectGroupIds, projectGroups, journals: allJournals, labelOptions, branchFieldId, labelsFieldId,
+      ...(Object.keys(primaryAssigneeFieldIds).length ? { primaryAssigneeFieldIds } : {}), ...(textFormat ? { textFormat } : {}), warnings };
   }
 
   async releaseIssues(versionId: number, projectId: number, labelOptions: LabelOption[] = []): Promise<Issue[]> {
     const raw = await this.readPaged<RedmineIssue>(`issues.json?project_id=${projectId}&subproject_id=%21%2A&status_id=*&fixed_version_id=${versionId}`, 'issues');
-    return raw.map(issue => mapIssue(issue, projectId, labelOptions));
+    const definitions = await this.readCustomFieldCatalog();
+    return raw.map(issue => mapIssue(issue, projectId, labelOptions, { groupIds: this.knownGroupIds(projectId),
+      primaryAssigneeFieldId: findPrimaryAssigneeFieldId(issue.custom_fields ?? [], definitions, projectId, issue.tracker?.id) }));
   }
 
   async issueDetail(issueId: number, cachedLabelOptions: LabelOption[] | Record<string, LabelOption[]> = [],
-    includeHistoryPeopleLookup = true): Promise<{ issue: Issue; journals: Journal[]; people: Person[] }> {
+    includeHistoryPeopleLookup = true, membership?: { userIds?: Set<number>; groupIds?: Set<number> }): Promise<RedmineIssueDetail> {
     const detail = await this.transport.request<{ issue: RedmineIssue }>(`issues/${issueId}.json?include=journals%2Cwatchers%2Cattachments%2Callowed_statuses`);
     if (!detail.issue || !detail.issue.project) throw new RedmineRequestError(`Redmine не повернув задачу ${issueId}.`);
     const raw = detail.issue;
@@ -220,20 +310,28 @@ export class RedmineAdapter {
     const cachedForProject = Array.isArray(cachedLabelOptions) ? cachedLabelOptions : cachedLabelOptions[String(raw.project!.id)] ?? [];
     let detailOptions = cachedForProject.filter(option => option.fieldId !== undefined && projectFieldIds.has(option.fieldId));
     if (!detailOptions.length && projectFields.length) {
-      const definitions = await this.readCustomFieldDefinitions();
+      // Opening a card must not wait for the administrator-only custom field catalog. The
+      // board sync owns remote catalog refreshes; issue payload names still identify a unique
+      // Primary Assignee field when that optional catalog is unavailable.
+      const definitions = this.cachedCustomFieldCatalog();
       const fromApi = definitions.filter(field => projectFieldIds.has(field.id) && isLabelOrTagField(field.name))
         .flatMap(field => normalizePossibleValues(field, raw.project!.id));
       const numericValues = projectFields.some(field => flattenLabels(field.value).some(value => /^\d+$/.test(value)));
       const fromForm = numericValues || !fromApi.length
-        ? await this.readLabelOptionsFromEditForm(issueId, projectFieldIds).catch(() => []) : [];
+        ? await this.cachedLabelOptionsFromEditForm(issueId, projectFieldIds) : [];
       detailOptions = mergeLabelOptions(fromApi, fromForm);
     }
     const journals = (raw.journals ?? []).map(journal => mapJournal(journal, fieldNames, detailOptions));
+    // The issue response is fresh. Use already-known field definitions only to reject a
+    // conflicting binding; never make an administrator-catalog request block opening a card.
+    const primaryAssigneeFieldId = findPrimaryAssigneeFieldId(raw.custom_fields ?? [], this.cachedCustomFieldCatalog(), raw.project!.id, raw.tracker?.id);
     const peopleById = new Map<number, Person>();
-    for (const user of [raw.author, raw.assigned_to, ...(raw.watchers ?? []), ...(raw.journals ?? []).map(journal => journal.user)]) {
+    const mappedIssue = mapIssue(raw, raw.project!.id, detailOptions, { groupIds: this.knownGroupIds(raw.project!.id), primaryAssigneeFieldId });
+    for (const user of [raw.author, ...(mappedIssue.assignedToType === 'group' ? [] : [raw.assigned_to]), ...(raw.watchers ?? []), ...(raw.journals ?? []).map(journal => journal.user)]) {
       if (user) peopleById.set(user.id, person(user));
     }
     const referencedUserIds = new Set<number>();
+    if (mappedIssue.primaryAssigneeId && !peopleById.has(mappedIssue.primaryAssigneeId)) referencedUserIds.add(mappedIssue.primaryAssigneeId);
     for (const journal of raw.journals ?? []) for (const detail of journal.details ?? []) {
       if (!/assigned_to|author|user/i.test(detail.name ?? '')) continue;
       for (const value of [detail.old_value, detail.new_value]) {
@@ -250,10 +348,27 @@ export class RedmineAdapter {
     }) : [];
     for (const user of missingPeople) if (user) peopleById.set(user.id, user);
     const people = [...peopleById.values()];
-    return { issue: mapIssue(raw, raw.project!.id, detailOptions), journals, people };
+    return { issue: mapIssue(raw, raw.project!.id, detailOptions, {
+      userIds: membership?.userIds, groupIds: membership?.groupIds ?? this.knownGroupIds(raw.project!.id),
+      primaryAssigneeFieldId,
+    }), journals, journalsIncluded: Array.isArray(raw.journals), people };
   }
 
-  async createIssue(fields: Record<string, unknown>, labelOptions: LabelOption[] = []): Promise<Issue> {
+  async issueAssigneeOptions(projectId: number, people: Person[] = []): Promise<AssigneeOption[] | undefined> {
+    // These are presentation choices sourced from the latest successful snapshot. Writes use
+    // projectMemberships() directly and always reread Redmine before validating membership.
+    const memberships = this.cachedProjectMemberships(projectId);
+    if (!memberships) return undefined;
+    const usersById = new Map(people.map(person => [person.id, person]));
+    const users = memberships.userIds.flatMap(id => {
+      const user = usersById.get(id);
+      return user ? [{ type: 'user' as const, id, name: user.name, ...(user.avatar ? { avatar: user.avatar } : {}) }] : [];
+    });
+    return [...users, ...memberships.groups.flatMap(group => group.name ? [{ type: 'group' as const, id: group.id, name: group.name,
+      ...(group.memberIds ? { memberIds: group.memberIds } : {}) }] : [])];
+  }
+
+  async createIssue(fields: Record<string, unknown>, labelOptions: LabelOption[] = [], primaryAssigneeFieldId?: number): Promise<Issue> {
     const response = await this.transport.request<{ issue?: RedmineIssue }>('issues.json', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issue: fields }),
     });
@@ -264,7 +379,7 @@ export class RedmineAdapter {
       throw new RedmineRequestError('Redmine прийняв створення, але не повернув достатньо даних для визначення задачі. Перевірте її в Redmine перед повтором.', 201, undefined, true);
     }
     // Redmine returns the created object. Mapping it here retains its ID without a second request.
-    return mapIssue(raw, projectId, labelOptions);
+    return mapIssue(raw, projectId, labelOptions, { groupIds: this.knownGroupIds(projectId), primaryAssigneeFieldId });
   }
 
   async updateIssue(issueId: number, fields: Record<string, unknown>): Promise<void> {
@@ -308,7 +423,7 @@ export class RedmineAdapter {
     });
   }
 
-  async writeFieldMetadata(projectId: number, sampleIssueId?: number): Promise<RedmineWriteFieldMetadata> {
+  async writeFieldMetadata(projectId: number, sampleIssueId?: number, trackerId?: number): Promise<RedmineWriteFieldMetadata> {
     const id = resourceId(projectId, 'проєкту');
     let sample: RedmineIssue | undefined;
     if (sampleIssueId !== undefined) {
@@ -317,8 +432,9 @@ export class RedmineAdapter {
       sample = response.issue;
       if (!sample || sample.project?.id !== id) throw new RedmineRequestError('Зразок поля не належить вибраному проєкту.', 404);
     } else {
+      const trackerFilter = trackerId ? `&tracker_id=${trackerId}` : '';
       const response = await this.transport.request<{ issues?: RedmineIssue[] }>(
-        `issues.json?project_id=${id}&subproject_id=%21%2A&status_id=*&limit=1&offset=0`);
+        `issues.json?project_id=${id}&subproject_id=%21%2A&status_id=*&${trackerFilter ? `${trackerFilter.slice(1)}&` : ''}limit=1&offset=0`);
       sample = response.issues?.[0];
     }
     const definitions = await this.readCustomFieldCatalog();
@@ -330,6 +446,10 @@ export class RedmineAdapter {
     }
     const fields = [...definitionById.values()];
     const branchFieldId = fields.find(field => /\bbranch\b/i.test(field.name))?.id;
+    const sampleMatchesTracker = !sample || sample.tracker?.id === undefined || trackerId === undefined || sample.tracker.id === trackerId;
+    const primaryAssigneeFieldId = sampleMatchesTracker
+      ? findPrimaryAssigneeFieldId(sample?.custom_fields ?? [], definitions, id, trackerId ?? sample?.tracker?.id)
+      : undefined;
     const labelFields = fields.filter(field => isLabelOrTagField(field.name));
     const labelFieldIds = [...new Set(labelFields.map(field => field.id))].sort((a, b) => a - b);
     let labelOptions = mergeLabelOptions(...labelFields.map(field => normalizePossibleValues(field, id)));
@@ -337,11 +457,48 @@ export class RedmineAdapter {
     const hasUnresolvedNumericValues = sampleLabelFields.some(field => flattenLabels(field.value).some(value => /^\d+$/.test(value)
       && !labelOptions.some(option => option.fieldId === field.id && option.id === value && option.name !== value)));
     if (sample && labelFieldIds.length && (!labelOptions.length || hasUnresolvedNumericValues)) {
-      const fromForm = await this.readLabelOptionsFromEditForm(sample.id, new Set(labelFieldIds)).catch(() => []);
+      const fromForm = await this.cachedLabelOptionsFromEditForm(sample.id, new Set(labelFieldIds));
       labelOptions = mergeLabelOptions(labelOptions, fromForm);
     }
-    return { ...(branchFieldId ? { branchFieldId } : {}), labelFieldIds, labelOptions };
+    return { ...(branchFieldId ? { branchFieldId } : {}), ...(primaryAssigneeFieldId ? { primaryAssigneeFieldId } : {}),
+      ...(sample?.id ? { sampleIssueId: sample.id } : {}), labelFieldIds, labelOptions };
   }
+
+  async projectMemberships(projectId: number): Promise<RedmineProjectMemberships> {
+    const id = resourceId(projectId, 'проєкту');
+    const memberships = await this.readPaged<RedmineMembership>(`projects/${id}/memberships.json`, 'memberships');
+    const userIds = [...new Set(memberships.map(item => positiveId(item.user?.id)).filter((value): value is number => Boolean(value)))];
+    const groups = [...new Map(memberships.flatMap(item => {
+      const groupId = positiveId(item.group?.id);
+      if (!groupId) return [];
+      const name = safeText(item.group?.name);
+      return [[groupId, { id: groupId, ...(name ? { name } : {}) } as { id: number; name?: string }]];
+    })).values()];
+    const fresh = { userIds, groups };
+    this.projectGroupIds.set(projectId, new Set(groups.map(group => group.id)));
+    this.rememberProjectMemberships(projectId, fresh);
+    return fresh;
+  }
+
+  async mentionUsers(projectId: number): Promise<Person[]> {
+    const id = resourceId(projectId, 'проєкту');
+    const memberships = await this.readPaged<RedmineMembership>(`projects/${id}/memberships.json`, 'memberships');
+    const users = [...new Map(memberships.flatMap(item => item.user?.id ? [[item.user.id, item.user] as const] : [])).values()];
+    const resolved = await mapLimit(users, 4, async user => {
+      if (user.login) return person(user);
+      try {
+        const response = await this.transport.request<{ user?: RedmineUser }>(`users/${resourceId(user.id, 'користувача')}.json`);
+        return response.user ? person({ ...user, ...response.user }) : person(user);
+      } catch { return person(user); }
+    });
+    return resolved;
+  }
+
+  private knownGroupIds(projectId: number): Set<number> {
+    return this.projectGroupIds.get(projectId) ?? new Set<number>();
+  }
+
+  private readonly projectGroupIds = new Map<number, Set<number>>();
 
   async search(q: string, options: { projectIdentifier?: string; offset: number; limit: number }): Promise<SearchResponse> {
     // Redmine uses presence, not boolean parsing: even "0" enables these flags.
@@ -397,18 +554,94 @@ export class RedmineAdapter {
     return result;
   }
 
-  private async readCustomFieldDefinitions(): Promise<RedmineCustomField[]> {
-    return (await this.readCustomFieldCatalog()).filter(field => isLabelOrTagField(field.name));
+  private async readTextFormat(): Promise<string | undefined> {
+    // Redmine publishes this instance setting on its normal layout body. Keep this a bounded GET;
+    // it is metadata only and does not require reading application configuration or credentials.
+    const html = await this.transport.requestText('login', {}, 512 * 1024);
+    const value = safeText(loadHtml(html)('body').attr('data-text-formatting'))?.toLowerCase();
+    return value && /^[a-z][a-z0-9_-]{0,31}$/.test(value) ? value : undefined;
   }
 
   private async readCustomFieldCatalog(): Promise<RedmineCustomField[]> {
+    if (this.customFieldCatalogCache && this.customFieldCatalogCache.expiresAt > Date.now()) return this.customFieldCatalogCache.value;
+    if (this.customFieldCatalogFlight) return this.customFieldCatalogFlight;
+    const flight = (async () => {
+      let value: RedmineCustomField[] = [];
+      try {
+        const response = await this.transport.request<{ custom_fields?: RedmineCustomField[] }>('custom_fields.json');
+        value = Array.isArray(response.custom_fields) ? response.custom_fields.filter(field => Number.isSafeInteger(field.id) && field.id > 0
+          && typeof field.name === 'string') : [];
+      } catch {
+        // Redmine restricts this endpoint to administrators on many installations. Cache the
+        // unavailable result briefly so concurrent sync/read paths do not repeat the same GET.
+      }
+      this.customFieldCatalogCache = { value, expiresAt: Date.now() + metadataCacheTtlMs };
+      return value;
+    })();
+    this.customFieldCatalogFlight = flight;
+    try { return await flight; }
+    finally { if (this.customFieldCatalogFlight === flight) this.customFieldCatalogFlight = undefined; }
+  }
+
+  private cachedCustomFieldCatalog(): RedmineCustomField[] {
+    // A stale definition may conservatively reject an issue-field binding, but it must never
+    // establish the binding by itself. The positive identity always comes from the fresh issue.
+    return this.customFieldCatalogCache?.value ?? [];
+  }
+
+  private rememberProjectMemberships(projectId: number, value: RedmineProjectMemberships): void {
+    const copy = { userIds: [...value.userIds], groups: value.groups.map(group => ({ ...group,
+      ...(group.memberIds ? { memberIds: [...group.memberIds] } : {}) })) };
+    this.projectMembershipCache.delete(projectId);
+    this.projectMembershipCache.set(projectId, { value: copy, expiresAt: Date.now() + metadataCacheTtlMs });
+    while (this.projectMembershipCache.size > maxCachedProjects) {
+      const oldestProjectId = this.projectMembershipCache.keys().next().value as number | undefined;
+      if (oldestProjectId === undefined) break;
+      this.projectMembershipCache.delete(oldestProjectId);
+    }
+  }
+
+  private cachedProjectMemberships(projectId: number): RedmineProjectMemberships | undefined {
+    const cached = this.projectMembershipCache.get(projectId);
+    if (!cached) return undefined;
+    if (cached.expiresAt <= Date.now()) {
+      this.projectMembershipCache.delete(projectId);
+      return undefined;
+    }
+    this.projectMembershipCache.delete(projectId);
+    this.projectMembershipCache.set(projectId, cached);
+    return { userIds: [...cached.value.userIds], groups: cached.value.groups.map(group => ({ ...group,
+      ...(group.memberIds ? { memberIds: [...group.memberIds] } : {}) })) };
+  }
+
+  private async cachedLabelOptionsFromEditForm(issueId: number, fieldIds: Set<number>): Promise<LabelOption[]> {
+    const ids = [...fieldIds].filter(id => Number.isSafeInteger(id) && id > 0).sort((left, right) => left - right);
+    if (!ids.length) return [];
+    const key = `${issueId}:${ids.join(',')}`;
+    const cached = this.labelFormOptionsCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      this.labelFormOptionsCache.delete(key);
+      this.labelFormOptionsCache.set(key, cached);
+      return cached.value.map(option => ({ ...option }));
+    }
+    if (cached) this.labelFormOptionsCache.delete(key);
+    const existingFlight = this.labelFormOptionsFlights.get(key);
+    if (existingFlight) return (await existingFlight).map(option => ({ ...option }));
+
+    const flight = this.readLabelOptionsFromEditForm(issueId, new Set(ids)).catch(() => []);
+    this.labelFormOptionsFlights.set(key, flight);
     try {
-      const response = await this.transport.request<{ custom_fields?: RedmineCustomField[] }>('custom_fields.json');
-      return Array.isArray(response.custom_fields) ? response.custom_fields.filter(field => Number.isSafeInteger(field.id) && field.id > 0
-        && typeof field.name === 'string') : [];
-    } catch {
-      // Redmine restricts this endpoint to administrators on many installations.
-      return [];
+      const value = await flight;
+      this.labelFormOptionsCache.delete(key);
+      this.labelFormOptionsCache.set(key, { value: value.map(option => ({ ...option })), expiresAt: Date.now() + metadataCacheTtlMs });
+      while (this.labelFormOptionsCache.size > maxCachedLabelForms) {
+        const oldestKey = this.labelFormOptionsCache.keys().next().value as string | undefined;
+        if (oldestKey === undefined) break;
+        this.labelFormOptionsCache.delete(oldestKey);
+      }
+      return value.map(option => ({ ...option }));
+    } finally {
+      if (this.labelFormOptionsFlights.get(key) === flight) this.labelFormOptionsFlights.delete(key);
     }
   }
 
@@ -462,8 +695,10 @@ function statusKey(name: string): StatusKey {
 }
 
 function person(user: RedmineUser): Person {
+  const login = safeText(user.login);
+  const mentionToken = login && /^[^\s@<>]{1,100}$/.test(login) ? `@${login}` : undefined;
   return { id: user.id, name: user.name || [user.firstname, user.lastname].filter(Boolean).join(' ') || `#${user.id}`,
-    ...(user.avatar_url ? { avatar: user.avatar_url } : {}) };
+    ...(login ? { login } : {}), ...(mentionToken ? { mentionToken } : {}), ...(user.avatar_url ? { avatar: user.avatar_url } : {}) };
 }
 function mapProject(project: RedmineProject): Project {
   const trackers = mapProjectTrackers(project.trackers);
@@ -588,9 +823,21 @@ function mapCustomFieldValues(value: unknown, fieldId: number, catalog: LabelOpt
   return flattenLabels(value).map(item => mapOptionValue(item, fieldId, catalog));
 }
 
-function mapIssue(raw: RedmineIssue, fallbackProjectId: number, catalog: LabelOption[] = []): Issue {
+function mapIssue(raw: RedmineIssue, fallbackProjectId: number, catalog: LabelOption[] = [],
+  membership: { userIds?: Set<number>; groupIds?: Set<number>; primaryAssigneeFieldId?: number } = {}): Issue {
   const customFields = raw.custom_fields ?? [];
   const branchField = customFields.find(field => /\bbranch\b/i.test(field.name));
+  const primaryFields = membership.primaryAssigneeFieldId === undefined ? []
+    : customFields.filter(field => field.id === membership.primaryAssigneeFieldId && field.name === 'Primary Assignee');
+  const primaryAssigneeId = primaryFields.length === 1 ? positiveId(primaryFields[0]!.value) : undefined;
+  const assignedId = positiveId(raw.assigned_to?.id);
+  const declaredType = raw.assigned_to?.type?.toLocaleLowerCase();
+  const groupIds = membership.groupIds ?? new Set<number>();
+  const userIds = membership.userIds;
+  const assignedToType = declaredType?.includes('group') ? 'group'
+    : declaredType?.includes('user') ? 'user'
+    : assignedId && groupIds.has(assignedId) && !userIds?.has(assignedId) ? 'group'
+    : raw.assigned_to ? 'user' : undefined;
   const labels = [...new Set([...(raw.labels ?? []), ...customFields.filter(field => isLabelOrTagField(field.name))
     .flatMap(field => mapCustomFieldValues(field.value, field.id, catalog))])];
   const watchers = (raw.watchers ?? []).map(user => user.id);
@@ -602,16 +849,63 @@ function mapIssue(raw: RedmineIssue, fallbackProjectId: number, catalog: LabelOp
       ...(item.content_type ? { contentType: item.content_type } : {}),
       ...(isRaster ? { thumbnailUrl: contentPath } : {}) };
   });
+  const allowedStatusIds = normalizeAllowedStatusIds(raw.allowed_statuses);
   return {
     id: raw.id, projectId: raw.project?.id ?? fallbackProjectId, subject: raw.subject, description: raw.description ?? '',
+    ...(raw.status?.name ? { statusName: raw.status.name } : {}),
     statusId: raw.status.id, priorityId: raw.priority?.id ?? 0, trackerId: raw.tracker?.id ?? 0, trackerName: raw.tracker?.name ?? 'Task',
-    authorId: raw.author?.id ?? 0, ...(raw.assigned_to ? { assignedToId: raw.assigned_to.id } : {}),
+    authorId: raw.author?.id ?? 0, ...(assignedId ? { assignedToId: assignedId } : {}),
+    ...(assignedToType ? { assignedToType } : {}), ...(safeText(raw.assigned_to?.name) ? { assignedToName: safeText(raw.assigned_to?.name) } : {}),
+    ...(membership.primaryAssigneeFieldId ? { primaryAssigneeFieldId: membership.primaryAssigneeFieldId } : {}),
+    ...(primaryAssigneeId ? { primaryAssigneeId, developerId: primaryAssigneeId } : {}),
     ...(raw.fixed_version ? { fixedVersionId: raw.fixed_version.id } : {}), branch: typeof branchField?.value === 'string' ? branchField.value : '',
     labels, watcherIds: watchers, createdOn: raw.created_on, updatedOn: raw.updated_on,
     ...(raw.due_date ? { dueDate: raw.due_date } : {}), attachments,
     ...(raw.parent?.id ? { parentId: raw.parent.id } : {}),
-    ...(raw.allowed_statuses?.length ? { allowedStatusIds: raw.allowed_statuses.map(status => status.id) } : {}),
+    ...(allowedStatusIds !== undefined ? { allowedStatusIds } : {}),
   };
+}
+
+function normalizeAllowedStatusIds(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids: number[] = [];
+  for (const status of value) {
+    if (!status || typeof status !== 'object') return undefined;
+    const id = (status as { id?: unknown }).id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return undefined;
+    ids.push(id);
+  }
+  return [...new Set(ids)];
+}
+
+function safeText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return text && text.length <= 300 ? text : undefined;
+}
+
+function findPrimaryAssigneeFieldId(issueFields: { id: number; name: string; value?: unknown }[],
+  definitions: RedmineCustomField[], projectId: number, trackerId?: number): number | undefined {
+  // Prefer the issue payload as the source of the real field ID: the Redmine API key may read
+  // issues while /custom_fields.json is admin-only. The exact, unique field name on this issue
+  // confirms both its identity and project/tracker applicability. When the catalog is available,
+  // reject any metadata that contradicts an issue User field; absence of metadata is not evidence
+  // that this explicitly named field is something else.
+  const matches = issueFields.filter(field => field.name === 'Primary Assignee');
+  if (matches.length !== 1) return undefined;
+  const candidate = matches[0]!;
+  if (!positiveId(candidate.id) || Array.isArray(candidate.value)) return undefined;
+
+  const definition = definitions.find(field => field.id === candidate.id);
+  if (definition) {
+    if (definition.name !== 'Primary Assignee'
+      || definition.customized_type && definition.customized_type.toLocaleLowerCase() !== 'issue'
+      || definition.field_format && definition.field_format.toLocaleLowerCase() !== 'user'
+      || definition.multiple === true
+      || definition.projects?.length && !definition.projects.some(item => item.id === projectId)
+      || trackerId !== undefined && definition.trackers?.length && !definition.trackers.some(item => item.id === trackerId)) return undefined;
+  }
+  return candidate.id;
 }
 function mapJournal(raw: RedmineJournal, customFieldNames: Map<number, string> = new Map(), catalog: LabelOption[] = []): Journal {
   const changes = (raw.details ?? []).map(detail => {

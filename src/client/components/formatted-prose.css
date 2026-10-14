@@ -1,0 +1,74 @@
+/* Shared typography for rendered issue text and the Tiptap canvas. */
+.formatted-prose {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.formatted-prose > :first-child { margin-top: 0; }
+.formatted-prose > :last-child { margin-bottom: 0; }
+.formatted-prose p { margin: 0 0 8px; }
+.formatted-prose h1, .formatted-prose h2, .formatted-prose h3,
+.formatted-prose h4, .formatted-prose h5, .formatted-prose h6 {
+  margin: 12px 0 7px;
+  line-height: 1.25;
+}
+.formatted-prose h1 { font-size: 18px; }
+.formatted-prose h2 { font-size: 16px; }
+.formatted-prose h3 { font-size: 14px; }
+.formatted-prose h4 { font-size: 13px; }
+.formatted-prose h5 { font-size: 12px; }
+.formatted-prose h6 { font-size: 11px; }
+.formatted-prose ul, .formatted-prose ol { margin: 7px 0; padding-left: 22px; }
+.formatted-prose ul { list-style: disc outside; }
+.formatted-prose ol { list-style: decimal outside; }
+.formatted-prose li { display: list-item; }
+.formatted-prose li > p:first-child { margin-top: 0; }
+.formatted-prose li > p:last-child { margin-bottom: 0; }
+.formatted-prose li > ul, .formatted-prose li > ol { margin-top: 8px; }
+.formatted-prose blockquote {
+  margin: 8px 0;
+  padding-left: 11px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.formatted-prose hr { margin: 12px 0; border: 0; border-top: 1px solid var(--line); }
+.formatted-prose :not(pre) > code {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: var(--surface-alt);
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+.formatted-prose pre {
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow: auto;
+  margin: 7px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-alt);
+  white-space: pre-wrap;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  tab-size: 2;
+}
+.formatted-prose pre > code { display: block; min-width: max-content; font: inherit; }
+
+/* Unsupported formats remain source text instead of adopting code-block chrome. */
+.formatted-prose .rich-source-only {
+  max-width: none;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

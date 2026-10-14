@@ -1,33 +1,22 @@
-.rich-content {
-  min-width: 0;
-  color: var(--text);
-  font-size: 11px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-}
+.issue-dialog .rich-content.activity-rich-content { font-size: 12px; line-height: 1.55; }
 
-.issue-dialog .rich-content.activity-rich-content { font-size: 12px; }
-
-.rich-content > :first-child { margin-top: 0; }
-.rich-content > :last-child { margin-bottom: 0; }
-.rich-content p, .rich-content ul, .rich-content ol, .rich-content blockquote,
-.rich-content table, .rich-content pre { margin: 7px 0; }
-.rich-content ul, .rich-content ol { padding-left: 20px; }
-.rich-content blockquote { border-left: 2px solid var(--line); margin-left: 0; padding-left: 10px; color: var(--muted); }
+.rich-content table { margin: 7px 0; }
+.issue-dialog .activity-body .rich-content ul { list-style: disc outside; padding-left: 20px; }
+.issue-dialog .activity-body .rich-content ol { list-style: decimal outside; padding-left: 20px; }
+.issue-dialog .activity-body .rich-content li { display: list-item; }
 .rich-content a { color: var(--accent); overflow-wrap: anywhere; }
 .rich-content table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .rich-content th, .rich-content td { border: 1px solid var(--line); padding: 4px 7px; text-align: left; }
 .rich-content th { background: var(--surface-alt); }
-.rich-content :not(pre) > code { border-radius: 4px; padding: 1px 4px; background: var(--surface-alt); font: 10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-.rich-content .rich-code-block { max-width: 100%; overflow: auto; padding: 10px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-alt); white-space: pre; font: 10.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
-.rich-content .rich-code-block > code { display: block; min-width: max-content; font: inherit; }
 .rich-content .hljs-keyword, .rich-content .hljs-built_in, .rich-content .hljs-selector-tag { color: var(--accent); font-weight: 650; }
 .rich-content .hljs-string, .rich-content .hljs-attr, .rich-content .hljs-addition { color: var(--success); }
 .rich-content .hljs-number, .rich-content .hljs-literal, .rich-content .hljs-variable { color: var(--warning); }
 .rich-content .hljs-comment, .rich-content .hljs-quote { color: var(--muted); font-style: italic; }
 .rich-image-link, .attachment-preview-image { display: inline-block; max-width: 100%; line-height: 0; }
 .rich-image-link img { display: block; max-width: 100%; max-height: 460px; object-fit: contain; border-radius: 5px; }
+.rich-image-loading { display: inline-block; margin-right: 6px; color: var(--muted); font-size: 10px; line-height: 1.4; vertical-align: middle; }
 .rich-image-unavailable, .rich-image-failed { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.rich-image-failed button { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--accent); font: inherit; }
 .rich-image-failed a, .attachment-preview-original { font-size: 10px; }
 .attachment-preview { display: grid; justify-items: start; gap: 4px; margin: 6px 0 9px; }
 .attachment-preview-image img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; border: 1px solid var(--line); border-radius: 5px; }

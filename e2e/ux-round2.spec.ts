@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import type { Bootstrap, CommandResult, Issue, IssueDetail, Journal, Notification } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p+0AAAAASUVORK5CYII=', 'base64');
 
@@ -185,14 +186,13 @@ test('read-only indicator stays visible with a collapsed sidebar and in the card
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const dialog = page.getByTestId('issue-dialog');
   await expect(dialog.locator('.readonly-dialog-status')).toContainText('Лише читання');
-  const description = dialog.locator('.description-area');
-  if (!(await description.isVisible())) await dialog.getByRole('button', { name: 'Редагувати', exact: true }).click();
-  await dialog.locator('.description-area').fill('Blocked draft survives reload');
+  const description = await editDescriptionSource(page);
+  await description.fill('Blocked draft survives reload');
   await expect(dialog.getByTestId('draft-persistence-status')).toContainText('Чернетку збережено локально');
   await page.keyboard.press('Meta+s');
   await page.reload();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
-  await expect(page.locator('.description-area')).toHaveValue('Blocked draft survives reload');
+  await expect(await editDescriptionSource(page)).toHaveValue('Blocked draft survives reload');
   expect(commandPosts).toBe(0);
 });
 
@@ -221,14 +221,13 @@ test('blocked browser storage warns about reload loss and keeps description and 
   await page.goto(issueUrl);
   const dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  const editor = dialog.locator('.description-area');
-  if (!(await editor.isVisible())) await dialog.getByRole('button', { name: 'Редагувати', exact: true }).click();
+  const editor = await editDescriptionSource(page);
   await editor.fill(draft);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __issueDraftStorageFailures: number }).__issueDraftStorageFailures)).toBeGreaterThan(0);
   const persistenceStatus = dialog.getByTestId('draft-persistence-status');
   await expect(persistenceStatus).toContainText('Ця чернетка доступна лише в цій вкладці');
   await expect(persistenceStatus).toContainText('текст може зникнути');
-  await dialog.getByTestId('comment-composer').fill(commentDraft);
+  await (await sourceEditor(page, 'comment-composer')).fill(commentDraft);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __issueDraftStorageFailures: number }).__issueDraftStorageFailures)).toBeGreaterThan(1);
   await expect(dialog.locator('.comment-composer').getByTestId('draft-persistence-status')).toContainText('Ця чернетка доступна лише в цій вкладці');
 
@@ -236,13 +235,13 @@ test('blocked browser storage warns about reload loss and keeps description and 
   await expect(dialog).toHaveCount(0);
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const reopened = page.getByTestId('issue-dialog');
-  await expect(reopened.locator('.description-area')).toHaveValue(draft);
-  await expect(reopened.getByTestId('comment-composer')).toHaveValue(commentDraft);
+  await expect(await editDescriptionSource(page)).toHaveValue(draft);
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue(commentDraft);
   await expect(reopened.locator('.issue-dialog-scroll > [data-testid="draft-persistence-status"]')).toContainText('Ця чернетка доступна лише в цій вкладці');
   await page.reload();
   const reloaded = page.getByTestId('issue-dialog');
-  await expect(reloaded.locator('.description-area')).toHaveValue(baseline);
-  await expect(reloaded.getByTestId('comment-composer')).toHaveValue('');
+  await expect(await editDescriptionSource(page)).toHaveValue(baseline);
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue('');
 });
 
 test('local person photo and emoji overrides survive reload, apply to board people, and reset independently', async ({ page, request }) => {

@@ -8,6 +8,7 @@ import type { RedmineAdapter } from '../redmine/adapter.js';
 import type { Issue, Version } from '../../shared/types.js';
 import { demoIssues, demoStatuses, demoVersions } from '../demo/fixtures.js';
 import { CommandService } from './service.js';
+import { RealCommandExecutor } from './real-executor.js';
 
 type AdapterHarness = {
   adapter: RedmineAdapter;
@@ -41,7 +42,8 @@ describe('real Redmine command executor with mocked adapter', () => {
 
   function harness(issueIds: number[] = demoIssues.map(issue => issue.id)): AdapterHarness {
     const issues = new Map<number, Issue>(demoIssues.filter(issue => issueIds.includes(issue.id)).map(issue => [issue.id, {
-      ...structuredClone(issue), allowedStatusIds: demoStatuses.map(status => status.id),
+      ...structuredClone(issue), primaryAssigneeId: issue.developerId, primaryAssigneeFieldId: 70,
+      allowedStatusIds: demoStatuses.map(status => status.id),
     }]));
     const versions = new Map(demoVersions.map(version => [version.id, structuredClone(version)]));
     const updateCalls: Record<string, unknown>[] = [];
@@ -53,7 +55,7 @@ describe('real Redmine command executor with mocked adapter', () => {
         const issue: Issue = { id, projectId: Number(fields.project_id), subject: String(fields.subject), description: String(fields.description ?? ''),
           statusId: Number(fields.status_id), priorityId: Number(fields.priority_id), trackerId: Number(fields.tracker_id), trackerName: 'Feature',
           authorId: 1, branch: '', labels: [], watcherIds: [], createdOn: new Date().toISOString(), updatedOn: new Date().toISOString(), attachments: [],
-          allowedStatusIds: demoStatuses.map(status => status.id) };
+          primaryAssigneeFieldId: 70, allowedStatusIds: demoStatuses.map(status => status.id) };
         issues.set(id, issue);
         return structuredClone(issue);
       }),
@@ -100,6 +102,10 @@ describe('real Redmine command executor with mocked adapter', () => {
         if (typeof fields.tracker_id === 'number') issue.trackerId = fields.tracker_id;
         if (Array.isArray(fields.custom_fields)) for (const field of fields.custom_fields as { id: number; value: unknown }[]) {
           if (field.id === 50) issue.branch = String(field.value);
+          if (field.id === 70) {
+            issue.primaryAssigneeId = Number(field.value) || undefined;
+            issue.developerId = issue.primaryAssigneeId;
+          }
           if (field.id === 60 || field.id === 61) issue.labels = [...issue.labels.filter(label => !['one', 'two'].includes(label)),
             ...(field.value as string[]).map(id => id === '1' ? 'one' : 'two')];
         }
@@ -108,7 +114,8 @@ describe('real Redmine command executor with mocked adapter', () => {
       createVersion: result.createVersion,
       updateVersion: result.updateVersion,
       versionDetail: vi.fn(async (id: number) => structuredClone(versions.get(id)!)),
-      writeFieldMetadata: vi.fn(async () => ({ branchFieldId: 50, labelFieldIds: [60, 61], labelOptions: [
+      writeFieldMetadata: vi.fn(async () => ({ branchFieldId: 50, primaryAssigneeFieldId: 70, sampleIssueId: 1001,
+        labelFieldIds: [60, 61], labelOptions: [
         { fieldId: 60, id: '1', name: 'one' }, { fieldId: 61, id: '2', name: 'two' },
       ] })),
     } as unknown as RedmineAdapter;
@@ -124,14 +131,154 @@ describe('real Redmine command executor with mocked adapter', () => {
     expect(fake.updateCalls).toEqual([]);
   });
 
+  it('guards direct RealCommandExecutor entry before any adapter call when writes are disabled', async () => {
+    const fake = harness();
+    const executor = new RealCommandExecutor(createConfig({ APP_MODE: 'redmine', REDMINE_URL: 'https://redmine.example.invalid',
+      REDMINE_API_TOKEN: 'test-only-token', REDMINE_WRITE_ENABLED: 'false' }), fake.adapter, store);
+
+    await expect(executor.execute({ type: 'updateIssue', issueId: 1001, input: { subject: 'blocked' } }))
+      .rejects.toMatchObject({ code: 'READ_ONLY', statusCode: 403 });
+
+    expect(fake.issueDetail).not.toHaveBeenCalled();
+    expect(fake.updateCalls).toEqual([]);
+    expect(fake.createIssue).not.toHaveBeenCalled();
+    expect(fake.createVersion).not.toHaveBeenCalled();
+    expect(fake.adapter.currentUser).not.toHaveBeenCalled();
+  });
+
+  it('blocks real journal edits before issue reads when the sync cannot verify permission', async () => {
+    const fake = harness();
+    await store.setValue('capabilities', { journalEditing: false, journalDeleting: false, journalLikes: false });
+
+    const result = await service(fake.adapter).execute({ type: 'editJournal', issueId: 1001,
+      input: { journalId: 7001, expectedNotes: 'old note', notes: 'new note' } });
+
+    expect(result.operation).toMatchObject({ status: 'failed', errorCode: 'JOURNAL_EDIT_UNSUPPORTED' });
+    expect(result.operation.error).toContain('Не вдалося підтвердити право');
+
+    expect(fake.issueDetail).not.toHaveBeenCalled();
+    expect(fake.updateCalls).toEqual([]);
+    expect(fake.adapter.currentUser).not.toHaveBeenCalled();
+  });
+
+  it('records real journal likes as unsupported even if a stale capability bit is true', async () => {
+    const fake = harness();
+    const operationId = 'real-journal-like-unsupported';
+    await store.setValue('capabilities', { journalEditing: false, journalDeleting: false, journalLikes: true });
+
+    const result = await service(fake.adapter).execute({ type: 'setJournalLike', issueId: 1001, operationId,
+      input: { journalId: 7001, liked: true } });
+
+    expect(result.operation).toMatchObject({ status: 'failed', errorCode: 'UNSUPPORTED_CAPABILITY' });
+    expect(result.operation.error).toContain('підтвердженого REST API');
+    expect(await store.getOperationRecord(operationId)).toMatchObject({
+      operation: { status: 'failed', errorCode: 'UNSUPPORTED_CAPABILITY' },
+    });
+    expect(store.getJournalLikeState(7001, 1)).toEqual({ count: 0, likedByMe: false });
+    expect(fake.issueDetail).not.toHaveBeenCalled();
+    expect(fake.updateCalls).toEqual([]);
+    expect(fake.adapter.currentUser).not.toHaveBeenCalled();
+  });
+
+  it('durably blocks pending worker automation in read-only mode and never replays it after re-enable', async () => {
+    const fake = harness();
+    const operationId = 'pending-readonly-automation';
+    await store.saveOperationRecord({
+      operation: { id: operationId, type: 'runAutomation', issueId: 1001, status: 'pending', createdOn: new Date().toISOString(),
+        steps: [{ name: 'Return issue to To Do', status: 'pending' }] },
+      context: { realWrite: true, originalCommand: { type: 'runAutomation', issueId: 1001, operationId, input: {} },
+        automationTrigger: { expectedUpdatedOn: demoIssues[0]!.updatedOn, reviewStatusId: demoIssues[0]!.statusId } },
+    });
+    const settings = await store.getSettings();
+    settings.automationEnabled = false;
+    await store.setSettings(settings);
+
+    await service(fake.adapter, false).processPendingDemoAutomations();
+    const blocked = await store.getOperationRecord(operationId);
+    expect(blocked?.operation).toMatchObject({ status: 'blocked', errorCode: 'READ_ONLY' });
+    expect(blocked?.context).toMatchObject({ readOnlyBlocked: true });
+    expect(fake.issueDetail).not.toHaveBeenCalled();
+    expect(fake.updateCalls).toEqual([]);
+    expect(fake.adapter.currentUser).not.toHaveBeenCalled();
+
+    const enabled = service(fake.adapter, true);
+    settings.automationEnabled = true;
+    await store.setSettings(settings);
+    await enabled.processPendingDemoAutomations();
+    expect((await store.getOperationRecord(operationId))?.operation).toMatchObject({ status: 'blocked', errorCode: 'READ_ONLY' });
+    await expect(enabled.execute({ type: 'runAutomation', issueId: 1001, operationId, input: {} }))
+      .rejects.toMatchObject({ code: 'READ_ONLY', statusCode: 409 });
+    expect(fake.issueDetail).not.toHaveBeenCalled();
+    expect(fake.updateCalls).toEqual([]);
+    expect(fake.adapter.currentUser).not.toHaveBeenCalled();
+  });
+
   it('creates an issue remotely, persists the returned ID, and writes its branch field', async () => {
     const fake = harness([]);
     const result = await service(fake.adapter).execute({ type: 'createIssue', projectId: 10, operationId: 'create-real-1', input: { subject: 'Remote issue' } });
     expect(result.operation.status).toBe('done');
     expect(fake.createIssue).toHaveBeenCalledOnce();
     expect(fake.createIssue.mock.calls[0]?.[0]).toMatchObject({ project_id: 10, subject: 'Remote issue', status_id: 2, priority_id: 4, tracker_id: 1 });
-    expect(fake.updateCalls).toEqual([{ custom_fields: [{ id: 50, value: 'example-branch' }] }]);
-    expect(result.issue).toMatchObject({ id: 9001, branch: 'example-branch' });
+    expect(fake.updateCalls).toEqual([{ custom_fields: [{ id: 50, value: '9001-remote-issue' }] }]);
+    expect(result.issue).toMatchObject({ id: 9001, branch: '9001-remote-issue' });
+  });
+
+  it('writes and clears Developer only through the verified Primary Assignee field ID', async () => {
+    const fake = harness([1001]);
+    const commands = service(fake.adapter);
+    const assigned = await commands.execute({ type: 'updateIssue', issueId: 1001, input: { primaryAssigneeId: 3 } });
+    expect(fake.updateCalls).toEqual([{ custom_fields: [{ id: 70, value: 3 }] }]);
+    expect(assigned.issue).toMatchObject({ primaryAssigneeId: 3, developerId: 3, primaryAssigneeFieldId: 70 });
+
+    fake.updateCalls.length = 0;
+    const cleared = await commands.execute({ type: 'updateIssue', issueId: 1001, input: { primaryAssigneeId: null } });
+    expect(fake.updateCalls).toEqual([{ custom_fields: [{ id: 70, value: '' }] }]);
+    expect(cleared.issue?.primaryAssigneeId).toBeUndefined();
+    expect(cleared.issue?.developerId).toBeUndefined();
+  });
+
+  it('writes a fresh project-member group and verifies the group identity from the reread issue', async () => {
+    const fake = harness([1001]);
+    const adapter = fake.adapter as unknown as {
+      projectMemberships: ReturnType<typeof vi.fn>;
+    };
+    adapter.projectMemberships = vi.fn(async () => ({ userIds: [1, 2, 3], groups: [{ id: 2, name: 'Platform group' }] }));
+    const updateIssue = fake.adapter.updateIssue.bind(fake.adapter);
+    fake.adapter.updateIssue = vi.fn(async (issueId: number, fields: Record<string, unknown>) => {
+      await updateIssue(issueId, fields);
+      if (fields.assigned_to_id === 2) {
+        const issue = fake.issues.get(issueId)!;
+        issue.assignedToType = 'group';
+        issue.assignedToName = 'Platform group';
+      }
+    });
+    const commands = service(fake.adapter);
+    const result = await commands.execute({ type: 'updateIssue', issueId: 1001,
+      input: { assignedToId: 2, assignedToType: 'group' } });
+    expect(result.operation.status).toBe('done');
+    expect(result.issue).toMatchObject({ assignedToId: 2, assignedToType: 'group', assignedToName: 'Platform group' });
+    expect(adapter.projectMemberships).toHaveBeenCalledWith(10);
+    expect(fake.updateCalls).toEqual([{ assigned_to_id: 2 }]);
+  });
+
+  it('surfaces Redmine validation when a project member group is not assignable', async () => {
+    const fake = harness([1001]);
+    const adapter = fake.adapter as unknown as { projectMemberships: ReturnType<typeof vi.fn> };
+    adapter.projectMemberships = vi.fn(async () => ({ userIds: [1, 2, 3], groups: [{ id: 2, name: 'Platform group' }] }));
+    fake.failUpdate = (_issueId, fields) => fields.assigned_to_id === 2;
+    const command = { type: 'updateIssue' as const, issueId: 1001, operationId: 'unassignable-member-group',
+      input: { assignedToId: 2, assignedToType: 'group' as const } };
+    await expect(service(fake.adapter).execute(command)).rejects.toMatchObject({ code: 'REDMINE_VALIDATION', statusCode: 422 });
+    expect(fake.updateCalls).toEqual([{ assigned_to_id: 2 }]);
+    expect((await store.getOperationRecord(command.operationId))?.operation).toMatchObject({ status: 'failed', errorCode: 'REDMINE_VALIDATION' });
+  });
+
+  it('refuses a Primary Assignee update before any PUT when the fresh issue has no confirmed field ID', async () => {
+    const fake = harness([1001]);
+    fake.adapter.writeFieldMetadata = vi.fn(async () => ({ branchFieldId: 50, labelFieldIds: [], labelOptions: [] })) as never;
+    await expect(service(fake.adapter).execute({ type: 'updateIssue', issueId: 1001, input: { primaryAssigneeId: 3 } }))
+      .rejects.toMatchObject({ code: 'PRIMARY_ASSIGNEE_FIELD_UNAVAILABLE' });
+    expect(fake.updateCalls).toEqual([]);
   });
 
   it('retries a definite branch failure using the persisted created issue instead of posting twice', async () => {

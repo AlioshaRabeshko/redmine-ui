@@ -63,23 +63,75 @@ describe('Redmine write adapter with mocked HTTP transport', () => {
         { id: 41, name: 'Labels', value: ['606'] },
         { id: 42, name: 'Tags', value: ['api'] },
         { id: 44, name: 'Internal memo', value: 'private issue data' },
+          { id: 45, name: 'Primary Assignee', value: '2' },
       ])] });
       if (url.pathname.endsWith('/custom_fields.json')) return json({ custom_fields: [
         { id: 43, name: 'Branch', projects: [{ id: 42 }] },
         { id: 41, name: 'Labels', projects: [{ id: 42 }], possible_values: [{ value: '606', label: 'Build: Succeeded' }] },
         { id: 42, name: 'Tags', projects: [{ id: 42 }], possible_values: ['api'] },
         { id: 44, name: 'Internal memo', projects: [{ id: 42 }], possible_values: ['private option'] },
+          { id: 45, name: 'Primary Assignee', customized_type: 'issue', field_format: 'user', multiple: false,
+            projects: [{ id: 42 }], trackers: [{ id: 2 }] },
+          { id: 46, name: 'Primary Assignee', customized_type: 'issue', field_format: 'string', multiple: false,
+            projects: [{ id: 42 }], trackers: [{ id: 2 }] },
       ] });
       throw new Error(`Unexpected mocked request ${init?.method} ${url.pathname}`);
     };
     const adapter = new RedmineAdapter(config(), fetcher);
     const metadata = await adapter.writeFieldMetadata(42);
-    expect(metadata).toEqual({ branchFieldId: 43, labelFieldIds: [41, 42], labelOptions: [
+    expect(metadata).toEqual({ branchFieldId: 43, primaryAssigneeFieldId: 45, sampleIssueId: 501, labelFieldIds: [41, 42], labelOptions: [
       { id: '606', name: 'Build: Succeeded', fieldId: 41 }, { id: 'api', name: 'api', fieldId: 42 },
     ] });
     expect(JSON.stringify(metadata)).not.toContain('private-branch-value');
     expect(JSON.stringify(metadata)).not.toContain('private issue data');
     expect(JSON.stringify(metadata)).not.toContain('private option');
     expect(methods.every(method => method === 'GET')).toBe(true);
+  });
+
+  it('uses a unique Primary Assignee field ID from the fresh issue when the admin catalog is forbidden', async () => {
+    const calls: string[] = [];
+    const adapter = new RedmineAdapter(config(), async input => {
+      const url = new URL(String(input));
+      calls.push(url.pathname);
+      if (url.pathname.endsWith('/issues/501.json')) return json({ issue: { id: 501, project: { id: 42 }, tracker: { id: 2 },
+        custom_fields: [{ id: 43, name: 'Branch', value: '501-task' }, { id: 45, name: 'Primary Assignee', value: '' }] } });
+      if (url.pathname.endsWith('/custom_fields.json')) return new Response('', { status: 403 });
+      throw new Error(`Unexpected mock request ${url.pathname}`);
+    });
+
+    expect(await adapter.writeFieldMetadata(42, 501)).toEqual({ branchFieldId: 43, primaryAssigneeFieldId: 45,
+      sampleIssueId: 501, labelFieldIds: [], labelOptions: [] });
+    expect(calls).toEqual(['/team/issues/501.json', '/team/custom_fields.json']);
+  });
+
+  it.each([
+    [{ id: 45, name: 'Primary Assignee', customized_type: 'issue', field_format: 'string', multiple: false,
+      projects: [{ id: 42 }], trackers: [{ id: 2 }] }],
+    [{ id: 45, name: 'Primary Assignee', customized_type: 'issue', field_format: 'user', multiple: true,
+      projects: [{ id: 42 }], trackers: [{ id: 2 }] }],
+  ])('rejects a Primary Assignee field when accessible metadata contradicts a single User field', async definition => {
+    const adapter = new RedmineAdapter(config(), async input => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/issues/501.json')) return json({ issue: { id: 501, project: { id: 42 }, tracker: { id: 2 },
+        custom_fields: [{ id: 45, name: 'Primary Assignee', value: '' }] } });
+      if (url.pathname.endsWith('/custom_fields.json')) return json({ custom_fields: [definition] });
+      throw new Error(`Unexpected mock request ${url.pathname}`);
+    });
+    expect((await adapter.writeFieldMetadata(42, 501)).primaryAssigneeFieldId).toBeUndefined();
+  });
+
+  it('does not guess a Primary Assignee ID when the fresh issue has duplicate exact names or array values', async () => {
+    const getMetadata = async (custom_fields: { id: number; name: string; value: unknown }[]) => {
+      const adapter = new RedmineAdapter(config(), async input => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith('/issues/501.json')) return json({ issue: { id: 501, project: { id: 42 }, tracker: { id: 2 }, custom_fields } });
+        if (url.pathname.endsWith('/custom_fields.json')) return new Response('', { status: 403 });
+        throw new Error(`Unexpected mock request ${url.pathname}`);
+      });
+      return adapter.writeFieldMetadata(42, 501);
+    };
+    expect((await getMetadata([{ id: 45, name: 'Primary Assignee', value: '' }, { id: 46, name: 'Primary Assignee', value: '' }]))
+      .primaryAssigneeFieldId).toBeUndefined();
+    expect((await getMetadata([{ id: 45, name: 'Primary Assignee', value: [] }])).primaryAssigneeFieldId).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@ import { RedmineAdapter, type RedmineSnapshot } from '../redmine/adapter.js';
 import { RedmineConfigError, RedmineRequestError } from '../redmine/transport.js';
 import { WorkspaceStore, type OperationRecord } from '../db/store.js';
 import type { Command } from '../../shared/types.js';
-import { activityKindsForJournal, resolveNotificationEligibility } from '../notifications.js';
+import { activityKindsForJournal, issueCreatedSubscriptionCursorKey, resolveNotificationEligibility } from '../notifications.js';
 
 export interface SyncResult { syncedAt: string; issuesUpdated: number; notificationsAdded: number; warnings: string[] }
 export interface EventHub { publish(event: string, data?: unknown): void }
@@ -64,6 +64,9 @@ export class SyncService {
       const snapshot = await this.adapter.snapshot(since, remoteMe, Boolean(initialCursor), refreshClosedDeploy, oldLabelOptions);
       this.lastSnapshot = snapshot;
       const previousIssues = new Map((await this.store.getIssues()).map(issue => [issue.id, issue]));
+      // The catalog can contain rows from a sync that failed halfway through. Only a scope
+      // recorded together with the last successful sync is allowed to emit creation events.
+      const previousProjectIds = new Set(await this.store.getValue<number[]>('successfulProjectIds') ?? []);
       for (const project of snapshot.projects) await this.store.saveProject(project);
       for (const version of snapshot.versions) await this.store.saveVersion(version);
       await this.store.removeProjectsExcept(snapshot.projects.map(project => project.id));
@@ -82,7 +85,7 @@ export class SyncService {
         if (!mergedProjectMembers[String(issue.projectId)] && previousProjectMembers[String(issue.projectId)]) continue;
         const members = mergedProjectMembers[String(issue.projectId)] ?? new Set<number>();
         members.add(issue.authorId);
-        if (issue.assignedToId) members.add(issue.assignedToId);
+        if (issue.assignedToId && issue.assignedToType !== 'group') members.add(issue.assignedToId);
         for (const watcherId of issue.watcherIds) members.add(watcherId);
         mergedProjectMembers[String(issue.projectId)] = members;
       }
@@ -103,19 +106,38 @@ export class SyncService {
       }
       await this.store.setValue('projectMembershipIds', membershipIds);
       await this.store.setValue('projectMembershipRoles', membershipRoles);
+      await this.store.setValue('projectGroupIds', snapshot.projectGroupIds ?? {});
+      await this.store.setValue('projectGroups', snapshot.projectGroups ?? {});
       const labelOptions = mergeCatalogByProject(oldLabelOptions, snapshot.labelOptions ?? {});
       await this.store.setValue('labelOptions', labelOptions);
-      const previousCapabilities = await this.store.getValue<{ branchFieldId?: number; labelsFieldId?: number; warnings?: string[] }>('capabilities');
+      const previousCapabilities = await this.store.getValue<{ branchFieldId?: number; labelsFieldId?: number; primaryAssigneeFieldIds?: Record<string, number>; textFormat?: string; warnings?: string[] }>('capabilities');
       await this.store.setValue('capabilities', { canWrite: this.config.writeEnabled,
+        // Journal operations stay fail-closed until this API identity's permission is verified.
+        // Never carry prior-user/instance capability bits through a new successful sync.
+        journalEditing: false, journalDeleting: false, journalLikes: false,
         branchFieldId: snapshot.branchFieldId ?? previousCapabilities?.branchFieldId,
-        labelsFieldId: snapshot.labelsFieldId ?? previousCapabilities?.labelsFieldId, warnings: snapshot.warnings });
-      const settings = await this.store.getSettings();
-      const newSubscriptions = { ...settings.subscriptions };
-      for (const project of snapshot.projects) newSubscriptions[String(project.id)] ??= { enabled: true, events: ['comment'] };
-      await this.store.setSettings({ ...settings, subscriptions: newSubscriptions });
+        labelsFieldId: snapshot.labelsFieldId ?? previousCapabilities?.labelsFieldId,
+        primaryAssigneeFieldIds: snapshot.primaryAssigneeFieldIds ?? {}, textFormat: snapshot.textFormat,
+        warnings: snapshot.warnings });
+      const settings = await this.store.ensureSubscriptionDefaults(snapshot.projects.map(project => project.id));
+      const quietIssueCreatedBaseline = new Set<number>();
+      for (const project of snapshot.projects) {
+        const subscription = settings.subscriptions[String(project.id)];
+        if (!subscription?.enabled || !subscription.events.includes('issue_created')) continue;
+        const key = issueCreatedSubscriptionCursorKey(project.id);
+        const cutoff = await this.store.getCursor(key);
+        if (!cutoff) {
+          const inserted = await this.store.setCursorIfAbsent(key, syncStartedAt);
+          if (inserted) quietIssueCreatedBaseline.add(project.id);
+        } else if (!Number.isFinite(Date.parse(cutoff))) {
+          // Replace only the invalid value we observed; a concurrent opt-in may have installed
+          // a valid cursor after this read and must win.
+          if (await this.store.replaceCursorIfValue(key, cutoff, syncStartedAt)) quietIssueCreatedBaseline.add(project.id);
+        }
+      }
       let notificationsAdded = 0;
       const ciTransitions = new Set<number>();
-      const automationEnabled = (await this.store.getSettings()).automationEnabled;
+      const automationEnabled = settings.automationEnabled;
       const refreshedIds = new Set(snapshot.issues.map(issue => issue.id));
       for (const issue of previousIssues.values()) {
         if (refreshedIds.has(issue.id)) continue;
@@ -126,7 +148,31 @@ export class SyncService {
       }
       for (const issue of snapshot.issues) {
         const previous = previousIssues.get(issue.id);
-        await this.store.saveIssue({ ...issue, developerId: previous?.developerId, qaId: previous?.qaId });
+        await this.store.saveIssue({ ...issue, qaId: previous?.qaId });
+      }
+      // Creation events are scoped to projects that were already in the last successful
+      // snapshot. A newly accessible project starts with a quiet baseline; otherwise old issues
+      // first discovered during a full refresh could look like new events.
+      for (const issue of snapshot.issues) {
+        const sourceEventId = `issue-created:${issue.id}`;
+        if (await this.store.hasSeenSourceEvent(sourceEventId)) continue;
+        const createdAt = Date.parse(issue.createdOn);
+        const previousSyncAt = initialCursor ? Date.parse(initialCursor) : Number.NaN;
+        // The final subscription and opt-in cursor check happens transactionally with inserting
+        // the event, so a concurrent settings PATCH takes effect before or after this commit.
+        // This outer check only rules out cache discovery and scopes not in the last success.
+        if (!initialCursor || !previousProjectIds.has(issue.projectId) || previousIssues.has(issue.id) || !Number.isFinite(createdAt)
+          || !Number.isFinite(previousSyncAt) || quietIssueCreatedBaseline.has(issue.projectId)) {
+          await this.store.markSourceEventSeen(sourceEventId);
+          continue;
+        }
+        const project = snapshot.projects.find(item => item.id === issue.projectId);
+        const actor = snapshot.people.find(person => person.id === issue.authorId);
+        const notification: Notification | undefined = project && actor && actor.id !== snapshot.me.id ? {
+          id: sourceEventId, projectId: project.id, issueId: issue.id, actor, issueSubject: issue.subject,
+          kind: 'issue_created', text: issue.subject, createdOn: issue.createdOn, eventKinds: [],
+        } : undefined;
+        if (await this.store.commitIssueCreatedEvent(sourceEventId, issue.projectId, issue.createdOn, initialCursor, notification)) notificationsAdded++;
       }
       for (const item of snapshot.journals) {
         await this.store.saveJournal(item.issueId, item.journal);
@@ -142,7 +188,7 @@ export class SyncService {
         if (!wasSeen && automationEnabled && issue && issue.labels.includes(this.config.ciFailedLabel)
           && snapshot.statuses.find(status => status.key === 'review')?.id === issue.statusId
           && hasCiFailureTransition(item.journal.changes, this.config.ciInProgressLabel, this.config.ciFailedLabel)) {
-          await this.recordAutomation(issue, `journal-${item.journal.id}`, previousIssues.get(issue.id)?.developerId);
+          await this.recordAutomation(issue, `journal-${item.journal.id}`, previousIssues.get(issue.id)?.primaryAssigneeId);
           ciTransitions.add(issue.id);
         }
       }
@@ -153,7 +199,7 @@ export class SyncService {
           if (!ciTransitions.has(issue.id) && previous && previous.statusId === this.statusId(snapshot.statuses, 'review')
             && previous.labels.includes(this.config.ciInProgressLabel) && issue.labels.includes(this.config.ciFailedLabel)
             && issue.statusId === this.statusId(snapshot.statuses, 'review')) {
-            await this.recordAutomation(issue, `snapshot-${issue.updatedOn.replace(/[^0-9]/g, '')}`, previous?.developerId);
+            await this.recordAutomation(issue, `snapshot-${issue.updatedOn.replace(/[^0-9]/g, '')}`, previous?.primaryAssigneeId);
           }
         }
       }
@@ -161,7 +207,7 @@ export class SyncService {
       if (!storedFirstBaseline) await this.store.setCursor('first-baseline', firstBaseline ?? syncStartedAt);
       if (fullSync) await this.store.setCursor('full-sync', syncStartedAt);
       if (refreshClosedDeploy) await this.store.setValue('deployReadRevision', deployReadRevision);
-      await this.store.setCursor('baseline', syncStartedAt);
+      await this.store.commitSuccessfulSync(snapshot.projects.map(project => project.id), syncStartedAt);
       this.connected = true;
       this.lastError = undefined;
       this.events?.publish('sync', { syncedAt, issuesUpdated: snapshot.issues.length, notificationsAdded });
@@ -185,8 +231,9 @@ export class SyncService {
     const notes = journal.notes.trim();
     const changes = journal.changes;
     const kinds = activityKindsForJournal(notes, changes);
-    const assignedToMe = issue?.assignedToId === me.id || changes.some(change => /assigned_to|assignee/i.test(change.field)
-      && (change.newValue === String(me.id) || change.oldValue === String(me.id)));
+    const assignmentIsUser = issue?.assignedToType !== 'group';
+    const assignedToMe = assignmentIsUser && (issue?.assignedToId === me.id || changes.some(change => /assigned_to|assignee/i.test(change.field)
+      && (change.newValue === String(me.id) || change.oldValue === String(me.id))));
     const settings = await this.store.getSettings();
     const subscription = project ? settings.subscriptions[String(project.id)] : undefined;
     const { eligible, visibleKinds } = resolveNotificationEligibility(kinds, subscription, assignedToMe);
@@ -205,7 +252,7 @@ export class SyncService {
 
   private statusId(statuses: Status[], key: Status['key']): number | undefined { return statuses.find(status => status.key === key)?.id; }
 
-  private async recordAutomation(issue: Issue, triggerId: string, developerId?: number): Promise<void> {
+  private async recordAutomation(issue: Issue, triggerId: string, primaryAssigneeId?: number): Promise<void> {
     const enabled = this.config.writeEnabled && Boolean(this.adapter);
     const id = `${enabled ? 'ci' : 'blocked-ci'}-${issue.id}-${triggerId.replace(/[^a-zA-Z0-9-]/g, '')}`;
     if (await this.store.getOperationRecord(id)) return;
@@ -218,7 +265,8 @@ export class SyncService {
     ];
     const operation: Operation = { id, type: 'runAutomation', issueId: issue.id, status: enabled ? 'pending' : 'blocked', steps,
       createdOn: new Date().toISOString(), ...(!enabled ? { error: 'Автоматизацію зафіксовано, але запис у Redmine вимкнений.', errorCode: 'READ_ONLY' } : {}) };
-    const trigger = { triggerId, expectedUpdatedOn: issue.updatedOn, reviewStatusId: issue.statusId, ...(developerId ? { developerId } : {}) };
+    const trigger = { triggerId, expectedUpdatedOn: issue.updatedOn, reviewStatusId: issue.statusId,
+      ...(primaryAssigneeId ? { primaryAssigneeId } : {}) };
     const record: OperationRecord = { operation, context: enabled
       ? { realWrite: true, commandSignature: signature, originalCommand: command, automationTrigger: trigger }
       : { triggerId, automationTrigger: trigger } };

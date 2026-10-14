@@ -3,15 +3,22 @@ export type Mode = 'demo' | 'redmine';
 export type StatusKey = 'suspended' | 'todo' | 'progress' | 'review' | 'qa' | 'deploy' | 'done' | 'rejected' | 'backlog' | 'unknown';
 export type PersonRole = 'qa' | 'support' | 'developer';
 export type PeopleField = 'assignee' | 'developer' | 'qa';
+export type ActivityKind = 'comment' | 'status' | 'assignee' | 'labels' | 'field';
+export type SubscriptionEvent = ActivityKind | 'issue_created';
+export const issueCreatedSubscriptionEvent: SubscriptionEvent = 'issue_created';
 export interface RedmineRole { id: number; name: string }
 export type PersonAvatarOverride = { kind: 'photo'; url: string } | { kind: 'emoji'; emoji: string };
+export type GroupAvatarOverride = PersonAvatarOverride;
 export const personAvatarEmojis = ['🙂', '😎', '🦊', '🐈', '🐢', '🐙', '🌱', '🌈', '⭐', '🚀', '🎯', '🍀'] as const;
 export function isSingleEmojiAvatar(value: string): boolean {
   if (!value || value.length > 32 || value.trim() !== value) return false;
   const segments = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)];
   return segments.length === 1 && /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20e3]/u.test(value);
 }
-export interface Person { id: number; name: string; avatar?: string; localEmoji?: string; roles?: PersonRole[]; redmineRoles?: RedmineRole[]; isAdmin?: boolean }
+export interface Person { id: number; name: string; login?: string; mentionToken?: string; avatar?: string; localEmoji?: string; roles?: PersonRole[]; redmineRoles?: RedmineRole[]; isAdmin?: boolean }
+export type AssigneeOption =
+  | { type: 'user'; id: number; name: string; avatar?: string }
+  | { type: 'group'; id: number; name: string; memberIds?: number[] };
 export interface ProjectTracker { id: number; name: string }
 export interface Project { id: number; name: string; identifier: string; description?: string; trackers?: ProjectTracker[] }
 export interface Status { id: number; name: string; key: StatusKey; isClosed: boolean }
@@ -19,7 +26,6 @@ export interface Priority { id: number; name: string; rank: number }
 export interface Version { id: number; projectId: number; name: string; status: 'open' | 'locked' | 'closed'; dueDate?: string; description?: string }
 export interface Attachment { id: number; filename: string; url: string; size: number; contentType?: string; thumbnailUrl?: string }
 export interface LabelOption { id: string; name: string; fieldId?: number }
-export type ActivityKind = 'comment' | 'status' | 'assignee' | 'labels' | 'field';
 export interface ActivityVisibility { comment: boolean; status: boolean; assignee: boolean; labels: boolean; field: boolean }
 export const defaultActivityVisibility: ActivityVisibility = { comment: true, status: true, assignee: true, labels: false, field: false };
 export interface Journal {
@@ -29,52 +35,64 @@ export interface Journal {
 }
 export interface Issue {
   id: number; projectId: number; subject: string; description: string;
-  statusId: number; priorityId: number; trackerId: number; trackerName: string;
-  authorId: number; assignedToId?: number; developerId?: number; qaId?: number;
+  statusId: number; statusName?: string; priorityId: number; trackerId: number; trackerName: string;
+  authorId: number; assignedToId?: number; assignedToType?: 'user' | 'group'; assignedToName?: string;
+  primaryAssigneeId?: number; primaryAssigneeFieldId?: number;
+  /** Compatibility alias; Redmine mode derives this only from Primary Assignee. */ developerId?: number; qaId?: number;
   fixedVersionId?: number; branch: string; labels: string[]; watcherIds: number[];
   createdOn: string; updatedOn: string; dueDate?: string; attachments: Attachment[];
   parentId?: number; allowedStatusIds?: number[];
 }
 export type View = 'all' | 'mine' | 'watching' | 'backlog';
-export interface Filters { search?: string; assigneeId?: number; assignedToMe?: boolean; label?: string; labels?: string[]; statusIds?: number[]; priorityIds?: number[]; versionId?: number; includeClosed?: boolean; hasNotifications?: boolean }
+export interface Filters { search?: string; assigneeId?: number; watcherId?: number; assignedToMe?: boolean; label?: string; labels?: string[]; statusIds?: number[]; priorityIds?: number[]; versionId?: number; includeClosed?: boolean; hasNotifications?: boolean }
 export interface SavedView { id: string; projectId: number; name: string; filters: Filters; view: View }
 export interface Shortcut { id: string; keys: string; action: string; value?: string; enabled: boolean }
-export interface Subscription { enabled: boolean; events: string[] }
+export interface Subscription { enabled: boolean; events: SubscriptionEvent[] }
 export interface AppSettings {
   locale: Locale; theme: 'light' | 'dark' | 'system'; palette: 'blue' | 'violet' | 'green' | 'amber';
   projectQa: Record<string, number>; subscriptions: Record<string, Subscription>;
   projectBackgrounds: Record<string, string>;
   projectActivity: Record<string, ActivityVisibility>;
+  collapsedBoardColumns: Record<string, string[]>;
   personRoleOverrides: Record<string, Record<string, PersonRole[]>>;
   personAvatarOverrides: Record<string, PersonAvatarOverride>;
+  groupAvatarOverrides: Record<string, GroupAvatarOverride>;
   shortcuts: Shortcut[]; savedViews: SavedView[];
   sort: { field: 'priority' | 'updated' | 'created' | 'id' | 'subject'; direction: 'asc' | 'desc' };
   automationEnabled: boolean; pollIntervalSeconds: number;
 }
-export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptions' | 'projectBackgrounds' | 'projectActivity' | 'personRoleOverrides' | 'personAvatarOverrides'>> & {
+export type SettingsPatch = Partial<Omit<AppSettings, 'projectQa' | 'subscriptions' | 'projectBackgrounds' | 'projectActivity' | 'collapsedBoardColumns' | 'personRoleOverrides' | 'personAvatarOverrides' | 'groupAvatarOverrides'>> & {
   projectQa?: Record<string, number | null>;
   subscriptions?: Record<string, Subscription | null>;
   projectBackgrounds?: Record<string, string | null>;
   projectActivity?: Record<string, ActivityVisibility | null>;
+  collapsedBoardColumns?: Record<string, string[] | null>;
   personRoleOverrides?: Record<string, Record<string, PersonRole[] | null> | null>;
   personAvatarOverrides?: Record<string, PersonAvatarOverride | null>;
+  groupAvatarOverrides?: Record<string, GroupAvatarOverride | null>;
 };
 export interface Capabilities {
   canWrite: boolean; journalEditing: boolean; journalDeleting: boolean; journalLikes: boolean;
   branchFieldId?: number; labelsFieldId?: number; warnings: string[];
+  primaryAssigneeFieldIds?: Record<string, number>;
+  textFormat?: string;
 }
 export interface Bootstrap {
   mode: Mode; readOnly: boolean; connected: boolean; redmineUrl: string;
   me: Person; projects: Project[]; statuses: Status[]; priorities: Priority[];
-  settings: AppSettings; capabilities: Capabilities;
+  settings: AppSettings; capabilities: Capabilities; textFormat?: string;
 }
 export interface BoardData {
   issues: Issue[]; versions: Version[]; members: Person[]; labels: string[]; total: number; syncedAt?: string;
+  statuses?: Status[];
+  textFormat?: string;
+  assigneeOptions?: AssigneeOption[];
+  primaryAssigneeFieldId?: number;
   trackers?: ProjectTracker[];
   labelOptions?: LabelOption[];
   peopleRecommendations?: Partial<Record<PeopleField, number[]>>;
 }
-export interface IssueDetail { issue: Issue; journals: Journal[]; watchers: Person[]; people?: Person[] }
+export interface IssueDetail { issue: Issue; journals: Journal[]; watchers: Person[]; people?: Person[]; assigneeOptions?: AssigneeOption[]; statuses?: Status[]; textFormat?: string }
 export interface SearchResult { id: number; title: string; description: string; projectId?: number; statusName?: string; url?: string; updatedOn?: string }
 export interface SearchResponse { results: SearchResult[]; total: number; offset: number; limit: number }
 export interface ReleaseDetail { version: Version; issues: Issue[] }

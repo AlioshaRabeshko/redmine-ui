@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BellRing, Check, Command, History, Image as ImageIcon, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, Upload, UserRound, Workflow } from 'lucide-react';
+import { BellRing, Check, Command, History, Image as ImageIcon, Languages, ListFilter, Palette, Plus, Save, Settings2, ShieldCheck, Trash2, Upload, UserRound, Users, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { defaultActivityVisibility, isSingleEmojiAvatar, personAvatarEmojis } from '../../../shared/types';
-import type { ActivityKind, AppSettings, Locale, PeopleField, Person, PersonAvatarOverride, PersonRole, Project, Shortcut, SettingsPatch, Status } from '../../../shared/types';
+import type { ActivityKind, AppSettings, AssigneeOption, GroupAvatarOverride, Locale, PeopleField, Person, PersonAvatarOverride, PersonRole, Project, Shortcut, SettingsPatch, Status, SubscriptionEvent } from '../../../shared/types';
 import { defaultShortcuts, normalizeShortcutKeys } from '../../lib/shortcuts';
 import { enqueueFieldWrite, useWorkspaceFormSave } from '../../lib/serialFieldWrite';
 import { Avatar, Button, Field, Notice } from '../../components/ui';
+import { GroupAvatar } from '../../components/GroupAvatar';
 import { Picker, PeoplePicker } from '../../components/pickers';
 import { api } from '../../lib/api';
 import { readProjectBackgroundDataUrl, validateProjectBackgroundFile } from '../../lib/projectBackgroundUpload';
 
 type SettingsSaveState = { state: 'pending' | 'saved' | 'error'; error?: string };
+type GroupOption = Extract<AssigneeOption, { type: 'group' }>;
 const roles: PersonRole[] = ['qa', 'support', 'developer'];
 const locales: { value: Locale; label: string }[] = [
   { value: 'uk', label: 'Українська' }, { value: 'pl', label: 'Polski' }, { value: 'es', label: 'Español' }, { value: 'en', label: 'English' },
@@ -62,6 +64,12 @@ function mergePatch(settings: AppSettings, patch: SettingsPatch): AppSettings {
       if (override === null) delete next.personAvatarOverrides[personId]; else next.personAvatarOverrides[personId] = override;
     }
   }
+  if (patch.groupAvatarOverrides) {
+    next.groupAvatarOverrides = { ...(settings.groupAvatarOverrides || {}) };
+    for (const [groupId, override] of Object.entries(patch.groupAvatarOverrides)) {
+      if (override === null) delete next.groupAvatarOverrides[groupId]; else next.groupAvatarOverrides[groupId] = override;
+    }
+  }
   return next;
 }
 
@@ -106,11 +114,19 @@ function restoreSettingsField(current: AppSettings, confirmed: AppSettings, key:
     if (confirmedOverride === undefined) delete personAvatarOverrides[personId]; else personAvatarOverrides[personId] = confirmedOverride;
     return { ...current, personAvatarOverrides };
   }
+  if (key.startsWith('groupAvatar:')) {
+    const groupId = key.slice('groupAvatar:'.length);
+    const groupAvatarOverrides = { ...(current.groupAvatarOverrides || {}) };
+    const confirmedOverride = confirmed.groupAvatarOverrides?.[groupId];
+    if (confirmedOverride === undefined) delete groupAvatarOverrides[groupId]; else groupAvatarOverrides[groupId] = confirmedOverride;
+    return { ...current, groupAvatarOverrides };
+  }
   return current;
 }
 
-export function SettingsPage({ settings, members, project, projects, statuses, labels, peopleRecommendations, readOnly, onPatchSettings, onResetViews, onToast }: {
+export function SettingsPage({ settings, members, groups = [], project, projects, statuses, labels, peopleRecommendations, readOnly, onPatchSettings, onResetViews, onToast }: {
   settings: AppSettings; members: Person[]; project: Project; projects: Project[]; statuses: Status[]; labels: string[];
+  groups?: GroupOption[];
   peopleRecommendations?: Partial<Record<PeopleField, number[]>>; readOnly: boolean;
   onPatchSettings: (patch: SettingsPatch) => Promise<void>; onResetViews: () => void; onToast: (message: string) => void;
 }) {
@@ -152,11 +168,22 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const [personAvatarErrorTarget, setPersonAvatarErrorTarget] = useState<number | undefined>();
   const [emojiDraft, setEmojiDraft] = useState('');
   const personAvatarFileInputRef = useRef<HTMLInputElement>(null);
+  const [groupAvatarId, setGroupAvatarId] = useState<number | undefined>(() => groups[0]?.id);
+  const [groupAvatarPhase, setGroupAvatarPhase] = useState<'idle' | 'reading' | 'uploading' | 'saving'>('idle');
+  const [groupAvatarTarget, setGroupAvatarTarget] = useState<number | undefined>();
+  const [groupAvatarError, setGroupAvatarError] = useState('');
+  const [groupAvatarErrorTarget, setGroupAvatarErrorTarget] = useState<number | undefined>();
+  const [groupEmojiDraft, setGroupEmojiDraft] = useState('');
+  const groupAvatarFileInputRef = useRef<HTMLInputElement>(null);
   const shortcutFormRef = useWorkspaceFormSave<HTMLFormElement>();
 
   useEffect(() => {
     if (rolePersonId === undefined && personAvatarPhase === 'idle' && members.length > 0) setRolePersonId(members[0].id);
   }, [rolePersonId, personAvatarPhase, members]);
+
+  useEffect(() => {
+    if (groupAvatarId === undefined && groupAvatarPhase === 'idle' && groups.length > 0) setGroupAvatarId(groups[0].id);
+  }, [groupAvatarId, groupAvatarPhase, groups]);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -180,9 +207,19 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   }, [rolePersonId, draft.personAvatarOverrides]);
 
   useEffect(() => {
+    const override = groupAvatarId === undefined ? undefined : draft.groupAvatarOverrides?.[String(groupAvatarId)];
+    setGroupEmojiDraft(override?.kind === 'emoji' ? override.emoji : '');
+  }, [groupAvatarId, draft.groupAvatarOverrides]);
+
+  useEffect(() => {
     setPersonAvatarError('');
     setPersonAvatarErrorTarget(undefined);
   }, [rolePersonId]);
+
+  useEffect(() => {
+    setGroupAvatarError('');
+    setGroupAvatarErrorTarget(undefined);
+  }, [groupAvatarId]);
 
   const persistPatch = (key: string, patch: SettingsPatch): Promise<boolean> => {
     const generation = (settingGenerationsRef.current.get(key) || 0) + 1;
@@ -227,7 +264,7 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
     const current = settingsRef.current.subscriptions[projectKey] || { enabled: false, events: ['comment'] };
     subscriptionPatch({ ...current, ...patch });
   };
-  const setEvent = (event: string, checked: boolean) => {
+  const setEvent = (event: SubscriptionEvent, checked: boolean) => {
     const current = settingsRef.current.subscriptions[projectKey] || { enabled: false, events: ['comment'] };
     setSubscription({ events: checked ? [...new Set([...current.events, event])] : current.events.filter((item) => item !== event) });
   };
@@ -319,6 +356,90 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
     } finally {
       setPersonAvatarPhase('idle');
       setPersonAvatarTarget(undefined);
+    }
+  };
+
+  const removeGroupAvatarBytes = async (groupId: number, override?: GroupAvatarOverride) => {
+    if (override?.kind !== 'photo') return;
+    const version = override.url.match(/[?&]v=([0-9a-f-]{36})/i)?.[1];
+    if (version) await api.delete(`/api/groups/${groupId}/avatar?v=${version}`);
+  };
+
+  const saveGroupEmoji = async (groupId: number, emoji: string) => {
+    if (!isSingleEmojiAvatar(emoji)) return false;
+    const previous = settingsRef.current.groupAvatarOverrides?.[String(groupId)];
+    setGroupAvatarTarget(groupId);
+    setGroupAvatarPhase('saving');
+    setGroupAvatarError('');
+    try {
+      const saved = await persistPatch(`groupAvatar:${groupId}`, { groupAvatarOverrides: { [String(groupId)]: { kind: 'emoji', emoji } } });
+      if (!saved) { setGroupAvatarError(t('groupAvatarSaveFailed')); setGroupAvatarErrorTarget(groupId); return false; }
+      try { await removeGroupAvatarBytes(groupId, previous); }
+      catch { setGroupAvatarError(t('groupAvatarCleanupFailed')); setGroupAvatarErrorTarget(groupId); }
+      return true;
+    } finally {
+      setGroupAvatarPhase('idle');
+      setGroupAvatarTarget(undefined);
+    }
+  };
+
+  const uploadGroupAvatar = async (groupId: number, file: File) => {
+    const previous = settingsRef.current.groupAvatarOverrides?.[String(groupId)];
+    if (file.size > 2 * 1024 * 1024) { setGroupAvatarError(t('groupAvatarTooLarge')); setGroupAvatarErrorTarget(groupId); return; }
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type.toLowerCase())) {
+      setGroupAvatarError(t('groupAvatarUnsupportedType')); setGroupAvatarErrorTarget(groupId); return;
+    }
+    setGroupAvatarError('');
+    setGroupAvatarErrorTarget(undefined);
+    let phase: 'reading' | 'uploading' | 'saving' = 'reading';
+    let uploadedUrl: string | undefined;
+    setGroupAvatarTarget(groupId);
+    setGroupAvatarPhase(phase);
+    try {
+      const dataUrl = await readProjectBackgroundDataUrl(file);
+      phase = 'uploading';
+      setGroupAvatarPhase(phase);
+      const response = await api.put<{ url?: string }>(`/api/groups/${groupId}/avatar`, { dataUrl });
+      if (typeof response?.url !== 'string' || !response.url.trim()) throw new Error('Invalid local group avatar response');
+      uploadedUrl = response.url;
+      phase = 'saving';
+      setGroupAvatarPhase(phase);
+      const saved = await persistPatch(`groupAvatar:${groupId}`, { groupAvatarOverrides: { [String(groupId)]: { kind: 'photo', url: response.url } } });
+      if (!saved) {
+        try { await removeGroupAvatarBytes(groupId, { kind: 'photo', url: response.url }); } catch { /* Keep the settings error visible; the orphaned file is still local. */ }
+        setGroupAvatarError(t('groupAvatarSaveFailed'));
+        setGroupAvatarErrorTarget(groupId);
+        return;
+      }
+      try { await removeGroupAvatarBytes(groupId, previous); }
+      catch { setGroupAvatarError(t('groupAvatarCleanupFailed')); setGroupAvatarErrorTarget(groupId); }
+    } catch {
+      if (uploadedUrl) {
+        try { await removeGroupAvatarBytes(groupId, { kind: 'photo', url: uploadedUrl }); } catch { /* Best effort cleanup after an interrupted save. */ }
+      }
+      setGroupAvatarError(t(phase === 'reading' ? 'groupAvatarReadFailed' : 'groupAvatarUploadFailed'));
+      setGroupAvatarErrorTarget(groupId);
+    } finally {
+      setGroupAvatarPhase('idle');
+      setGroupAvatarTarget(undefined);
+    }
+  };
+
+  const clearGroupAvatar = async (groupId: number) => {
+    const previous = settingsRef.current.groupAvatarOverrides?.[String(groupId)];
+    setGroupAvatarError('');
+    setGroupAvatarErrorTarget(undefined);
+    setGroupAvatarTarget(groupId);
+    setGroupAvatarPhase('saving');
+    try {
+      const saved = await persistPatch(`groupAvatar:${groupId}`, { groupAvatarOverrides: { [String(groupId)]: null } });
+      if (!saved) { setGroupAvatarError(t('groupAvatarSaveFailed')); setGroupAvatarErrorTarget(groupId); return; }
+      try { await removeGroupAvatarBytes(groupId, previous); }
+      catch { setGroupAvatarError(t('groupAvatarCleanupFailed')); setGroupAvatarErrorTarget(groupId); }
+      setGroupEmojiDraft('');
+    } finally {
+      setGroupAvatarPhase('idle');
+      setGroupAvatarTarget(undefined);
     }
   };
 
@@ -418,6 +539,11 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
   const personAvatarBusy = personAvatarPhase !== 'idle';
   const personAvatarBusyForSelection = personAvatarBusy && personAvatarTarget === rolePersonId;
   const personAvatarErrorForSelection = personAvatarErrorTarget === rolePersonId ? personAvatarError : '';
+  const selectedGroup = groups.find(group => group.id === groupAvatarId);
+  const selectedGroupAvatarOverride = groupAvatarId === undefined ? undefined : draft.groupAvatarOverrides?.[String(groupAvatarId)];
+  const groupAvatarBusy = groupAvatarPhase !== 'idle';
+  const groupAvatarBusyForSelection = groupAvatarBusy && groupAvatarTarget === groupAvatarId;
+  const groupAvatarErrorForSelection = groupAvatarErrorTarget === groupAvatarId ? groupAvatarError : '';
   const avatarPreviewPerson = rolePerson && selectedAvatarOverride?.kind === 'photo'
     ? { ...rolePerson, avatar: selectedAvatarOverride.url, localEmoji: undefined }
     : rolePerson && selectedAvatarOverride?.kind === 'emoji'
@@ -499,7 +625,9 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
       <section className="settings-card">
         <div className="settings-card-title"><BellRing size={18} /><div><h2>{t('subscription')}</h2><p>{t('subscriptionHint')}</p></div></div>
         <label className="switch-row"><span><strong>{t('subscription')}</strong><small>{project.name}</small></span><input type="checkbox" checked={subscription.enabled} onChange={(e) => setSubscription({ enabled: e.target.checked })} /><i /></label>
-        <div className="event-options">{[['comment', 'watchComments'], ['status', 'watchStatus'], ['assignee', 'watchAssignee'], ['labels', 'watchLabels']].map(([event, labelKey]) => <label className="check-row" key={event}><input type="checkbox" disabled={!subscription.enabled} checked={subscription.events.includes(event)} onChange={(e) => setEvent(event, e.target.checked)} /><span>{t(labelKey)}</span></label>)}</div>
+        <div className="event-options">{([
+          ['comment', 'watchComments'], ['status', 'watchStatus'], ['assignee', 'watchAssignee'], ['labels', 'watchLabels'], ['issue_created', 'watchNewIssues'],
+        ] as const).map(([event, labelKey]) => <label className="check-row" key={event}><input type="checkbox" disabled={!subscription.enabled} checked={subscription.events.includes(event)} onChange={(e) => setEvent(event, e.target.checked)} /><span>{t(labelKey)}</span></label>)}</div>
       </section>
 
       <section className="settings-card">
@@ -553,6 +681,51 @@ export function SettingsPage({ settings, members, project, projects, statuses, l
           </div>
           {personAvatarBusyForSelection && <div className="settings-note" role="status" aria-live="polite">{t(personAvatarPhase === 'reading' ? 'personAvatarReading' : personAvatarPhase === 'uploading' ? 'personAvatarUploading' : 'personAvatarSaving')}</div>}
           {personAvatarErrorForSelection && <Notice tone="error">{personAvatarErrorForSelection}</Notice>}
+        </>}
+      </section>
+
+      <section className="settings-card group-avatar-settings" data-testid="group-avatar-settings">
+        <div className="settings-card-title"><Users size={18} /><div><h2>{t('groupAvatarTitle')}</h2><p>{t('groupAvatarHint')}</p></div></div>
+        {groups.length === 0 ? <div className="settings-note">{t('groupAvatarNoGroups')}</div> : <>
+          <Field label={t('groupAvatarSelection')}><Picker className="settings-picker" options={groups.map(group => ({ value: String(group.id), label: group.name }))} value={groupAvatarId === undefined ? undefined : String(groupAvatarId)} onChange={value => setGroupAvatarId(value ? Number(value) : undefined)} label={t('groupAvatarSelection')} placeholder={t('choose')} disabled={groupAvatarBusy} /></Field>
+          {selectedGroup && <>
+            <div className="settings-note" data-testid="group-avatar-preview"><GroupAvatar group={selectedGroup} override={selectedGroupAvatarOverride} size="md" label={t('groupAvatarFor', { group: selectedGroup.name })} /><span>{t('groupAvatarFor', { group: selectedGroup.name })}</span></div>
+            <input
+              ref={groupAvatarFileInputRef}
+              className="sr-only"
+              type="file"
+              tabIndex={-1}
+              accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+              aria-label={t('uploadGroupAvatar')}
+              data-testid="group-avatar-upload"
+              disabled={groupAvatarBusy}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = '';
+                if (file && groupAvatarId !== undefined) void uploadGroupAvatar(groupAvatarId, file);
+              }}
+            />
+            <div className="project-background-actions">
+              <Button variant="outline" disabled={groupAvatarBusy} onClick={() => groupAvatarFileInputRef.current?.click()}><Upload size={14} />{selectedGroupAvatarOverride?.kind === 'photo' ? t('replaceGroupAvatar') : t('uploadGroupAvatar')}</Button>
+              {selectedGroupAvatarOverride && <Button variant="danger" data-testid="group-avatar-remove" disabled={groupAvatarBusy} onClick={() => groupAvatarId !== undefined && void clearGroupAvatar(groupAvatarId)}><Trash2 size={14} />{t('removeGroupAvatar')}</Button>}
+            </div>
+            <Field label={t('groupAvatarEmojiInput')} hint={t('groupAvatarEmojiHint')}>
+              <input className="text-input" data-testid="group-avatar-emoji" value={groupEmojiDraft} maxLength={32} disabled={groupAvatarBusy} onChange={(event) => {
+                const value = event.target.value;
+                setGroupEmojiDraft(value);
+                if (groupAvatarId !== undefined && isSingleEmojiAvatar(value)) void saveGroupEmoji(groupAvatarId, value);
+              }} />
+            </Field>
+            {groupEmojiDraft.length > 0 && !isSingleEmojiAvatar(groupEmojiDraft) && <div className="settings-note" role="status">{t('groupAvatarEmojiInvalid')}</div>}
+            <div className="theme-options" role="group" aria-label={t('groupAvatarEmojiPresets')}>
+              {personAvatarEmojis.map(emoji => <button type="button" key={emoji} className={`theme-option${selectedGroupAvatarOverride?.kind === 'emoji' && selectedGroupAvatarOverride.emoji === emoji ? ' selected' : ''}`} aria-label={t('useGroupAvatarEmoji', { emoji })} aria-pressed={selectedGroupAvatarOverride?.kind === 'emoji' && selectedGroupAvatarOverride.emoji === emoji} disabled={groupAvatarBusy} onClick={() => {
+                setGroupEmojiDraft(emoji);
+                if (groupAvatarId !== undefined) void saveGroupEmoji(groupAvatarId, emoji);
+              }}>{emoji}</button>)}
+            </div>
+            {groupAvatarBusyForSelection && <div className="settings-note" role="status" aria-live="polite">{t(groupAvatarPhase === 'reading' ? 'groupAvatarReading' : groupAvatarPhase === 'uploading' ? 'groupAvatarUploading' : 'groupAvatarSaving')}</div>}
+            {groupAvatarErrorForSelection && <Notice tone="error">{groupAvatarErrorForSelection}</Notice>}
+          </>}
         </>}
       </section>
 

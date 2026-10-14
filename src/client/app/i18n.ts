@@ -384,6 +384,75 @@ Object.assign(uk, { checkingIssue: 'Перевірка…' });
 Object.assign(pl, { checkingIssue: 'Sprawdzanie…' });
 Object.assign(es, { checkingIssue: 'Verificando…' });
 
+Object.assign(en, {
+  watcher: 'Watcher', collapseColumn: 'Collapse column', expandColumn: 'Expand column', watchNewIssues: 'New issues',
+  unknownStatus: 'Unavailable status', group: 'Group', cannotMoveIssueStatus: 'No available status transitions have been confirmed for this issue.', notificationIssueCreated: 'Created this issue',
+});
+Object.assign(uk, {
+  watcher: 'Спостерігач', collapseColumn: 'Згорнути колонку', expandColumn: 'Розгорнути колонку', watchNewIssues: 'Нові задачі',
+  unknownStatus: 'Недоступний статус', group: 'Група', cannotMoveIssueStatus: 'Для цієї задачі немає підтверджених доступних переходів статусу.', notificationIssueCreated: 'Створив(-ла) цю задачу',
+});
+Object.assign(pl, {
+  watcher: 'Obserwator', collapseColumn: 'Zwiń kolumnę', expandColumn: 'Rozwiń kolumnę', watchNewIssues: 'Nowe zadania',
+  unknownStatus: 'Niedostępny status', group: 'Grupa', cannotMoveIssueStatus: 'Brak potwierdzonych dostępnych zmian statusu dla tego zadania.', notificationIssueCreated: 'Utworzył(a) to zadanie',
+});
+Object.assign(es, {
+  watcher: 'Observador', collapseColumn: 'Contraer columna', expandColumn: 'Expandir columna', watchNewIssues: 'Nuevas tareas',
+  unknownStatus: 'Estado no disponible', group: 'Grupo', cannotMoveIssueStatus: 'No se han confirmado cambios de estado disponibles para esta tarea.', notificationIssueCreated: 'Creó esta tarea',
+});
+Object.assign(en, { assigneeUnavailable: 'Current assignee is unavailable for new assignments.' });
+Object.assign(uk, { assigneeUnavailable: 'Поточний виконавець недоступний для нових призначень.' });
+Object.assign(pl, { assigneeUnavailable: 'Obecna osoba przypisana jest niedostępna dla nowych przypisań.' });
+Object.assign(es, { assigneeUnavailable: 'El responsable actual no está disponible para nuevas asignaciones.' });
+Object.assign(en, { preservedMarkup: 'Preserved content — edit in source mode' });
+Object.assign(uk, { preservedMarkup: 'Збережений вміст — редагуйте в режимі розмітки' });
+Object.assign(pl, { preservedMarkup: 'Zachowana treść — edytuj w trybie znaczników' });
+Object.assign(es, { preservedMarkup: 'Contenido conservado — edítalo en modo de marcado' });
+Object.assign(en, { errorPrimaryAssigneeUnavailable: 'The Redmine Primary Assignee field is unavailable for this update.', errorGroupAssignmentUnverified: 'Redmine has not confirmed that this group can be assigned to this issue.' });
+Object.assign(uk, { errorPrimaryAssigneeUnavailable: 'Поле Primary Assignee у Redmine недоступне для цієї зміни.', errorGroupAssignmentUnverified: 'Redmine не підтвердив можливість призначити цю групу на задачу.' });
+Object.assign(pl, { errorPrimaryAssigneeUnavailable: 'Pole Primary Assignee w Redmine jest niedostępne dla tej zmiany.', errorGroupAssignmentUnverified: 'Redmine nie potwierdził możliwości przypisania tej grupy do zadania.' });
+Object.assign(es, { errorPrimaryAssigneeUnavailable: 'El campo Primary Assignee de Redmine no está disponible para esta actualización.', errorGroupAssignmentUnverified: 'Redmine no ha confirmado que este grupo pueda asignarse a esta tarea.' });
+Object.assign(en, {
+  visualEditor: 'Visual editor', source: 'Source', bold: 'Bold', italic: 'Italic', strikethrough: 'Strikethrough', inlineCode: 'Inline code', codeBlock: 'Code block',
+  bulletedList: 'Bulleted list', numberedList: 'Numbered list', blockquote: 'Quote', heading: 'Heading', link: 'Link',
+  formattingSourceRequired: 'This formatting cannot be edited visually without changing the source. Use source mode to preserve it.',
+  mentionUnavailable: 'Redmine logins for mentions are unavailable.', mentionSuggestions: 'Mention a project member',
+  clickToEditDescription: 'Click to edit description', discardDraft: 'Discard draft',
+});
+Object.assign(uk, {
+  visualEditor: 'Візуальний редактор', source: 'Розмітка', bold: 'Жирний', italic: 'Курсив', strikethrough: 'Закреслення', inlineCode: 'Код у рядку', codeBlock: 'Блок коду',
+  bulletedList: 'Маркований список', numberedList: 'Нумерований список', blockquote: 'Цитата', heading: 'Заголовок', link: 'Посилання',
+  formattingSourceRequired: 'Це форматування не можна редагувати візуально без зміни розмітки. Використайте режим розмітки, щоб зберегти його.',
+  mentionUnavailable: 'Логіни Redmine для згадок недоступні.', mentionSuggestions: 'Згадати учасника проєкту',
+  clickToEditDescription: 'Натисніть, щоб редагувати опис', discardDraft: 'Відкинути чернетку',
+});
+Object.assign(pl, {
+  visualEditor: 'Edytor wizualny', source: 'Znaczniki', bold: 'Pogrubienie', italic: 'Kursywa', strikethrough: 'Przekreślenie', inlineCode: 'Kod w tekście', codeBlock: 'Blok kodu',
+  bulletedList: 'Lista punktowana', numberedList: 'Lista numerowana', blockquote: 'Cytat', heading: 'Nagłówek', link: 'Link',
+  formattingSourceRequired: 'Nie można edytować tego formatowania wizualnie bez zmiany znaczników. Użyj trybu znaczników, aby je zachować.',
+  mentionUnavailable: 'Loginy Redmine do wzmianek są niedostępne.', mentionSuggestions: 'Wspomnij uczestnika projektu',
+  clickToEditDescription: 'Kliknij, aby edytować opis', discardDraft: 'Odrzuć wersję roboczą',
+});
+Object.assign(es, {
+  visualEditor: 'Editor visual', source: 'Marcado', bold: 'Negrita', italic: 'Cursiva', strikethrough: 'Tachado', inlineCode: 'Código en línea', codeBlock: 'Bloque de código',
+  bulletedList: 'Lista con viñetas', numberedList: 'Lista numerada', blockquote: 'Cita', heading: 'Encabezado', link: 'Enlace',
+  formattingSourceRequired: 'Este formato no puede editarse visualmente sin cambiar el marcado. Usa el modo de marcado para conservarlo.',
+  mentionUnavailable: 'Los nombres de usuario de Redmine para menciones no están disponibles.', mentionSuggestions: 'Mencionar a un miembro del proyecto',
+  clickToEditDescription: 'Haz clic para editar la descripción', discardDraft: 'Descartar borrador',
+});
+
+// Group overrides share image validation wording but retain a separate identity and scope.
+for (const dictionary of [en, uk, pl, es] as Record<string, string>[]) {
+  for (const suffix of ['Reading', 'Uploading', 'Saving', 'SaveFailed', 'TooLarge', 'UnsupportedType', 'ReadFailed', 'UploadFailed', 'EmojiInput', 'EmojiHint', 'EmojiInvalid', 'EmojiPresets']) {
+    Object.assign(dictionary, { [`groupAvatar${suffix}`]: dictionary[`personAvatar${suffix}`] });
+  }
+  Object.assign(dictionary, { uploadGroupAvatar: dictionary.uploadPersonAvatar, replaceGroupAvatar: dictionary.replacePersonAvatar, removeGroupAvatar: dictionary.removePersonAvatar, useGroupAvatarEmoji: dictionary.usePersonAvatarEmoji });
+}
+Object.assign(en, { groupAvatarCleanupFailed: 'Could not remove the old group image.', groupAvatarTitle: 'Group avatar', groupAvatarHint: 'A photo or emoji for a Redmine group. Saved locally and visible only to you across this instance.', groupAvatarNoGroups: 'No assignable groups in this project.', groupAvatarSelection: 'Group', groupAvatarFor: 'Avatar for group {{group}}' });
+Object.assign(uk, { groupAvatarCleanupFailed: 'Не вдалося прибрати попереднє зображення групи.', groupAvatarTitle: 'Аватар групи', groupAvatarHint: 'Фото або емодзі для групи Redmine. Зберігається локально й видиме лише вам у всіх проєктах цієї інстанції.', groupAvatarNoGroups: 'У цьому проєкті немає доступних для призначення груп.', groupAvatarSelection: 'Група', groupAvatarFor: 'Аватар групи {{group}}' });
+Object.assign(pl, { groupAvatarCleanupFailed: 'Nie udało się usunąć poprzedniego obrazu grupy.', groupAvatarTitle: 'Awatar grupy', groupAvatarHint: 'Zdjęcie lub emoji grupy Redmine. Przechowywane lokalnie i widoczne tylko dla Ciebie w tej instancji.', groupAvatarNoGroups: 'W tym projekcie nie ma grup do przypisania.', groupAvatarSelection: 'Grupa', groupAvatarFor: 'Awatar grupy {{group}}' });
+Object.assign(es, { groupAvatarCleanupFailed: 'No se pudo eliminar la imagen anterior del grupo.', groupAvatarTitle: 'Avatar de grupo', groupAvatarHint: 'Foto o emoji de un grupo de Redmine. Se guarda localmente y solo es visible para ti en esta instancia.', groupAvatarNoGroups: 'No hay grupos asignables en este proyecto.', groupAvatarSelection: 'Grupo', groupAvatarFor: 'Avatar del grupo {{group}}' });
+
 i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, uk: { translation: uk }, pl: { translation: pl }, es: { translation: es } },
   lng: 'uk', fallbackLng: 'en', interpolation: { escapeValue: false }, react: { useSuspense: false },

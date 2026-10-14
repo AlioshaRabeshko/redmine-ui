@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page, type Route } from '@playwright/test';
 import type { BoardData, Bootstrap, CommandResult, Issue, IssueDetail, Journal } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 async function createDemoIssue(request: APIRequestContext, boot: Bootstrap, subject: string, input: Record<string, unknown> = {}): Promise<Issue> {
   const response = await request.post('/api/commands', { data: {
@@ -103,18 +104,82 @@ test('issue header stays compact and sticky, hidden menu items do not enter the 
     const list = element.querySelector('.activity-list')!;
     return Boolean(composer.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING);
   })).toBe(true);
-  await expect(dialog.locator('.description-area')).toHaveCSS('font-size', '13px');
-  await expect(dialog.getByTestId('comment-composer')).toHaveCSS('font-size', '13px');
+  await expect(dialog.locator('.description-preview')).toHaveCSS('font-size', '13px');
+  await expect(dialog.locator('.description-preview .rich-content')).toHaveCSS('font-size', '13px');
+  await dialog.getByTestId('comment-composer-activate').click();
+  await expect(dialog.getByTestId('comment-composer').locator('.rich-editor-prose')).toHaveCSS('font-size', '13px');
   await expect(dialog.locator('.activity-rich-content').first()).toHaveCSS('font-size', '12px');
 
   const editButton = dialog.getByTestId(`journal-edit-${4_000_000 + issue.id * 20}`);
   await editButton.click();
-  await expect(dialog.getByTestId(`journal-editor-textarea-${4_000_000 + issue.id * 20}`)).toHaveCSS('font-size', '13px');
+  await expect(dialog.getByTestId(`journal-editor-textarea-${4_000_000 + issue.id * 20}`).locator('.rich-editor-prose')).toHaveCSS('font-size', '13px');
   await dialog.getByTestId(`journal-cancel-${4_000_000 + issue.id * 20}`).click();
 
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await expect(opener).toBeFocused();
+});
+
+test('description Preview follows the light and dark dialog surface while Activity stays compact', async ({ page, request }) => {
+  const boot = await (await request.get('/api/bootstrap')).json() as Bootstrap;
+  const issue = await createDemoIssue(request, boot, `Preview surface ${Date.now()}`, {
+    description: 'A description rendered on the issue dialog surface.',
+  });
+  const notes = 'A compact activity comment remains independently styled.';
+  const comment = await request.post('/api/commands', {
+    data: { type: 'comment', issueId: issue.id, input: { notes } },
+  });
+  expect(comment.ok()).toBe(true);
+
+  for (const theme of ['light', 'dark'] as const) {
+    await request.patch('/api/settings', { data: { locale: 'en', theme } });
+    await page.goto(`/?project=${issue.projectId}&issue=${issue.id}`);
+    const dialog = page.getByTestId('issue-dialog');
+    const preview = dialog.getByTestId('issue-description-preview');
+    const activity = dialog.locator('.activity-rich-content').filter({ hasText: notes });
+    await expect(dialog).toBeVisible();
+    await expect(preview).toBeVisible();
+    await expect(activity).toHaveCount(1);
+    await expect(activity).toHaveCSS('font-size', '12px');
+
+    const surfaces = await dialog.evaluate(root => {
+      const frame = root.querySelector<HTMLElement>('.description-preview')!;
+      const prose = frame.querySelector<HTMLElement>('.rich-content')!;
+      const alternateSurface = document.createElement('span');
+      alternateSurface.style.cssText = 'position: fixed; visibility: hidden; background: var(--surface-alt)';
+      document.body.append(alternateSurface);
+      const altColor = getComputedStyle(alternateSurface).backgroundColor;
+      alternateSurface.remove();
+
+      const opaqueLayers: Array<{ className: string; background: string }> = [];
+      for (let node: HTMLElement | null = frame; node; node = node.parentElement) {
+        const background = getComputedStyle(node).backgroundColor;
+        if (background !== 'rgba(0, 0, 0, 0)') {
+          opaqueLayers.push({ className: node.className.toString(), background });
+        }
+        if (node === root) break;
+      }
+      return {
+        theme: document.documentElement.dataset.theme,
+        dialogSurface: getComputedStyle(root).backgroundColor,
+        frameBackground: getComputedStyle(frame).backgroundColor,
+        proseBackground: getComputedStyle(prose).backgroundColor,
+        alternateSurface: altColor,
+        proseFontSize: getComputedStyle(prose).fontSize,
+        opaqueLayers,
+      };
+    });
+
+    expect(surfaces.theme).toBe(theme);
+    expect(surfaces.dialogSurface).not.toBe(surfaces.alternateSurface);
+    expect(surfaces.frameBackground).toBe('rgba(0, 0, 0, 0)');
+    expect(surfaces.proseBackground).toBe('rgba(0, 0, 0, 0)');
+    expect(surfaces.proseFontSize).toBe('13px');
+    expect(surfaces.opaqueLayers).toHaveLength(1);
+    expect(surfaces.opaqueLayers[0]!.className).toContain('modal');
+    expect(surfaces.opaqueLayers[0]!.className).toContain('issue-dialog');
+    expect(surfaces.opaqueLayers[0]!.background).toBe(surfaces.dialogSurface);
+  }
 });
 
 test('Due Date still submits with the associated text form, label tiles support keyboard autosave, and initials colors meet contrast in both themes', async ({ page, request }) => {
@@ -158,7 +223,7 @@ test('Due Date still submits with the associated text form, label tiles support 
   expect(dueFormAssociation).toEqual({ formId: `issue-text-form-${issue.id}`, closestForm: false });
 
   await expect(dueDate).toHaveValue(initialDueDate);
-  const description = dialog.locator('.description-area');
+  const description = await editDescriptionSource(page);
   const descriptionOnly = 'Editing description leaves the existing due date unchanged.';
   await description.fill(descriptionOnly);
   await expect(dialog.locator('.text-save-row')).toBeVisible();
@@ -196,7 +261,7 @@ test('Due Date still submits with the associated text form, label tiles support 
   await page.reload();
   await expect(page.getByTestId('issue-dialog')).toBeVisible();
   await expect(page.getByTestId('issue-due-date')).toHaveValue('2026-12-31');
-  await expect(page.getByTestId('issue-dialog').locator('.description-area')).toHaveValue(combinedDescription);
+  await expect(await editDescriptionSource(page)).toHaveValue(combinedDescription);
 
   const labelToggle = dialog.locator('.labels-catalog-toggle');
   await expect(labelToggle).toBeVisible();
@@ -273,7 +338,7 @@ test('sending an own comment does not reveal an older buffered event with the sa
   await expect(dialog.getByTestId('activity-new-events')).toBeVisible();
   await expect(dialog.getByTestId(`journal-item-${bufferedId}`)).toHaveCount(0);
 
-  await dialog.getByTestId('comment-composer').fill(notes);
+  await (await sourceEditor(page, 'comment-composer')).fill(notes);
   await dialog.getByRole('button', { name: 'Add comment', exact: true }).click();
   await expect(dialog.locator('.activity-item').filter({ hasText: notes })).toHaveCount(1);
   await expect(dialog.getByTestId(`journal-item-${bufferedId}`)).toHaveCount(0);
@@ -305,7 +370,7 @@ test('keyboard reveal keeps focus in Activity and preserves the draft and visibl
   await page.goto(`/?project=${issue.projectId}&issue=${issue.id}`);
   const dialog = page.getByTestId('issue-dialog');
   await expect(dialog).toBeVisible();
-  const comment = dialog.getByTestId('comment-composer');
+  const comment = await sourceEditor(page, 'comment-composer');
   const draft = 'Keep this draft and the visible activity position';
   await comment.fill(draft);
   await expect(dialog.getByTestId('draft-persistence-status')).toBeVisible();
@@ -352,7 +417,7 @@ test('a remote comment submit does not erase another tab\'s unsent comment draft
   await page.goto(`/?project=${issue.projectId}&issue=${issue.id}`);
   const firstDialog = page.getByTestId('issue-dialog');
   await expect(firstDialog).toBeVisible();
-  const firstComment = firstDialog.getByTestId('comment-composer');
+  const firstComment = await sourceEditor(page, 'comment-composer');
   const firstDraft = 'Unsent text owned by the first tab';
   await firstComment.fill(firstDraft);
   await expect(firstDialog.getByTestId('draft-persistence-status')).toBeVisible();
@@ -361,7 +426,7 @@ test('a remote comment submit does not erase another tab\'s unsent comment draft
   await secondPage.goto(`/?project=${issue.projectId}&issue=${issue.id}`);
   const secondDialog = secondPage.getByTestId('issue-dialog');
   await expect(secondDialog).toBeVisible();
-  const secondComment = secondDialog.getByTestId('comment-composer');
+  const secondComment = await sourceEditor(secondPage, 'comment-composer');
   await expect(secondComment).toHaveValue(firstDraft);
   const sentFromSecondTab = 'A different comment submitted from the second tab';
   await secondComment.fill(sentFromSecondTab);
@@ -381,7 +446,7 @@ test('a remote comment submit does not erase another tab\'s unsent comment draft
   await page.getByTestId(`issue-card-${issue.id}`).click();
   const reopenedDialog = page.getByTestId('issue-dialog');
   await expect(reopenedDialog).toBeVisible();
-  await expect(reopenedDialog.getByTestId('comment-composer')).toHaveValue(firstDraft);
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue(firstDraft);
 });
 
 test('long Settings content scrolls inside the workspace while the sidebar and header stay in the viewport', async ({ page, request }) => {

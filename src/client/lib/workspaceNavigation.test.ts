@@ -8,7 +8,7 @@ describe('workspace URL navigation', () => {
       screen: 'releases',
       view: 'watching',
       filters: {
-        search: 'blue sky', assignedToMe: true, assigneeId: 42,
+        search: 'blue sky', assignedToMe: true, assigneeId: 42, watcherId: 19,
         labels: ['zeta', 'alpha', 'alpha'], statusIds: [5, 2, 5], priorityIds: [4, 1],
         versionId: 7, includeClosed: true, hasNotifications: true,
       },
@@ -24,7 +24,7 @@ describe('workspace URL navigation', () => {
     expect(normalized).toEqual({
       ...state,
       filters: {
-        search: 'blue sky', assignedToMe: true, assigneeId: 42,
+        search: 'blue sky', assignedToMe: true, assigneeId: 42, watcherId: 19,
         labels: ['alpha', 'zeta'], statusIds: [2, 5], priorityIds: [1, 4],
         versionId: 7, includeClosed: true, hasNotifications: true,
       },
@@ -48,7 +48,7 @@ describe('workspace URL navigation', () => {
 
   it('drops invalid IDs and enum values while retaining valid repeated filter values', () => {
     const parsed = parseNavigation('/workspace?project=0&tab=invalid&view=unknown&issue=9007199254740992&journal=-2'
-      + '&form=new-issue&status=1x&roadmap=none&overlay=unknown&move=0&assignee=NaN'
+      + '&form=new-issue&status=1x&roadmap=none&overlay=unknown&move=0&assignee=NaN&watcher=-2'
       + '&label=%20&label=%3Dbug&statusFilter=1,bad&statusFilter=2&priorityFilter=-4&versionFilter=0'
       + '&closed=yes&mine=true&archive=TRUE&token=hidden&draft=private');
     expect(parsed).toEqual({

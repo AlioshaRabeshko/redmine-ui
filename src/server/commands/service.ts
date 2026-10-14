@@ -107,7 +107,8 @@ export class CommandService {
     let settings: AppSettings;
     try { settings = parseSettings(value); }
     catch { throw new ApiFault(400, 'INVALID_SETTINGS', 'Налаштування мають некоректний формат.'); }
-    await this.store.setSettings(settings);
+    const previous = await this.store.getSettings();
+    await this.persistSettings(previous, settings);
     this.events?.publish('settings', { updatedAt: now() });
     return settings;
   }
@@ -126,10 +127,22 @@ export class CommandService {
         if (roles !== null) await this.assertProjectPerson(projectId, Number(personIdString));
       }
     }
-    const settings = applySettingsPatch(await this.store.getSettings(), patch);
-    await this.store.setSettings(settings);
+    const previous = await this.store.getSettings();
+    const settings = applySettingsPatch(previous, patch);
+    await this.persistSettings(previous, settings);
     this.events?.publish('settings', { updatedAt: now() });
     return settings;
+  }
+
+  private async persistSettings(previous: AppSettings, next: AppSettings): Promise<void> {
+    const activatedAt = now();
+    const cutoffs: Record<string, string> = {};
+    for (const projectId of new Set([...Object.keys(previous.subscriptions), ...Object.keys(next.subscriptions)])) {
+      const wasSubscribed = Boolean(previous.subscriptions[projectId]?.enabled && previous.subscriptions[projectId]?.events.includes('issue_created'));
+      const isSubscribed = Boolean(next.subscriptions[projectId]?.enabled && next.subscriptions[projectId]?.events.includes('issue_created'));
+      if (!wasSubscribed && isSubscribed) cutoffs[projectId] = activatedAt;
+    }
+    await this.store.setSettingsWithIssueCreatedCutoffs(next, cutoffs);
   }
 
   async recordPeopleSelection(selection: { projectId: number; personId: number; field: PeopleField; operationId: string }): Promise<{
@@ -165,6 +178,28 @@ export class CommandService {
     if (!(await this.store.isProjectMember(projectId, personId))) {
       throw new ApiFault(400, 'PERSON_NOT_PROJECT_MEMBER', 'Людина не є учасником цього проєкту Redmine.');
     }
+  }
+
+  private async demoAssigneePatch(projectId: number, input: Record<string, unknown>): Promise<Pick<Issue, 'assignedToId' | 'assignedToType' | 'assignedToName'>> {
+    const hasId = Object.prototype.hasOwnProperty.call(input, 'assignedToId');
+    const hasType = Object.prototype.hasOwnProperty.call(input, 'assignedToType');
+    if (!hasId && hasType) throw new ApiFault(400, 'ASSIGNEE_REQUIRED', 'Вкажіть ID виконавця разом із типом.');
+    if (!hasId) return {};
+    const type = input.assignedToType === undefined ? 'user' : input.assignedToType;
+    if (type !== 'user' && type !== 'group') throw new ApiFault(400, 'ASSIGNEE_TYPE_REQUIRED', 'Виберіть тип виконавця.');
+    if (input.assignedToId === null) return {};
+    const id = numberField(input, 'assignedToId');
+    if (!id || id <= 0) throw new ApiFault(400, 'PERSON_REQUIRED', 'Виберіть коректного виконавця.');
+    if (type === 'group') {
+      const groups = (await this.store.getValue<Record<string, { id: number; name: string; memberIds?: number[] }[]>>('projectGroups'))?.[String(projectId)] ?? [];
+      const group = groups.find(item => item.id === id);
+      if (!group) throw new ApiFault(400, 'GROUP_NOT_PROJECT_MEMBER', 'Група не є доступною групою цього проєкту.');
+      return { assignedToId: id, assignedToType: 'group', assignedToName: group.name };
+    }
+    await this.assertProjectMember(projectId, id);
+    const person = (await this.store.getValue<import('../../shared/types.js').Person[]>('people') ?? []).find(item => item.id === id);
+    if (!person) throw new ApiFault(400, 'PERSON_UNKNOWN', 'Не вдалося підтвердити ім’я цього виконавця.');
+    return { assignedToId: id, assignedToType: 'user', assignedToName: person.name };
   }
 
   private async assertProjectPerson(projectId: number, personId: number): Promise<void> {
@@ -286,15 +321,16 @@ export class CommandService {
     const trackerName = projectTrackers.get(trackerId) ?? issueTrackers.get(trackerId) ?? validTrackerName(stringField(input, 'trackerName'))
       ?? (this.config.mode === 'demo' ? `Type #${trackerId}` : '');
     const me = await this.store.getValue<{ id: number }>('me') ?? { id: 1 };
+    const assigneePatch = await this.demoAssigneePatch(projectId, input);
     const prepared: Issue = {
       id, projectId, subject, description: stringField(input, 'description') ?? '', statusId,
       priorityId, trackerId, trackerName, authorId: me.id,
-      ...(numberField(input, 'assignedToId') ? { assignedToId: numberField(input, 'assignedToId') } : {}),
+      ...assigneePatch,
       ...(numberField(input, 'developerId') ? { developerId: numberField(input, 'developerId') } : {}),
       ...(numberField(input, 'qaId') ? { qaId: numberField(input, 'qaId') } : {}),
       ...(numberField(input, 'fixedVersionId') ? { fixedVersionId: numberField(input, 'fixedVersionId') } : {}),
       branch: '', labels: Array.isArray(input.labels) ? input.labels.filter((value): value is string => typeof value === 'string') : [],
-      watcherIds: [me.id], createdOn: now(), updatedOn: now(), attachments: [],
+      watcherIds: [me.id], createdOn: now(), updatedOn: now(), attachments: [], allowedStatusIds: statuses.map(status => status.id),
     };
     const version = prepared.fixedVersionId ? await this.store.getVersion(prepared.fixedVersionId) : undefined;
     if (prepared.fixedVersionId && !version) throw new ApiFault(400, 'VERSION_NOT_FOUND', 'Реліз не знайдено.');
@@ -344,7 +380,11 @@ export class CommandService {
     } else if (updated.trackerId !== previousTrackerId) {
       updated.trackerName = this.config.mode === 'demo' ? `Type #${updated.trackerId}` : '';
     }
-    if (typeof input.assignedToId === 'number' || input.assignedToId === null) updated.assignedToId = input.assignedToId === null ? undefined : input.assignedToId;
+    if (input.assignedToId === null) {
+      delete updated.assignedToId;
+      delete updated.assignedToType;
+      delete updated.assignedToName;
+    } else Object.assign(updated, await this.demoAssigneePatch(issue.projectId, input));
     if (typeof input.developerId === 'number' || input.developerId === null) updated.developerId = input.developerId === null ? undefined : input.developerId;
     if (typeof input.qaId === 'number' || input.qaId === null) updated.qaId = input.qaId === null ? undefined : input.qaId;
     if (typeof input.fixedVersionId === 'number' || input.fixedVersionId === null) updated.fixedVersionId = input.fixedVersionId === null ? undefined : input.fixedVersionId;

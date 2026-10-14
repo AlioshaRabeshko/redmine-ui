@@ -139,8 +139,9 @@ export function Modal({ title, heading, headerActions, eyebrow, children, onClos
   </div>;
 }
 
-export function Field({ label, hint, children, className = '' }: { label: string; hint?: string; children: ReactNode; className?: string }) {
-  return <label className={`field ${className}`}><span className="field-label">{label}</span>{children}{hint && <span className="field-hint">{hint}</span>}</label>;
+export function Field({ label, hint, children, className = '', as = 'label' }: { label: string; hint?: string; children: ReactNode; className?: string; as?: 'label' | 'div' }) {
+  const Wrapper = as === 'div' ? 'div' : 'label';
+  return <Wrapper className={`field ${className}`}><span className="field-label">{label}</span>{children}{hint && <span className="field-hint">{hint}</span>}</Wrapper>;
 }
 
 export function Notice({ tone = 'info', children, className = '' }: { tone?: 'info' | 'warning' | 'success' | 'error'; children: ReactNode; className?: string }) {

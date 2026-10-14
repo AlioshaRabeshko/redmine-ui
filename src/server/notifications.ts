@@ -1,5 +1,10 @@
 import type { ActivityKind, AppSettings, Issue, Journal, LabelOption, Notification, Person, Priority, Status, Subscription, Version } from '../shared/types.js';
 
+/** Internal sync cursor; never exposed through the client settings contract. */
+export function issueCreatedSubscriptionCursorKey(projectId: number): string {
+  return `issue-created-subscription:${projectId}`;
+}
+
 export interface NotificationProjectionData {
   issues: Issue[];
   journalsByIssue: Map<number, Journal[]>;
@@ -14,6 +19,11 @@ export interface NotificationProjectionData {
 /** Project locally stored events through the current event mask without mutating their read/archive state. */
 export function projectNotification(notification: Notification, data: NotificationProjectionData): Notification | undefined {
   const issue = data.issues.find((item) => item.id === notification.issueId);
+  if (notification.kind === 'issue_created') {
+    const subscription = data.settings.subscriptions[String(notification.projectId)];
+    if (!subscription?.enabled || !subscription.events.includes('issue_created')) return undefined;
+    return { ...notification, ...(issue?.subject ? { issueSubject: issue.subject, text: issue.subject } : {}) };
+  }
   const journalId = notification.journalId ?? journalIdFromNotificationId(notification.id);
   const sourceJournal = data.journalsByIssue.get(notification.issueId)?.find((item) => item.id === journalId);
   const rawNotes = sourceJournal?.notes ?? notification.notes ?? (notification.kind === 'comment' ? notification.text : '');

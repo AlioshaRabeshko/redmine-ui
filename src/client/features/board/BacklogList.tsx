@@ -1,12 +1,14 @@
-import { Bell, CircleDot, CornerDownRight } from 'lucide-react';
+import { Bell, CircleDot, CornerDownRight, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { BoardData, Issue, Notification, Person, Priority, Status } from '../../../shared/types';
+import type { AppSettings, AssigneeOption, BoardData, Issue, Notification, Priority, Status } from '../../../shared/types';
 import { Avatar } from '../../components/ui';
+import { GroupAvatar } from '../../components/GroupAvatar';
 import { oldestUnreadNotification } from './unreadNotifications';
 
 type BacklogListProps = {
   issues: Issue[];
   data: BoardData;
+  settings: AppSettings;
   priorities: Priority[];
   statuses: Status[];
   canWrite: boolean;
@@ -48,21 +50,31 @@ function labelTone(label: string): number {
   return Math.abs(hash) % 6;
 }
 
-function IssuePeople({ issue, members }: { issue: Issue; members: Person[] }) {
+function groupAssigneeOption(data: BoardData, issue: Issue): Extract<AssigneeOption, { type: 'group' }> | undefined {
+  if (issue.assignedToType !== 'group' || issue.assignedToId === undefined) return undefined;
+  const current = data.assigneeOptions?.find((option): option is Extract<AssigneeOption, { type: 'group' }> =>
+    option.type === 'group' && option.id === issue.assignedToId);
+  return current ?? { type: 'group', id: issue.assignedToId, name: issue.assignedToName || `#${issue.assignedToId}` };
+}
+
+function IssuePeople({ issue, data, settings }: { issue: Issue; data: BoardData; settings: AppSettings }) {
   const { t } = useTranslation();
-  const assigned = members.find(person => person.id === issue.assignedToId);
-  const developer = members.find(person => person.id === issue.developerId);
-  const qa = members.find(person => person.id === issue.qaId);
-  const author = members.find(person => person.id === issue.authorId);
-  return <span className="backlog-people" aria-label={[assigned && `${t('assignee')}: ${assigned.name}`, developer && `${t('developer')}: ${developer.name}`, qa && `${t('qa')}: ${qa.name}`].filter(Boolean).join(', ')}>
-    <span title={`${t('assignee')}: ${assigned?.name || t('noAssignee')}`}><Avatar person={assigned} size="xs" /></span>
+  const assigned = issue.assignedToType === 'group' ? undefined : data.members.find(person => person.id === issue.assignedToId);
+  const assignedGroup = groupAssigneeOption(data, issue);
+  const developer = data.members.find(person => person.id === issue.developerId);
+  const qa = data.members.find(person => person.id === issue.qaId);
+  const author = data.members.find(person => person.id === issue.authorId);
+  const assignedLabel = issue.assignedToType === 'group' ? `${t('group')}: ${assignedGroup?.name || t('unknown')}` : `${t('assignee')}: ${assigned?.name || t('noAssignee')}`;
+  return <span className="backlog-people" aria-label={[assignedLabel, developer && `${t('developer')}: ${developer.name}`, qa && `${t('qa')}: ${qa.name}`].filter(Boolean).join(', ')}>
+    {issue.assignedToType === 'group' ? assignedGroup ? <GroupAvatar group={assignedGroup} override={settings.groupAvatarOverrides[String(assignedGroup.id)]} size="xs" label={assignedLabel} /> : <span className="group-assignee-mark group-assignee-mark-small" role="img" aria-label={assignedLabel} title={assignedLabel}><Users size={14} /></span>
+      : <span title={assignedLabel}><Avatar person={assigned} size="xs" /></span>}
     {developer && developer.id !== assigned?.id && <span title={`${t('developer')}: ${developer.name}`}><Avatar person={developer} role="developer" size="xs" /></span>}
     {qa && qa.id !== assigned?.id && qa.id !== developer?.id && <span title={`${t('qa')}: ${qa.name}`}><Avatar person={qa} role="qa" size="xs" /></span>}
     {author && ![assigned?.id, developer?.id, qa?.id].includes(author.id) && <span title={`${t('author')}: ${author.name}`}><Avatar person={author} size="xs" /></span>}
   </span>;
 }
 
-export function BacklogList({ issues, data, priorities, statuses, canWrite, pendingIssueIds, checkingIssueIds = new Set(), notificationsByIssue,
+export function BacklogList({ issues, data, settings, priorities, statuses, canWrite, pendingIssueIds, checkingIssueIds = new Set(), notificationsByIssue,
   onOpenIssue, onOpenNotification, onMoveIssue }: BacklogListProps) {
   const { t, i18n } = useTranslation();
   const todo = statuses.find(status => status.key === 'todo');
@@ -99,7 +111,7 @@ export function BacklogList({ issues, data, priorities, statuses, canWrite, pend
             </span>
             {issue.labels.length > 0 && <span className="backlog-labels">{issue.labels.map(label => <span className={`label-chip label-tone-${labelTone(label)} backlog-label`} key={label} title={label}>{label}</span>)}</span>}
             <span className="backlog-row-meta">
-              <IssuePeople issue={issue} members={data.members} />
+              <IssuePeople issue={issue} data={data} settings={settings} />
               <span className="backlog-dates">
                 <time dateTime={issue.createdOn} title={createdTooltip}><span>{t('createdAt')}:</span> {relativeDate(issue.createdOn, locale, now)}</time>
                 <time dateTime={issue.updatedOn} title={updatedTooltip}><span>{t('lastActivity')}:</span> {relativeDate(issue.updatedOn, locale, now)}</time>

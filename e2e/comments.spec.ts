@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import type { Bootstrap, CommandResult, IssueDetail } from '../src/shared/types.js';
+import { editDescriptionSource, sourceEditor } from './helpers/rich-editor.js';
 
 async function setup(request: APIRequestContext, notes: string) {
   await request.patch('/api/settings', { data: { locale: 'uk', theme: 'light', palette: 'blue' } });
@@ -23,8 +24,8 @@ async function open(page: Page, project: number, issue: number) {
 test('comment edit draft survives closing/reload; Cmd+S saves only that comment; delete requires confirmation', async ({ page, request }) => {
   const { issue, journal } = await setup(request, 'Original own comment');
   await open(page, issue.projectId, issue.id);
-  const editor = page.getByTestId(`journal-editor-textarea-${journal.id}`);
   await page.getByTestId(`journal-edit-${journal.id}`).click();
+  const editor = await sourceEditor(page, `journal-editor-textarea-${journal.id}`);
   await editor.fill('Edited draft, still private');
   await page.screenshot({ path: '/tmp/redmine-ui-comment-editor.png' });
   await page.keyboard.press('Escape');
@@ -32,9 +33,9 @@ test('comment edit draft survives closing/reload; Cmd+S saves only that comment;
   await page.reload();
   await open(page, issue.projectId, issue.id);
   await page.getByTestId(`journal-edit-${journal.id}`).click();
-  await expect(editor).toHaveValue('Edited draft, still private');
+  await expect(await sourceEditor(page, `journal-editor-textarea-${journal.id}`)).toHaveValue('Edited draft, still private');
   expect((await read(request, issue.id)).journals.find(item => item.id === journal.id)?.notes).toBe('Original own comment');
-  await page.locator('.description-area').fill('Independent issue draft');
+  await (await editDescriptionSource(page)).fill('Independent issue draft');
   await editor.focus();
   await page.keyboard.press('Meta+s');
   await expect.poll(async () => (await read(request, issue.id)).journals.find(item => item.id === journal.id)?.notes).toBe('Edited draft, still private');
@@ -55,16 +56,19 @@ test('quote appends to a retained draft, copy targets the exact Redmine comment,
   const commands: string[] = [];
   page.on('request', req => { if (req.url().endsWith('/api/commands') && req.method() === 'POST') commands.push(req.postDataJSON().type); });
   await open(page, issue.projectId, issue.id);
-  const composer = page.getByTestId('comment-composer');
+  const composer = await sourceEditor(page, 'comment-composer');
   await composer.fill('My existing draft');
   await page.getByTestId(`journal-quote-${journal.id}`).click();
   await expect(composer).toBeFocused();
   const quoted = await composer.inputValue();
+  await expect(composer).toBeVisible();
+  expect(await composer.evaluate(element => ({ start: (element as HTMLTextAreaElement).selectionStart, end: (element as HTMLTextAreaElement).selectionEnd })))
+    .toEqual({ start: quoted.length, end: quoted.length });
   expect(quoted).toContain('My existing draft');
   expect(quoted).toContain(boot.me.name);
   expect(quoted).toContain('> Quote this');
   expect(quoted).toContain('> Second line');
-  const permalink = `${boot.redmineUrl.replace(/\/$/, '')}/issues/${issue.id}#change-${journal.id}`;
+  const permalink = `${boot.redmineUrl.replace(/\/$/, '')}/issues/${issue.id}#journal-${journal.id}-notes`;
   expect(quoted).toContain(permalink);
   await page.getByTestId(`journal-permalink-${journal.id}`).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(permalink);
@@ -77,7 +81,7 @@ test('quote appends to a retained draft, copy targets the exact Redmine comment,
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(like).toHaveAttribute('aria-pressed', 'true');
-  await expect(composer).toHaveValue(quoted);
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue(quoted);
   await page.screenshot({ path: '/tmp/redmine-ui-comment-actions-dark.png' });
   await like.click();
   await expect(like).toHaveAttribute('aria-pressed', 'false');
@@ -88,7 +92,7 @@ test('failed edit keeps its draft; text typed during a successful save remains u
   const { issue, journal } = await setup(request, 'Pending edit original');
   await open(page, issue.projectId, issue.id);
   await page.getByTestId(`journal-edit-${journal.id}`).click();
-  const editor = page.getByTestId(`journal-editor-textarea-${journal.id}`);
+  const editor = await sourceEditor(page, `journal-editor-textarea-${journal.id}`);
   await editor.fill('First attempted edit');
   await page.route('**/api/commands', route => route.fulfill({ status: 503, json: { code: 'CONNECTION_FAILED', message: 'Test unavailable' } }));
   await page.getByTestId(`journal-save-${journal.id}`).click();
@@ -124,7 +128,7 @@ test('real read-only still allows quote/permalink and cannot issue comment mutat
   await expect(page.getByTestId(`journal-like-${journal.id}`)).toBeDisabled();
   await expect(page.getByTestId(`journal-permalink-${journal.id}`)).toBeEnabled();
   await page.getByTestId(`journal-quote-${journal.id}`).click();
-  expect(await page.getByTestId('comment-composer').inputValue()).toContain('Read-only comment');
+  expect(await (await sourceEditor(page, 'comment-composer')).inputValue()).toContain('Read-only comment');
   expect(commands).toBe(0);
 });
 
@@ -132,7 +136,7 @@ test('a restored edit draft cannot overwrite a comment changed while the card wa
   const { issue, journal } = await setup(request, 'Baseline before outside edit');
   await open(page, issue.projectId, issue.id);
   await page.getByTestId(`journal-edit-${journal.id}`).click();
-  const editor = page.getByTestId(`journal-editor-textarea-${journal.id}`);
+  const editor = await sourceEditor(page, `journal-editor-textarea-${journal.id}`);
   await editor.fill('My unsaved edit');
   await page.keyboard.press('Escape');
   const outside = await request.post('/api/commands', { data: {
@@ -142,24 +146,24 @@ test('a restored edit draft cannot overwrite a comment changed while the card wa
   expect(outside.ok()).toBe(true);
   await open(page, issue.projectId, issue.id);
   await page.getByTestId(`journal-edit-${journal.id}`).click();
-  await expect(editor).toHaveValue('My unsaved edit');
+  await expect(await sourceEditor(page, `journal-editor-textarea-${journal.id}`)).toHaveValue('My unsaved edit');
   await expect(page.getByTestId(`journal-editor-${journal.id}`).getByRole('alert')).toBeVisible();
   await expect(page.getByTestId(`journal-save-${journal.id}`)).toBeDisabled();
-  await expect(editor).toHaveValue('My unsaved edit');
+  await expect(await sourceEditor(page, `journal-editor-textarea-${journal.id}`)).toHaveValue('My unsaved edit');
   expect((await read(request, issue.id)).journals.find(item => item.id === journal.id)?.notes).toBe('Changed outside this editor');
 });
 
 test('Cmd+S in the reply composer submits the reply once and leaves the description draft untouched', async ({ page, request }) => {
   const { issue } = await setup(request, 'Existing comment before keyboard reply');
   await open(page, issue.projectId, issue.id);
-  await page.locator('.description-area').fill('Description remains a draft');
-  const composer = page.getByTestId('comment-composer');
+  await (await editDescriptionSource(page)).fill('Description remains a draft');
+  const composer = await sourceEditor(page, 'comment-composer');
   await composer.fill('Reply submitted by keyboard');
   await page.keyboard.press('Meta+s');
   await expect.poll(async () => (await read(request, issue.id)).journals.filter(item => item.notes === 'Reply submitted by keyboard').length).toBe(1);
-  await expect(composer).toHaveValue('');
+  await expect(await sourceEditor(page, 'comment-composer')).toHaveValue('');
   expect((await read(request, issue.id)).issue.description).not.toBe('Description remains a draft');
-  await expect(page.locator('.description-area')).toHaveValue('Description remains a draft');
+  await expect(await editDescriptionSource(page)).toHaveValue('Description remains a draft');
 });
 
 test('delete confirmation cannot remove a comment edited after confirmation opened', async ({ page, request }) => {

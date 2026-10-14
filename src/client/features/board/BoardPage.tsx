@@ -1,12 +1,14 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { Bell, CalendarDays, ChevronDown, CircleDot, Clock3, Plus, Search, SlidersHorizontal, X } from 'lucide-react';
+import { Bell, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, CircleDot, Clock3, Plus, Search, SlidersHorizontal, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppSettings, BoardData, Filters, Issue, Notification, Person, Priority, Project, SavedView, Status, View } from '../../../shared/types';
+import type { AppSettings, AssigneeOption, BoardData, Filters, Issue, Notification, Person, Priority, Project, SavedView, Status, View } from '../../../shared/types';
 import { filterIssues, groupBoard, sortIssues, toggleAssignedToMe } from '../../../shared/domain';
 import { Avatar, Button, IconButton } from '../../components/ui';
+import { GroupAvatar } from '../../components/GroupAvatar';
 import { MultiPicker, PeoplePicker, Picker, Popover } from '../../components/pickers';
+import { canDropIssueOnColumn, toggleCollapsedColumn } from './boardInteractions';
 import { groupUnreadNotifications, oldestUnreadNotification } from './unreadNotifications';
 import { BacklogList } from './BacklogList';
 import './board-round3.css';
@@ -56,14 +58,21 @@ function labelTone(label: string): number {
   return Math.abs(hash) % 6;
 }
 
-function BoardCard({ issue, data, statuses, priorities, canWrite, pending = false, checking = false, onOpen, isDragging = false, unreadCount = 0, oldestUnread, onOpenNotification }: {
-  issue: Issue; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pending?: boolean; checking?: boolean; onOpen: (issue: Issue) => void; isDragging?: boolean;
+function groupAssigneeOption(data: BoardData, issue: Issue): Extract<AssigneeOption, { type: 'group' }> | undefined {
+  if (issue.assignedToType !== 'group' || issue.assignedToId === undefined) return undefined;
+  const current = data.assigneeOptions?.find((option): option is Extract<AssigneeOption, { type: 'group' }> => option.type === 'group' && option.id === issue.assignedToId);
+  return current ?? { type: 'group', id: issue.assignedToId, name: issue.assignedToName || `#${issue.assignedToId}` };
+}
+
+function BoardCard({ issue, data, settings, statuses, priorities, canWrite, pending = false, checking = false, onOpen, isDragging = false, unreadCount = 0, oldestUnread, onOpenNotification }: {
+  issue: Issue; data: BoardData; settings: AppSettings; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pending?: boolean; checking?: boolean; onOpen: (issue: Issue) => void; isDragging?: boolean;
   unreadCount?: number; oldestUnread?: Notification; onOpenNotification?: (notification: Notification) => void;
 }) {
   const { t, i18n } = useTranslation();
   const activeVersion = data.versions.find((version) => version.id === issue.fixedVersionId && version.projectId === issue.projectId && version.status !== 'closed');
   const status = statuses.find((entry) => entry.id === issue.statusId);
-  const assigned = data.members.find((person) => person.id === issue.assignedToId);
+  const assigned = issue.assignedToType === 'group' ? undefined : data.members.find((person) => person.id === issue.assignedToId);
+  const assignedGroup = groupAssigneeOption(data, issue);
   const developer = data.members.find((person) => person.id === issue.developerId);
   const qa = data.members.find((person) => person.id === issue.qaId);
   const author = data.members.find((person) => person.id === issue.authorId);
@@ -85,7 +94,8 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
       {pinnedInStatusLane && <div className="roadmap-row"><span className="roadmap-pill"><CalendarDays size={12} />{activeVersion.name}</span></div>}
       <div className="card-bottom">
         <div className="card-people">
-          <span className="person-stack" title={`${t('assignee')}: ${assigned?.name || t('noAssignee')}`}><Avatar person={assigned} size="md" /></span>
+          {issue.assignedToType === 'group' ? assignedGroup ? <GroupAvatar group={assignedGroup} override={settings.groupAvatarOverrides[String(assignedGroup.id)]} size="md" label={`${t('group')}: ${assignedGroup.name || t('unknown')}`} /> : <span className="group-assignee-mark" role="img" aria-label={t('group')} title={t('group')}><Users size={16} /></span>
+            : <span className="person-stack" title={`${t('assignee')}: ${assigned?.name || t('noAssignee')}`}><Avatar person={assigned} size="md" /></span>}
           {developer && developer.id !== assigned?.id && <span className="person-mini" title={`${t('developer')}: ${developer.name}`}><Avatar person={developer} role="developer" size="xs" /></span>}
           {qa && qa.id !== assigned?.id && qa.id !== developer?.id && <span className="person-mini qa-mini" title={`${t('qa')}: ${qa.name}`}><Avatar person={qa} role="qa" size="xs" /></span>}
           {author && ![assigned?.id, developer?.id, qa?.id].includes(author.id) && <span className="person-mini author-mini" title={`${t('author')}: ${author.name}`}><Avatar person={author} size="xs" /></span>}
@@ -104,31 +114,36 @@ function BoardCard({ issue, data, statuses, priorities, canWrite, pending = fals
   </article>;
 }
 
-function Lane({ column, data, statuses, priorities, canWrite, pendingIssueIds, checkingIssueIds, onOpenIssue, onOpenNotification, notificationsByIssue, onCreateIssue, activeIssueId }: {
-  column: ReturnType<typeof groupBoard>[number]; data: BoardData; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; checkingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onOpenNotification: (notification: Notification) => void; notificationsByIssue: Map<number, Notification[]>; onCreateIssue: BoardPageProps['onCreateIssue']; activeIssueId?: number;
+function Lane({ column, data, settings, statuses, priorities, canWrite, pendingIssueIds, checkingIssueIds, onOpenIssue, onOpenNotification, notificationsByIssue, onCreateIssue, activeIssue, collapsed, onToggleCollapsed }: {
+  column: ReturnType<typeof groupBoard>[number]; data: BoardData; settings: AppSettings; statuses: Status[]; priorities: Priority[]; canWrite: boolean; pendingIssueIds: ReadonlySet<number>; checkingIssueIds: ReadonlySet<number>; onOpenIssue: (issue: Issue) => void; onOpenNotification: (notification: Notification) => void; notificationsByIssue: Map<number, Notification[]>; onCreateIssue: BoardPageProps['onCreateIssue']; activeIssue?: Issue; collapsed: boolean; onToggleCollapsed: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const { isOver, setNodeRef } = useDroppable({ id: `lane:${column.id}`, disabled: !canWrite });
+  const acceptsActiveIssue = !activeIssue || canDropIssueOnColumn(activeIssue, column);
+  const { isOver, setNodeRef } = useDroppable({ id: `lane:${column.id}`, disabled: !canWrite || (!column.version && !column.status) || !acceptsActiveIssue });
   const road = Boolean(column.version);
-  return <section className={`board-lane${road ? ` lane-roadmap ${releaseToneClass(column.version!.id)}` : ''}${isOver ? ' lane-over' : ''}`} data-testid={`lane-${column.id}`} aria-label={column.name}>
+  const columnName = column.id === 'status:unknown' ? t('unknownStatus') : column.name;
+  return <section className={`board-lane${road ? ` lane-roadmap ${releaseToneClass(column.version!.id)}` : ''}${collapsed ? ' lane-collapsed' : ''}${isOver ? ' lane-over' : ''}${activeIssue && !acceptsActiveIssue ? ' lane-unavailable-target' : ''}`} data-testid={`lane-${column.id}`} aria-label={columnName} title={activeIssue && !acceptsActiveIssue ? t('cannotMoveIssueStatus') : undefined}>
     <header className="lane-header">
-      <span className={`lane-dot${road ? ' lane-dot-roadmap' : ` dot-${column.status?.key || 'unknown'}`}`} />
-      <h2>{column.name}</h2>
-      {road && <span className="lane-roadmap-icon" title={t('releaseLaneHint')} aria-label={t('releaseLaneHint')}><CalendarDays size={14} /></span>}
-      <span className="lane-count">{column.issues.length}</span>
-      <IconButton className="lane-create" label={t('createInColumn', { column: column.name })} disabled={!canWrite} onClick={() => onCreateIssue({
+      <div className="lane-heading-main">
+        <span className={`lane-dot${road ? ' lane-dot-roadmap' : ` dot-${column.status?.key || 'unknown'}`}`} />
+        <h2>{columnName}</h2>
+        {road && <span className="lane-roadmap-icon" title={t('releaseLaneHint')} aria-label={t('releaseLaneHint')}><CalendarDays size={14} /></span>}
+        <span className="lane-count">{column.issues.length}</span>
+      </div>
+      {!collapsed && <IconButton className="lane-create" label={t('createInColumn', { column: columnName })} disabled={!canWrite || (!column.status && !column.version)} onClick={() => onCreateIssue({
         statusId: column.status?.id ?? statuses.find(status => status.key === 'todo')?.id ?? statuses[0]?.id,
         fixedVersionId: column.version?.id ?? null,
-      })}><Plus size={16} /></IconButton>
+      })}><Plus size={16} /></IconButton>}
+      <IconButton className="lane-collapse-toggle" data-testid={`lane-collapse-${column.id}`} label={`${collapsed ? t('expandColumn') : t('collapseColumn')}: ${columnName}`} aria-expanded={!collapsed} onClick={onToggleCollapsed}>{collapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}</IconButton>
     </header>
-    {road && column.version?.dueDate && <div className="lane-caption">{t('dueDate')} · {new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' }).format(new Date(`${column.version.dueDate}T00:00:00`))}</div>}
-    <div className="lane-content">
-      <div className="lane-dropzone" ref={setNodeRef}>
-        {column.issues.map((issue) => {
+    {!collapsed && road && column.version?.dueDate && <div className="lane-caption">{t('dueDate')} · {new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' }).format(new Date(`${column.version.dueDate}T00:00:00`))}</div>}
+    <div className={`lane-content${collapsed ? ' lane-content-collapsed' : ''}`}>
+      <div className="lane-dropzone" ref={setNodeRef} aria-disabled={!acceptsActiveIssue || (!column.status && !column.version) || undefined}>
+        {!collapsed && column.issues.map((issue) => {
           const unread = notificationsByIssue.get(issue.id) || [];
-          return <BoardCard key={issue.id} issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pending={pendingIssueIds.has(issue.id)} checking={checkingIssueIds.has(issue.id)} onOpen={onOpenIssue} isDragging={activeIssueId === issue.id} unreadCount={unread.length} oldestUnread={oldestUnreadNotification(unread)} onOpenNotification={onOpenNotification} />;
+          return <BoardCard key={issue.id} issue={issue} data={data} settings={settings} statuses={statuses} priorities={priorities} canWrite={canWrite} pending={pendingIssueIds.has(issue.id)} checking={checkingIssueIds.has(issue.id)} onOpen={onOpenIssue} isDragging={activeIssue?.id === issue.id} unreadCount={unread.length} oldestUnread={oldestUnreadNotification(unread)} onOpenNotification={onOpenNotification} />;
         })}
-        {column.issues.length === 0 && <div className="lane-empty">{isOver ? <span>{t('moveTo')} {column.name}</span> : <span className="lane-empty-mark">· · ·</span>}</div>}
+        {!collapsed && column.issues.length === 0 && <div className="lane-empty">{isOver ? <span>{t('moveTo')} {columnName}</span> : <span className="lane-empty-mark">· · ·</span>}</div>}
       </div>
     </div>
   </section>;
@@ -147,8 +162,12 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
   const unreadIssueIds = useMemo(() => new Set(notificationsByIssue.keys()), [notificationsByIssue]);
   const filtered = useMemo(() => sortIssues(filterIssues(data.issues, statuses, view, me.id, filters, data.members, unreadIssueIds), priorities, settings.sort), [data.issues, data.members, statuses, priorities, view, me.id, filters, settings.sort, unreadIssueIds]);
   const columns = useMemo(() => groupBoard(filtered, statuses, data.versions, view), [filtered, statuses, data.versions, view]);
+  const projectKey = String(project.id);
+  const collapsedColumnIds = settings.collapsedBoardColumns?.[projectKey] || [];
+  const collapsedColumns = useMemo(() => new Set(collapsedColumnIds), [collapsedColumnIds]);
+  const draggedIssue = draggedId === undefined ? undefined : data.issues.find(entry => entry.id === draggedId);
   const selectedLabels = [...new Set([...(filters.labels || []), ...(filters.label ? [filters.label] : [])])];
-  const hasFilters = Boolean(filters.assignedToMe || filters.assigneeId !== undefined || selectedLabels.length || filters.search || filters.statusIds?.length || filters.priorityIds?.length || filters.versionId !== undefined || filters.includeClosed || filters.hasNotifications);
+  const hasFilters = Boolean(filters.assignedToMe || filters.assigneeId !== undefined || filters.watcherId !== undefined || selectedLabels.length || filters.search || filters.statusIds?.length || filters.priorityIds?.length || filters.versionId !== undefined || filters.includeClosed || filters.hasNotifications);
   const mineActive = Boolean(filters.assignedToMe || view === 'mine');
   const onDragEnd = (event: DragEndEvent) => {
     const from = String(event.active.id);
@@ -158,14 +177,17 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     const issue = data.issues.find((entry) => entry.id === issueId);
     setDraggedId(undefined);
     if (!issue || !to.startsWith('lane:')) return;
-    const targetId = to.slice(5);
-    if (targetId.startsWith('version:')) {
-      const versionId = Number(targetId.slice(8));
-      if (issue.fixedVersionId !== versionId) onMoveIssue(issue, { fixedVersionId: versionId });
-    } else if (targetId.startsWith('status:')) {
-      const statusId = Number(targetId.slice(7));
-      if (issue.statusId !== statusId) onMoveIssue(issue, { statusId, fixedVersionId: issue.fixedVersionId });
+    const targetColumn = columns.find(column => column.id === to.slice(5));
+    if (!targetColumn) return;
+    if (targetColumn.version) {
+      if (issue.fixedVersionId !== targetColumn.version.id) onMoveIssue(issue, { fixedVersionId: targetColumn.version.id });
+    } else if (targetColumn.status && issue.statusId !== targetColumn.status.id && canDropIssueOnColumn(issue, targetColumn)) {
+      onMoveIssue(issue, { statusId: targetColumn.status.id, fixedVersionId: issue.fixedVersionId });
     }
+  };
+  const toggleColumn = (columnId: string) => {
+    const next = toggleCollapsedColumn(collapsedColumnIds, columnId);
+    onSettingsChange({ collapsedBoardColumns: { ...settings.collapsedBoardColumns, [projectKey]: next } });
   };
   const clearFilters = () => { onFiltersChange(defaultFilters); };
   const submitSavedView = (event: React.FormEvent) => { event.preventDefault(); if (viewName.trim()) { onSaveView(viewName.trim(), filters, view); setViewName(''); setSavingView(false); } };
@@ -183,6 +205,10 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
   if (filters.assigneeId !== undefined) {
     const person = data.members.find(item => item.id === filters.assigneeId);
     activeChips.push({ key: 'assignee', label: `${t('assignee')}: ${person?.name || `#${filters.assigneeId}`}`, remove: () => onFiltersChange({ ...filters, assigneeId: undefined }) });
+  }
+  if (filters.watcherId !== undefined) {
+    const person = data.members.find(item => item.id === filters.watcherId);
+    activeChips.push({ key: 'watcher', label: `${t('watcher')}: ${person?.name || `#${filters.watcherId}`}`, remove: () => onFiltersChange({ ...filters, watcherId: undefined }) });
   }
   for (const label of selectedLabels) activeChips.push({ key: `label:${label}`, label: `${t('label')}: ${label}`, remove: () => {
     const nextLabels = selectedLabels.filter(item => item !== label);
@@ -227,6 +253,7 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
             <div className="board-filter-head"><strong>{t('filters')}</strong>{hasFilters && <Button size="sm" variant="quiet" onClick={clearFilters}><X size={14} />{t('clear')}</Button>}</div>
             <div className="board-filter-grid">
               <div className="board-filter-field"><span>{t('filterAssignee')}</span><PeoplePicker label={t('filterAssignee')} placeholder={t('viewAll')} members={data.members} value={filters.assigneeId} recommendations={data.peopleRecommendations?.assignee || []} onChange={value => onFiltersChange({ ...filters, assigneeId: value })} /></div>
+              <div className="board-filter-field"><span>{t('watcher')}</span><PeoplePicker label={t('watcher')} placeholder={t('viewAll')} members={data.members} value={filters.watcherId} onChange={value => onFiltersChange({ ...filters, watcherId: value })} /></div>
               <div className="board-filter-field"><span>{t('labels')}</span><MultiPicker label={t('labels')} placeholder={t('viewAll')} options={data.labels.map(label => ({ value: label, label }))} values={selectedLabels} onChange={labels => onFiltersChange({ ...filters, label: undefined, labels: labels.length ? labels : undefined })} /></div>
               <div className="board-filter-field"><span>{t('filterStatus')}</span><MultiPicker label={t('filterStatus')} placeholder={t('viewAll')} options={statuses.map(status => ({ value: String(status.id), label: status.name }))} values={(filters.statusIds || []).map(String)} onChange={values => { const ids = values.map(Number).filter(Number.isFinite); onFiltersChange({ ...filters, statusIds: ids.length ? ids : undefined }); }} /></div>
               <div className="board-filter-field"><span>{t('filterPriority')}</span><MultiPicker label={t('filterPriority')} placeholder={t('viewAll')} options={priorities.map(priority => ({ value: String(priority.id), label: priority.name }))} values={(filters.priorityIds || []).map(String)} onChange={values => { const ids = values.map(Number).filter(Number.isFinite); onFiltersChange({ ...filters, priorityIds: ids.length ? ids : undefined }); }} /></div>
@@ -246,12 +273,12 @@ export function BoardPage({ project, data, statuses, priorities, me, settings, v
     {activeChips.length > 0 && <div className="board-active-filters" aria-label={t('activeFilters')}><span className="active-filter-label">{t('activeFilters')}:</span>{activeChips.map(chip => <button key={chip.key} type="button" className="filter-chip" onClick={chip.remove} aria-label={`${t('clear')} · ${chip.label}`} title={`${t('clear')} · ${chip.label}`}>{chip.label}<X size={12} /></button>)}<Button size="sm" variant="quiet" onClick={clearFilters}>{t('clear')}</Button></div>}
 
     {view !== 'backlog' && filtered.length === 0 && columns.length > 0 && <p className="board-empty-hint" role="status">{hasFilters ? t('emptySearch') : t('noIssues')} · {t('noIssuesHint')}</p>}
-    {view === 'backlog' ? <BacklogList issues={filtered} data={data} priorities={priorities} statuses={statuses} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} notificationsByIssue={notificationsByIssue} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} onMoveIssue={onMoveIssue} />
+    {view === 'backlog' ? <BacklogList issues={filtered} data={data} settings={settings} priorities={priorities} statuses={statuses} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} notificationsByIssue={notificationsByIssue} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} onMoveIssue={onMoveIssue} />
       : columns.length === 0 ? <div className="empty-state board-empty"><div className="empty-illustration"><Search size={24} /></div><h2>{hasFilters ? t('emptySearch') : t('noIssues')}</h2><p>{t('noIssuesHint')}</p>{!hasFilters && canWrite && <Button variant="primary" onClick={() => onCreateIssue()}><Plus size={15} />{t('createFirstIssue')}</Button>}</div> : <DndContext sensors={sensors} onDragStart={(event) => setDraggedId(Number(String(event.active.id).replace('issue:', '')))} onDragCancel={() => setDraggedId(undefined)} onDragEnd={onDragEnd}>
       <div className="board-scroll"><div className="board-lanes">
-        {columns.map((column) => <Lane key={column.id} column={column} data={data} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} notificationsByIssue={notificationsByIssue} onCreateIssue={onCreateIssue} activeIssueId={draggedId} />)}
+        {columns.map((column) => <Lane key={column.id} column={column} data={data} settings={settings} statuses={statuses} priorities={priorities} canWrite={canWrite} pendingIssueIds={pendingIssueIds} checkingIssueIds={checkingIssueIds} onOpenIssue={onOpenIssue} onOpenNotification={onOpenNotification} notificationsByIssue={notificationsByIssue} onCreateIssue={onCreateIssue} activeIssue={draggedIssue} collapsed={collapsedColumns.has(column.id)} onToggleCollapsed={() => toggleColumn(column.id)} />)}
       </div></div>
-      <DragOverlay>{draggedId ? (() => { const issue = data.issues.find((entry) => entry.id === draggedId); return issue ? <BoardCard issue={issue} data={data} statuses={statuses} priorities={priorities} canWrite={false} onOpen={onOpenIssue} isDragging /> : null; })() : null}</DragOverlay>
+      <DragOverlay>{draggedId ? (() => { const issue = data.issues.find((entry) => entry.id === draggedId); return issue ? <BoardCard issue={issue} data={data} settings={settings} statuses={statuses} priorities={priorities} canWrite={false} onOpen={onOpenIssue} isDragging /> : null; })() : null}</DragOverlay>
     </DndContext>}
   </main>;
 }

@@ -16,6 +16,8 @@ export default defineConfig({
     timeout: 30_000,
     env: {
       APP_MODE: 'demo', REDMINE_API_TOKEN: '', REDMINE_WRITE_ENABLED: 'false', PORT: '3100', HOST: '127.0.0.1',
+      // Keep the automation fixture independent of any user-configured labels.
+      REDMINE_CI_IN_PROGRESS_LABEL: 'Build: Running', REDMINE_CI_FAILED_LABEL: 'Build: Failed',
       DATABASE_PATH: join(tmpdir(), `redmine-ui-e2e-${process.pid}.sqlite`),
     },
   },

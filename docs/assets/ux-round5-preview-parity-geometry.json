@@ -1,0 +1,1880 @@
+{
+  "preview": {
+    "root": {
+      "fontSize": "13px",
+      "lineHeight": "20.15px",
+      "whiteSpace": "normal",
+      "padding": [
+        "10px",
+        "12px",
+        "10px",
+        "12px"
+      ],
+      "backgroundColor": "rgba(0, 0, 0, 0)"
+    },
+    "directChildren": [
+      {
+        "tag": "h1",
+        "className": "",
+        "text": "Повний опис",
+        "relativeBounds": [
+          12,
+          10,
+          677,
+          22.5
+        ],
+        "margin": [
+          "0px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "p",
+        "className": "",
+        "text": "Звичайний абзац із виділенням, посиланням та inline code.",
+        "relativeBounds": [
+          12,
+          39.5,
+          677,
+          20.5
+        ],
+        "margin": [
+          "0px",
+          "0px",
+          "8px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "blockquote",
+        "className": "",
+        "text": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.\n\nДругий рядок цитати зберігає той самий ритм і відступ.",
+        "relativeBounds": [
+          12,
+          68,
+          677,
+          68.42
+        ],
+        "margin": [
+          "8px",
+          "0px",
+          "8px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "11px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "3px"
+        ]
+      },
+      {
+        "tag": "ul",
+        "className": "",
+        "text": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.\nДругий пункт із вкладеним рядком.\nВкладений пункт лишається маркованим.",
+        "relativeBounds": [
+          12,
+          144.42,
+          677,
+          68.42
+        ],
+        "margin": [
+          "7px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "22px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "ol",
+        "className": "",
+        "text": "Перший нумерований крок.\nДругий нумерований крок.",
+        "relativeBounds": [
+          12,
+          219.84,
+          677,
+          40.28
+        ],
+        "margin": [
+          "7px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "22px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "hr",
+        "className": "",
+        "text": "",
+        "relativeBounds": [
+          12,
+          272.13,
+          677,
+          1
+        ],
+        "margin": [
+          "12px",
+          "0px",
+          "12px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "1px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "h2",
+        "className": "",
+        "text": "Код і завершальний абзац",
+        "relativeBounds": [
+          12,
+          285.13,
+          677,
+          20
+        ],
+        "margin": [
+          "12px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "pre",
+        "className": "rich-code-block",
+        "text": "const result = 42;\nconsole.log(result);\n",
+        "relativeBounds": [
+          12,
+          312.13,
+          677,
+          53
+        ],
+        "margin": [
+          "7px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "9px",
+          "10px",
+          "9px",
+          "10px"
+        ],
+        "border": [
+          "1px",
+          "1px",
+          "1px",
+          "1px"
+        ]
+      },
+      {
+        "tag": "p",
+        "className": "",
+        "text": "Завершальний абзац після розділювача.",
+        "relativeBounds": [
+          12,
+          372.13,
+          677,
+          20.14
+        ],
+        "margin": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      }
+    ],
+    "nestedListParent": {
+      "outerHTML": "<li>Другий пункт із вкладеним рядком.\n<ul>\n<li>Вкладений пункт лишається маркованим.</li>\n</ul>\n</li>",
+      "descendants": [
+        {
+          "tag": "li",
+          "text": "Другий пункт із вкладеним рядком.\nВкладений пункт лишається маркованим.",
+          "innerHTML": "Другий пункт із вкладеним рядком.\n<ul>\n<li>Вкладений пункт лишається маркованим.</li>\n</ul>\n",
+          "relativeBounds": [
+            34,
+            164.56,
+            655,
+            48.28
+          ],
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal"
+        },
+        {
+          "tag": "ul",
+          "text": "Вкладений пункт лишається маркованим.",
+          "relativeBounds": [
+            34,
+            192.7,
+            655,
+            20.14
+          ],
+          "margin": [
+            "8px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal"
+        },
+        {
+          "tag": "li",
+          "text": "Вкладений пункт лишається маркованим.",
+          "relativeBounds": [
+            56,
+            192.7,
+            633,
+            20.14
+          ],
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal"
+        }
+      ]
+    },
+    "blocks": {
+      "paragraphs": [
+        {
+          "text": "Звичайний абзац із виділенням, посиланням та inline code.",
+          "visibleText": "Звичайний абзац із виділенням, посиланням та inline code.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            39.5,
+            677,
+            20.5
+          ]
+        },
+        {
+          "text": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.",
+          "visibleText": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            26,
+            68,
+            663,
+            40.28
+          ]
+        },
+        {
+          "text": "Другий рядок цитати зберігає той самий ритм і відступ.",
+          "visibleText": "Другий рядок цитати зберігає той самий ритм і відступ.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            26,
+            116.28,
+            663,
+            20.14
+          ]
+        },
+        {
+          "text": "Завершальний абзац після розділювача.",
+          "visibleText": "Завершальний абзац після розділювача.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            372.13,
+            677,
+            20.14
+          ]
+        }
+      ],
+      "unordered lists": [
+        {
+          "text": "\nПерший довгий пункт списку з достатнім текстом для перевірки геометрії.\nДругий пункт із вкладеним рядком.\n\nВкладений пункт лишається маркованим.\n\n\n",
+          "visibleText": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.\nДругий пункт із вкладеним рядком.\nВкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "7px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            144.42,
+            677,
+            68.42
+          ]
+        },
+        {
+          "text": "\nВкладений пункт лишається маркованим.\n",
+          "visibleText": "Вкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "8px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            192.7,
+            655,
+            20.14
+          ]
+        }
+      ],
+      "ordered lists": [
+        {
+          "text": "\nПерший нумерований крок.\nДругий нумерований крок.\n",
+          "visibleText": "Перший нумерований крок.\nДругий нумерований крок.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "decimal",
+          "margin": [
+            "7px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            219.84,
+            677,
+            40.28
+          ]
+        }
+      ],
+      "list items": [
+        {
+          "text": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.",
+          "visibleText": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            144.42,
+            655,
+            20.14
+          ]
+        },
+        {
+          "text": "Другий пункт із вкладеним рядком.\n\nВкладений пункт лишається маркованим.\n\n",
+          "visibleText": "Другий пункт із вкладеним рядком.\nВкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            164.56,
+            655,
+            48.28
+          ]
+        },
+        {
+          "text": "Вкладений пункт лишається маркованим.",
+          "visibleText": "Вкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            56,
+            192.7,
+            633,
+            20.14
+          ]
+        },
+        {
+          "text": "Перший нумерований крок.",
+          "visibleText": "Перший нумерований крок.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal",
+          "listStyleType": "decimal",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            219.84,
+            655,
+            20.14
+          ]
+        },
+        {
+          "text": "Другий нумерований крок.",
+          "visibleText": "Другий нумерований крок.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "normal",
+          "listStyleType": "decimal",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            239.98,
+            655,
+            20.14
+          ]
+        }
+      ],
+      "quotes": [
+        {
+          "text": "\nЦитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.\nДругий рядок цитати зберігає той самий ритм і відступ.\n",
+          "visibleText": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.\n\nДругий рядок цитати зберігає той самий ритм і відступ.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "8px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "11px"
+          ],
+          "borderLeftWidth": "3px",
+          "relativeBounds": [
+            12,
+            68,
+            677,
+            68.42
+          ]
+        }
+      ],
+      "h1": [
+        {
+          "text": "Повний опис",
+          "visibleText": "Повний опис",
+          "fontSize": "18px",
+          "lineHeight": "22.5px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            10,
+            677,
+            22.5
+          ]
+        }
+      ],
+      "h2": [
+        {
+          "text": "Код і завершальний абзац",
+          "visibleText": "Код і завершальний абзац",
+          "fontSize": "16px",
+          "lineHeight": "20px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "12px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            285.13,
+            677,
+            20
+          ]
+        }
+      ],
+      "rules": [
+        {
+          "text": "",
+          "visibleText": "",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "12px",
+            "0px",
+            "12px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            272.13,
+            677,
+            1
+          ]
+        }
+      ],
+      "code blocks": [
+        {
+          "text": "const result = 42;\nconsole.log(result);\n",
+          "visibleText": "const result = 42;\nconsole.log(result);\n",
+          "fontSize": "11px",
+          "lineHeight": "16.5px",
+          "display": "block",
+          "whiteSpace": "pre-wrap",
+          "listStyleType": "disc",
+          "margin": [
+            "7px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "9px",
+            "10px",
+            "9px",
+            "10px"
+          ],
+          "borderLeftWidth": "1px",
+          "relativeBounds": [
+            12,
+            312.13,
+            677,
+            53
+          ]
+        }
+      ],
+      "inline code": [
+        {
+          "text": "inline code",
+          "visibleText": "inline code",
+          "fontSize": "11px",
+          "lineHeight": "16.5px",
+          "display": "inline",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "1px",
+            "4px",
+            "1px",
+            "4px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            322.17,
+            43.5,
+            80.86,
+            15
+          ]
+        }
+      ],
+      "block code": [
+        {
+          "text": "const result = 42;\nconsole.log(result);\n",
+          "visibleText": "const result = 42;\nconsole.log(result);\n",
+          "fontSize": "11px",
+          "lineHeight": "16.5px",
+          "display": "block",
+          "whiteSpace": "pre-wrap",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            23,
+            322.13,
+            655,
+            33
+          ]
+        }
+      ]
+    }
+  },
+  "visualEdit": {
+    "root": {
+      "fontSize": "13px",
+      "lineHeight": "20.15px",
+      "whiteSpace": "break-spaces",
+      "padding": [
+        "10px",
+        "12px",
+        "10px",
+        "12px"
+      ],
+      "backgroundColor": "rgba(0, 0, 0, 0)"
+    },
+    "directChildren": [
+      {
+        "tag": "h1",
+        "className": "",
+        "text": "Повний опис",
+        "relativeBounds": [
+          12,
+          10,
+          677,
+          22.5
+        ],
+        "margin": [
+          "0px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "p",
+        "className": "",
+        "text": "Звичайний абзац із виділенням, посиланням та inline code.",
+        "relativeBounds": [
+          12,
+          39.5,
+          677,
+          20.5
+        ],
+        "margin": [
+          "0px",
+          "0px",
+          "8px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "blockquote",
+        "className": "",
+        "text": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.\n\nДругий рядок цитати зберігає той самий ритм і відступ.",
+        "relativeBounds": [
+          12,
+          68,
+          677,
+          68.42
+        ],
+        "margin": [
+          "8px",
+          "0px",
+          "8px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "11px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "3px"
+        ]
+      },
+      {
+        "tag": "ul",
+        "className": "",
+        "text": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.\n\nДругий пункт із вкладеним рядком.\n\nВкладений пункт лишається маркованим.",
+        "relativeBounds": [
+          12,
+          144.42,
+          677,
+          68.42
+        ],
+        "margin": [
+          "7px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "22px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "ol",
+        "className": "",
+        "text": "Перший нумерований крок.\n\nДругий нумерований крок.",
+        "relativeBounds": [
+          12,
+          219.84,
+          677,
+          40.28
+        ],
+        "margin": [
+          "7px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "22px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "hr",
+        "className": "",
+        "text": "",
+        "relativeBounds": [
+          12,
+          272.13,
+          677,
+          1
+        ],
+        "margin": [
+          "12px",
+          "0px",
+          "12px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "1px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "h2",
+        "className": "",
+        "text": "Код і завершальний абзац",
+        "relativeBounds": [
+          12,
+          285.13,
+          677,
+          20
+        ],
+        "margin": [
+          "12px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      },
+      {
+        "tag": "pre",
+        "className": "",
+        "text": "const result = 42;\nconsole.log(result);",
+        "relativeBounds": [
+          12,
+          312.13,
+          677,
+          53
+        ],
+        "margin": [
+          "7px",
+          "0px",
+          "7px",
+          "0px"
+        ],
+        "padding": [
+          "9px",
+          "10px",
+          "9px",
+          "10px"
+        ],
+        "border": [
+          "1px",
+          "1px",
+          "1px",
+          "1px"
+        ]
+      },
+      {
+        "tag": "p",
+        "className": "",
+        "text": "Завершальний абзац після розділювача.",
+        "relativeBounds": [
+          12,
+          372.13,
+          677,
+          20.14
+        ],
+        "margin": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "padding": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ],
+        "border": [
+          "0px",
+          "0px",
+          "0px",
+          "0px"
+        ]
+      }
+    ],
+    "nestedListParent": {
+      "outerHTML": "<li><p>Другий пункт із вкладеним рядком.</p><ul><li><p>Вкладений пункт лишається маркованим.</p></li></ul></li>",
+      "descendants": [
+        {
+          "tag": "li",
+          "text": "Другий пункт із вкладеним рядком.\n\nВкладений пункт лишається маркованим.",
+          "innerHTML": "<p>Другий пункт із вкладеним рядком.</p><ul><li><p>Вкладений пункт лишається маркованим.</p></li></ul>",
+          "relativeBounds": [
+            34,
+            164.56,
+            655,
+            48.28
+          ],
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces"
+        },
+        {
+          "tag": "p",
+          "text": "Другий пункт із вкладеним рядком.",
+          "relativeBounds": [
+            34,
+            164.56,
+            655,
+            20.14
+          ],
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces"
+        },
+        {
+          "tag": "ul",
+          "text": "Вкладений пункт лишається маркованим.",
+          "relativeBounds": [
+            34,
+            192.7,
+            655,
+            20.14
+          ],
+          "margin": [
+            "8px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces"
+        },
+        {
+          "tag": "li",
+          "text": "Вкладений пункт лишається маркованим.",
+          "relativeBounds": [
+            56,
+            192.7,
+            633,
+            20.14
+          ],
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces"
+        },
+        {
+          "tag": "p",
+          "text": "Вкладений пункт лишається маркованим.",
+          "relativeBounds": [
+            56,
+            192.7,
+            633,
+            20.14
+          ],
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces"
+        }
+      ]
+    },
+    "blocks": {
+      "paragraphs": [
+        {
+          "text": "Звичайний абзац із виділенням, посиланням та inline code.",
+          "visibleText": "Звичайний абзац із виділенням, посиланням та inline code.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            39.5,
+            677,
+            20.5
+          ]
+        },
+        {
+          "text": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.",
+          "visibleText": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            26,
+            68,
+            663,
+            40.28
+          ]
+        },
+        {
+          "text": "Другий рядок цитати зберігає той самий ритм і відступ.",
+          "visibleText": "Другий рядок цитати зберігає той самий ритм і відступ.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            26,
+            116.28,
+            663,
+            20.14
+          ]
+        },
+        {
+          "text": "Завершальний абзац після розділювача.",
+          "visibleText": "Завершальний абзац після розділювача.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            372.13,
+            677,
+            20.14
+          ]
+        }
+      ],
+      "unordered lists": [
+        {
+          "text": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.Другий пункт із вкладеним рядком.Вкладений пункт лишається маркованим.",
+          "visibleText": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.\n\nДругий пункт із вкладеним рядком.\n\nВкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "7px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            144.42,
+            677,
+            68.42
+          ]
+        },
+        {
+          "text": "Вкладений пункт лишається маркованим.",
+          "visibleText": "Вкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "8px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            192.7,
+            655,
+            20.14
+          ]
+        }
+      ],
+      "ordered lists": [
+        {
+          "text": "Перший нумерований крок.Другий нумерований крок.",
+          "visibleText": "Перший нумерований крок.\n\nДругий нумерований крок.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "decimal",
+          "margin": [
+            "7px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "22px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            219.84,
+            677,
+            40.28
+          ]
+        }
+      ],
+      "list items": [
+        {
+          "text": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.",
+          "visibleText": "Перший довгий пункт списку з достатнім текстом для перевірки геометрії.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            144.42,
+            655,
+            20.14
+          ]
+        },
+        {
+          "text": "Другий пункт із вкладеним рядком.Вкладений пункт лишається маркованим.",
+          "visibleText": "Другий пункт із вкладеним рядком.\n\nВкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            164.56,
+            655,
+            48.28
+          ]
+        },
+        {
+          "text": "Вкладений пункт лишається маркованим.",
+          "visibleText": "Вкладений пункт лишається маркованим.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            56,
+            192.7,
+            633,
+            20.14
+          ]
+        },
+        {
+          "text": "Перший нумерований крок.",
+          "visibleText": "Перший нумерований крок.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "decimal",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            219.84,
+            655,
+            20.14
+          ]
+        },
+        {
+          "text": "Другий нумерований крок.",
+          "visibleText": "Другий нумерований крок.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "list-item",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "decimal",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            34,
+            239.98,
+            655,
+            20.14
+          ]
+        }
+      ],
+      "quotes": [
+        {
+          "text": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.Другий рядок цитати зберігає той самий ритм і відступ.",
+          "visibleText": "Цитата містить довгий український текст, який має переноситися в межах картки без зайвих порожніх рядків.\n\nДругий рядок цитати зберігає той самий ритм і відступ.",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "8px",
+            "0px",
+            "8px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "11px"
+          ],
+          "borderLeftWidth": "3px",
+          "relativeBounds": [
+            12,
+            68,
+            677,
+            68.42
+          ]
+        }
+      ],
+      "h1": [
+        {
+          "text": "Повний опис",
+          "visibleText": "Повний опис",
+          "fontSize": "18px",
+          "lineHeight": "22.5px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            10,
+            677,
+            22.5
+          ]
+        }
+      ],
+      "h2": [
+        {
+          "text": "Код і завершальний абзац",
+          "visibleText": "Код і завершальний абзац",
+          "fontSize": "16px",
+          "lineHeight": "20px",
+          "display": "block",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "12px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            285.13,
+            677,
+            20
+          ]
+        }
+      ],
+      "rules": [
+        {
+          "text": "",
+          "visibleText": "",
+          "fontSize": "13px",
+          "lineHeight": "20.15px",
+          "display": "block",
+          "whiteSpace": "normal",
+          "listStyleType": "disc",
+          "margin": [
+            "12px",
+            "0px",
+            "12px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            12,
+            272.13,
+            677,
+            1
+          ]
+        }
+      ],
+      "code blocks": [
+        {
+          "text": "const result = 42;\nconsole.log(result);",
+          "visibleText": "const result = 42;\nconsole.log(result);",
+          "fontSize": "11px",
+          "lineHeight": "16.5px",
+          "display": "block",
+          "whiteSpace": "pre-wrap",
+          "listStyleType": "disc",
+          "margin": [
+            "7px",
+            "0px",
+            "7px",
+            "0px"
+          ],
+          "padding": [
+            "9px",
+            "10px",
+            "9px",
+            "10px"
+          ],
+          "borderLeftWidth": "1px",
+          "relativeBounds": [
+            12,
+            312.13,
+            677,
+            53
+          ]
+        }
+      ],
+      "inline code": [
+        {
+          "text": "inline code",
+          "visibleText": "inline code",
+          "fontSize": "11px",
+          "lineHeight": "16.5px",
+          "display": "inline",
+          "whiteSpace": "break-spaces",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "1px",
+            "4px",
+            "1px",
+            "4px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            322.17,
+            43.5,
+            80.86,
+            15
+          ]
+        }
+      ],
+      "block code": [
+        {
+          "text": "const result = 42;\nconsole.log(result);",
+          "visibleText": "const result = 42;\nconsole.log(result);",
+          "fontSize": "11px",
+          "lineHeight": "16.5px",
+          "display": "block",
+          "whiteSpace": "pre-wrap",
+          "listStyleType": "disc",
+          "margin": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "padding": [
+            "0px",
+            "0px",
+            "0px",
+            "0px"
+          ],
+          "borderLeftWidth": "0px",
+          "relativeBounds": [
+            23,
+            322.13,
+            655,
+            33
+          ]
+        }
+      ]
+    }
+  }
+}
